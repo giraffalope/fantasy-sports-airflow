@@ -1,0 +1,33 @@
+#!/bin/sh
+
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(dirname "$0")/.."
+cd "${BASEDIR}"
+
+# COMPOSE_FILES="-f docker-compose.yml -f docker-compose-dev.yml"
+# COMPOSE_FILES="-f docker-compose-dev.yml"
+COMPOSE_FILES=""
+
+cleanup() {
+    echo "Stopping containers..."
+    docker compose down --remove-orphans
+    exit 0
+}
+
+main() {
+    trap cleanup INT TERM
+
+    ASCII_ART_FILE="script/utils/ascii-art.txt"
+    cat $BASEDIR/$ASCII_ART_FILE
+    # docker compose $COMPOSE_FILES down
+    docker compose $COMPOSE_FILES down --volumes --remove-orphans
+    docker compose --profile init up airflow-init
+    # yes | docker compose rm airflow-init
+    docker compose $COMPOSE_FILES --profile development up --force-recreate
+    wait $!
+}
+
+
+main
