@@ -1,5 +1,5 @@
 import time
-from airflow.models import BaseOperator
+from airflow.sdk import BaseOperator
 
 class WaitOperator(BaseOperator):
     """

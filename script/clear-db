@@ -10,5 +10,7 @@ sudo rm -rf db/data/
 sudo rm -rf db/test-data
 
 set +e
+docker image rm fantasy-sports-db:latest 2> /dev/null
+docker image rm airflow-fantasy-sports-mariadb 2> /dev/null
 docker image rm airflow-fantasy-sports_mariadb 2> /dev/null
 set -e

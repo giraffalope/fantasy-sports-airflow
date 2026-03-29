@@ -1,0 +1,28 @@
+# mysqlclient (from apache-airflow-providers-mysql on Linux) has no manylinux wheels.
+# script/setup uses pyenv + .python-version for Python.h checks and `uv sync --python`.
+# Building mysqlclient needs libmariadb-dev; otherwise use PyMySQL / mysql-connector-python.
+
+[project]
+name = "fantasy-sports-airflow"
+version = "0.1.0"
+description = "Airflow 3 DAGs and task dependencies for fantasy-sports"
+requires-python = ">=3.12"
+dependencies = [
+    "apache-airflow==3.1.8",
+    "apache-airflow-providers-celery",
+    "apache-airflow-providers-fab",
+    "apache-airflow-providers-mysql",
+    "apache-airflow-providers-standard",
+    "pandas",
+    "numpy",
+    "beautifulsoup4",
+    "lxml",
+    "html5lib",
+    "requests",
+    "playwright==1.53.0",
+    "SQLAlchemy",
+    "pymysql",
+]
+
+[tool.uv]
+package = false

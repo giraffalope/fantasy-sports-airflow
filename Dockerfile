@@ -1,6 +1,6 @@
 # Dockerfile
 
-FROM apache/airflow:2.10.5-python3.12
+FROM apache/airflow:3.1.8-python3.12
 
 USER root
 
@@ -14,8 +14,17 @@ RUN apt-get update && apt-get install -y \
     libmariadb-dev build-essential pkg-config \
     && apt-get clean
 
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-COPY requirements.txt .
+COPY pyproject.toml uv.lock /opt/airflow/
+WORKDIR /opt/airflow
+
+# Install as root: Airflow image Python lives under /usr/python (not writable by airflow user).
+RUN uv export --frozen --no-dev -o /tmp/requirements-export.txt \
+    && uv pip sync --system --break-system-packages --python /usr/python/bin/python \
+        /tmp/requirements-export.txt \
+    && rm -f /tmp/requirements-export.txt \
+    && uv cache clean
+
 USER airflow
-RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install
