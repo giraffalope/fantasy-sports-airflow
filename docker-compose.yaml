@@ -29,6 +29,8 @@
 #                                Default: 50000
 # AIRFLOW_PROJ_DIR             - Base path to which all the files will be volumed.
 #                                Default: .
+# AIRFLOW_SCRAPER_DATA_DIR     - Host directory bind-mounted to /home/airflow/scraper (gitignored by default).
+#                                Scrape files live under <that>/nascar/… Default: ${AIRFLOW_PROJ_DIR}/scraper-data
 # FANTASY_SPORTS_DB_BUILD_CONTEXT - Path to fantasy-sports-db repo (Docker build context for MariaDB).
 #                                Default: ../fantasy-sports-db (sibling of this project)
 # FANTASY_SPORTS_DB_IMAGE      - Image name/tag for the DB image built from that context.
@@ -91,6 +93,8 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/airflow_utils:/opt/airflow/airflow_utils
     - ${AIRFLOW_PROJ_DIR:-.}/include:/opt/airflow/include
+    # Mount parent dir so host sees scraper-data/nascar/… (see DEFAULT_NASCAR_SCRAPER_ROOT in racing_reference.py)
+    - ${AIRFLOW_SCRAPER_DATA_DIR:-${AIRFLOW_PROJ_DIR:-.}/scraper-data}:/home/airflow/scraper
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -321,7 +325,7 @@ services:
       context: .
       dockerfile: Dockerfile.unit-tests
     image: ${UNIT_TESTS_IMAGE:-fantasy-sports-airflow-unit-tests:latest}
-    command: ["python", "-m", "pytest", "tests", "-v", "--tb=short"]
+    command: ["python", "-m", "pytest", "tests/unit", "tests/integration", "-v", "--tb=short"]
 
   mariadb:
     build:

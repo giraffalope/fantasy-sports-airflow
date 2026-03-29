@@ -1,9 +1,10 @@
-import os
-import errno
 import csv
+import errno
 import json
-import tempfile
+import os
 import shutil
+import tempfile
+
 
 class File:
     @staticmethod
@@ -46,7 +47,7 @@ class File:
         Read the entire contents of a file.
         """
         try:
-            with open(filename, "r", encoding=encoding) as f:
+            with open(filename, encoding=encoding) as f:
                 return f.read()
         except OSError as e:
             raise RuntimeError(f"Failed to read file {filename}: {e}") from e
@@ -71,15 +72,15 @@ class File:
             if atomic:
                 dir_name = os.path.dirname(filename) or "."
                 fd, temp_path = tempfile.mkstemp(dir=dir_name)
-                with os.fdopen(fd, "w", encoding=encoding, newline='') as tmp_file:
-                    writer = csv.writer(tmp_file, quoting=csv.QUOTE_ALL, lineterminator='\n')
+                with os.fdopen(fd, "w", encoding=encoding, newline="") as tmp_file:
+                    writer = csv.writer(tmp_file, quoting=csv.QUOTE_ALL, lineterminator="\n")
                     if header:
                         writer.writerow(header)
                     writer.writerows(rows)
                 shutil.move(temp_path, filename)
             else:
-                with open(filename, "w", encoding=encoding, newline='') as f:
-                    writer = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator='\n')
+                with open(filename, "w", encoding=encoding, newline="") as f:
+                    writer = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\n")
                     if header:
                         writer.writerow(header)
                     writer.writerows(rows)
@@ -95,7 +96,7 @@ class File:
         :param as_dict: if True, return list of dicts; else list of lists
         """
         try:
-            with open(filename, "r", encoding=encoding, newline='') as f:
+            with open(filename, encoding=encoding, newline="") as f:
                 if as_dict:
                     reader = csv.DictReader(f)
                     rows = list(reader)
@@ -141,11 +142,10 @@ class File:
         Read a JSON file into a Python object.
         """
         try:
-            with open(filename, "r", encoding=encoding) as f:
+            with open(filename, encoding=encoding) as f:
                 return json.load(f)
         except Exception as e:
             raise RuntimeError(f"Failed to read JSON file {filename}: {e}") from e
-
 
     @staticmethod
     def exists(path):

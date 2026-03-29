@@ -2,9 +2,12 @@ import csv
 import logging
 import os
 import re
-from datetime import timedelta, datetime
+from datetime import datetime
+
 from bs4 import BeautifulSoup
+
 from include.utils.file import File
+
 
 class HtmlToCsvConverter:
     def __init__(self, html: str):
@@ -40,8 +43,8 @@ class HtmlToCsvConverter:
         :param header: Optional header row as a list of strings.
         """
         try:
-            with open(filename, "w", newline='', encoding="utf-8") as f:
-                writer = csv.writer(f, lineterminator='\n')
+            with open(filename, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f, lineterminator="\n")
                 if header:
                     writer.writerow(header)
                 writer.writerows(self.data)
@@ -51,36 +54,37 @@ class HtmlToCsvConverter:
     @staticmethod
     def convert_schedule(html_file_path, csv_file_path):
         """
-            Converts schedule html to a csv file
+        Converts schedule html to a csv file
         """
-        html_file = open(html_file_path, "r")
+        html_file = open(html_file_path)
         soup = BeautifulSoup(html_file, "html.parser")
-        rows = soup.find_all('div', {'class': 'table-row'})
+        rows = soup.find_all("div", {"class": "table-row"})
         csv_list = list()
         for row in rows:
-            raceweek_number_div = row.find('div', {'class': 'race-number'})
+            raceweek_number_div = row.find("div", {"class": "race-number"})
             raceweek_number = raceweek_number_div.get_text()
             raceweek_url = ""
-            if raceweek_number_div.find('a'):
-                raceweek_url = raceweek_number_div.find('a').get('href')
+            if raceweek_number_div.find("a"):
+                raceweek_url = raceweek_number_div.find("a").get("href")
             raceweek_title = ""
-            if raceweek_number_div.find('a'):
-                raceweek_title = raceweek_number_div.find('a').get('title')
+            if raceweek_number_div.find("a"):
+                raceweek_title = raceweek_number_div.find("a").get("title")
             else:
-                raceweek_title = row.find(
-                    'div', {'class': 'upcoming'}).get_text().strip()
+                raceweek_title = row.find("div", {"class": "upcoming"}).get_text().strip()
                 raceweek_title = re.findall('"([^"]*)"', raceweek_title)
                 raceweek_title = raceweek_title[0] if len(raceweek_title) else ""
-            raceweek_date = row.find('div', {'class': 'date'}).get_text()
-            raceweek_track = row.find('div', {'class': 'track'}).find('a').get_text()
-            raceweek_track_url = row.find('div', {'class': 'track'}).find('a')["href"]
+            raceweek_date = row.find("div", {"class": "date"}).get_text()
+            raceweek_track = row.find("div", {"class": "track"}).find("a").get_text()
+            raceweek_track_url = row.find("div", {"class": "track"}).find("a")["href"]
             csv_row = {
                 "week_number": raceweek_number.strip(),
                 "week_url": raceweek_url.strip(),
-                "week_date": datetime.strptime(raceweek_date.strip(), '%m/%d/%y').strftime('%Y-%m-%d'), 
+                "week_date": datetime.strptime(raceweek_date.strip(), "%m/%d/%y").strftime(
+                    "%Y-%m-%d"
+                ),
                 "week_track": raceweek_track.strip(),
                 "week_track_url": raceweek_track_url.strip(),
-                "week_race_name": raceweek_title.strip(), 
+                "week_race_name": raceweek_title.strip(),
             }
             csv_list.append(csv_row.values())
         File.silent_remove(csv_file_path)
@@ -89,44 +93,74 @@ class HtmlToCsvConverter:
     @staticmethod
     def convert_race_results(html_file_path, csv_file_path):
         """
-            Converts race results html to a csv file
+        Converts race results html to a csv file
         """
-        html_file = open(html_file_path, "r")
-        soup = BeautifulSoup(html_file, 'html.parser')
-        results_table = soup.find('table', {'class': 'race-results-tbl'})
-        rows = results_table.find_all('tr')[1:]
+        html_file = open(html_file_path)
+        soup = BeautifulSoup(html_file, "html.parser")
+        results_table = soup.find("table", {"class": "race-results-tbl"})
+        rows = results_table.find_all("tr")[1:]
         csv_list = list()
-        headers = ['position', 'starting_position', 'number', 'name', 'sponsor', 'owner', 'car', 'laps', 'status', 'laps_led', 'points', 'playoff_points']
+        headers = [
+            "position",
+            "starting_position",
+            "number",
+            "name",
+            "sponsor",
+            "owner",
+            "car",
+            "laps",
+            "status",
+            "laps_led",
+            "points",
+            "playoff_points",
+        ]
         for row in rows:
-            cols = row.find_all('td', {'class': 'col'})
+            cols = row.find_all("td", {"class": "col"})
             position = cols[0].get_text().strip()
             starting_position = cols[1].get_text().strip()
             number = cols[2].get_text().strip()
             name = cols[3].get_text().strip()
             sponsor_owner = cols[4]
-            sponsor = sponsor_owner.find('b').get_text().strip() if sponsor_owner.find('b') else ''
-            owner = sponsor_owner.find('a').get_text().strip() if sponsor_owner.find('a') else ''
+            sponsor = sponsor_owner.find("b").get_text().strip() if sponsor_owner.find("b") else ""
+            owner = sponsor_owner.find("a").get_text().strip() if sponsor_owner.find("a") else ""
             car = cols[5].get_text().strip()
             laps = cols[6].get_text().strip()
             status = cols[7].get_text().strip()
             laps_led = cols[8].get_text().strip()
             points = cols[9].get_text().strip()
             playoff_points = cols[10].get_text().strip()
-            csv_list.append({"position": position, "starting_position": starting_position, "number": number, "name": name, "sponsor": sponsor, "owner": owner, "car": car, "laps": laps, "status": status, "laps_led": laps_led, "points": points, "playoff_points": playoff_points}.values())
+            csv_list.append(
+                {
+                    "position": position,
+                    "starting_position": starting_position,
+                    "number": number,
+                    "name": name,
+                    "sponsor": sponsor,
+                    "owner": owner,
+                    "car": car,
+                    "laps": laps,
+                    "status": status,
+                    "laps_led": laps_led,
+                    "points": points,
+                    "playoff_points": playoff_points,
+                }.values()
+            )
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
 
     @staticmethod
     def convert_prerace_penalties(html_file_path, csv_file_path):
-        html_file = open(html_file_path, "r")
-        soup = BeautifulSoup(html_file, 'html.parser')
-        other_results_tables = soup.find('td', {'class': 'otherResultsTbl'}).find_all('table', {'class': 'tb'})
+        html_file = open(html_file_path)
+        soup = BeautifulSoup(html_file, "html.parser")
+        other_results_tables = soup.find("td", {"class": "otherResultsTbl"}).find_all(
+            "table", {"class": "tb"}
+        )
         tableIndex = None
         index = 0
         csv_list = list()
         headers = ["name", "number", "reason"]
         for table in other_results_tables:
-            table_heading = table.find('td', {'class':'newhead'}).get_text().strip()
+            table_heading = table.find("td", {"class": "newhead"}).get_text().strip()
             if table_heading == "To the back:":
                 tableIndex = index
                 break
@@ -134,11 +168,11 @@ class HtmlToCsvConverter:
         if tableIndex is not None:
             print("Prerace penalties was found")
             table = other_results_tables[tableIndex]
-            rows = table.find_all('tr')[2:]
+            rows = table.find_all("tr")[2:]
             for row in rows:
-                name = row.find_all('td', {'class': 'col'})[0].get_text().strip()
-                number = row.find_all('td', {'class': 'col'})[1].get_text().strip()
-                reason = row.find_all('td', {'class': 'col'})[2].get_text().strip()
+                name = row.find_all("td", {"class": "col"})[0].get_text().strip()
+                number = row.find_all("td", {"class": "col"})[1].get_text().strip()
+                reason = row.find_all("td", {"class": "col"})[2].get_text().strip()
                 csv_list.append({"name": name, "number": number, "reason": reason}.values())
         else:
             print("No prerace penalties were found")
@@ -147,15 +181,17 @@ class HtmlToCsvConverter:
 
     @staticmethod
     def convert_caution_flags(html_file_path, csv_file_path):
-        html_file = open(html_file_path, "r")
-        soup = BeautifulSoup(html_file, 'html.parser')
-        other_results_tables = soup.find('td', {'class': 'otherResultsTbl'}).find_all('table', {'class': 'tb'})
+        html_file = open(html_file_path)
+        soup = BeautifulSoup(html_file, "html.parser")
+        other_results_tables = soup.find("td", {"class": "otherResultsTbl"}).find_all(
+            "table", {"class": "tb"}
+        )
         tableIndex = None
         index = 0
         csv_list = list()
-        headers = ['condition', 'from_lap', 'to_lap', 'number_of_laps', 'reason', 'free_pass_cars']
+        headers = ["condition", "from_lap", "to_lap", "number_of_laps", "reason", "free_pass_cars"]
         for table in other_results_tables:
-            table_heading = table.find('td', {'class':'newhead'}).get_text().strip()
+            table_heading = table.find("td", {"class": "newhead"}).get_text().strip()
             if table_heading == "Caution flag breakdown:":
                 tableIndex = index
                 break
@@ -163,33 +199,46 @@ class HtmlToCsvConverter:
         if tableIndex is not None:
             print("Caution flag breakdown was found")
             table = other_results_tables[tableIndex]
-            rows = table.find_all('tr')[2:]
+            rows = table.find_all("tr")[2:]
             for row in rows:
-                cols = row.find_all('td', {'class': 'col'})
+                cols = row.find_all("td", {"class": "col"})
                 if cols:
-                    condition = os.path.splitext(os.path.basename(cols[0].find('img').get("src")))[0].replace("_flag", "")
+                    condition = os.path.splitext(os.path.basename(cols[0].find("img").get("src")))[
+                        0
+                    ].replace("_flag", "")
                     from_lap = cols[1].get_text().strip()
                     to_lap = cols[2].get_text().strip()
                     number_of_laps = cols[3].get_text().strip()
                     reason = cols[4].get_text().strip()
                     free_pass_cars = cols[5].get_text().strip().replace("#", "")
-                    csv_list.append({'condition': condition, 'from_lap': from_lap, 'to_lap': to_lap, 'number_of_laps': number_of_laps, 'reason': reason, 'free_pass_cars':free_pass_cars}.values())
+                    csv_list.append(
+                        {
+                            "condition": condition,
+                            "from_lap": from_lap,
+                            "to_lap": to_lap,
+                            "number_of_laps": number_of_laps,
+                            "reason": reason,
+                            "free_pass_cars": free_pass_cars,
+                        }.values()
+                    )
         else:
             print("No caution flag breakdown was found")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
-    
+
     @staticmethod
     def convert_lap_leaders(html_file_path, csv_file_path):
-        html_file = open(html_file_path, "r")
-        soup = BeautifulSoup(html_file, 'html.parser')
-        other_results_tables = soup.find('td', {'class': 'otherResultsTbl'}).find_all('table', {'class': 'tb'})
+        html_file = open(html_file_path)
+        soup = BeautifulSoup(html_file, "html.parser")
+        other_results_tables = soup.find("td", {"class": "otherResultsTbl"}).find_all(
+            "table", {"class": "tb"}
+        )
         tableIndex = None
         index = 0
         csv_list = list()
-        headers = ['name', 'from_lap', 'to_lap', 'number_of_laps']
+        headers = ["name", "from_lap", "to_lap", "number_of_laps"]
         for table in other_results_tables:
-            table_heading = table.find('td', {'class':'newhead'}).get_text().strip()
+            table_heading = table.find("td", {"class": "newhead"}).get_text().strip()
             if table_heading == "Lap leader breakdown:":
                 tableIndex = index
                 break
@@ -197,15 +246,22 @@ class HtmlToCsvConverter:
         if tableIndex is not None:
             print("Lap leader breakdown was found")
             table = other_results_tables[tableIndex]
-            rows = table.find_all('tr')[2:]
+            rows = table.find_all("tr")[2:]
             for row in rows:
-                cols = row.find_all('td', {'class': 'col'})
+                cols = row.find_all("td", {"class": "col"})
                 if cols:
                     name = cols[0].get_text().strip()
                     from_lap = cols[1].get_text().strip()
                     to_lap = cols[2].get_text().strip()
                     number_of_laps = cols[3].get_text().strip()
-                    csv_list.append({'name': name, 'from_lap': from_lap, 'to_lap': to_lap, 'number_of_laps': number_of_laps}.values())
+                    csv_list.append(
+                        {
+                            "name": name,
+                            "from_lap": from_lap,
+                            "to_lap": to_lap,
+                            "number_of_laps": number_of_laps,
+                        }.values()
+                    )
         else:
             print("No lap leader breakdown was found")
         File.silent_remove(csv_file_path)
@@ -213,15 +269,15 @@ class HtmlToCsvConverter:
 
     @staticmethod
     def convert_entrylist(html_file_path, csv_file_path):
-        html_file = open(html_file_path, "r")
-        soup = BeautifulSoup(html_file, 'html.parser')
-        tables = soup.find('table', {'class': 'eLTbl'}).find_all('table', {'class': 'tb'})
+        html_file = open(html_file_path)
+        soup = BeautifulSoup(html_file, "html.parser")
+        tables = soup.find("table", {"class": "eLTbl"}).find_all("table", {"class": "tb"})
         tableIndex = None
         index = 0
         csv_list = list()
-        headers = ['number', 'driver_name', 'owner', 'manufacturer', 'crew_chief', 'sponsor']
+        headers = ["number", "driver_name", "owner", "manufacturer", "crew_chief", "sponsor"]
         for table in tables:
-            table_heading = table.find('td', {'class':'newhead'}).get_text().strip()
+            table_heading = table.find("td", {"class": "newhead"}).get_text().strip()
             if table_heading == "Entry list for this race:":
                 tableIndex = index
                 break
@@ -229,17 +285,30 @@ class HtmlToCsvConverter:
         if tableIndex is not None:
             print("Entry list was found")
             table = tables[tableIndex]
-            rows = table.find_all('tr', class_=["odd", "even"])
+            rows = table.find_all("tr", class_=["odd", "even"])
             for row in rows:
-                cols = row.find_all('td', {'class': 'col'})
+                cols = row.find_all("td", {"class": "col"})
                 if cols:
                     number = cols[1].get_text().strip()
-                    driver_name = cols[2].find('a').get_text().strip() if cols[2].find('a') is not None else ''
+                    driver_name = (
+                        cols[2].find("a").get_text().strip()
+                        if cols[2].find("a") is not None
+                        else ""
+                    )
                     owner = cols[3].get_text().strip()
                     manufacturer = cols[4].get_text().strip()
                     crew_chief = cols[5].get_text().strip()
                     sponsor = cols[6].get_text().strip()
-                    csv_list.append({'number': number, 'driver_name': driver_name, 'owner': owner, 'manufacturer': manufacturer, 'crew_chief': crew_chief, 'sponsor': sponsor}.values())
+                    csv_list.append(
+                        {
+                            "number": number,
+                            "driver_name": driver_name,
+                            "owner": owner,
+                            "manufacturer": manufacturer,
+                            "crew_chief": crew_chief,
+                            "sponsor": sponsor,
+                        }.values()
+                    )
         else:
             print("No Entry list was found")
         File.silent_remove(csv_file_path)
@@ -249,15 +318,24 @@ class HtmlToCsvConverter:
     def convert_practices(paths):
         for path in paths:
             logging.info(path)
-            html_file = open(path, "r")
-            soup = BeautifulSoup(html_file, 'html.parser')
-            tables = soup.find_all('table', {'class': 'pracResultsTbl'})
+            html_file = open(path)
+            soup = BeautifulSoup(html_file, "html.parser")
+            tables = soup.find_all("table", {"class": "pracResultsTbl"})
             tableIndex = None
             index = 0
             csv_list = list()
-            headers = ["rank", "driver_name", "number", "manufacturer", "time", "speed", "num_laps", "best_lap"]
+            headers = [
+                "rank",
+                "driver_name",
+                "number",
+                "manufacturer",
+                "time",
+                "speed",
+                "num_laps",
+                "best_lap",
+            ]
             for table in tables:
-                table_heading = table.find('td', {'class':'newhead'}).get_text().strip().lower()
+                table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
                 logging.info(f"table_heading: {table_heading}")
                 if "practice" in table_heading and "results" in table_heading:
                     tableIndex = index
@@ -266,12 +344,16 @@ class HtmlToCsvConverter:
             if tableIndex is not None:
                 print("Practice was found")
                 table = tables[tableIndex]
-                rows = table.find_all('tr', class_=["odd", "even"])
+                rows = table.find_all("tr", class_=["odd", "even"])
                 for row in rows:
-                    cols = row.find_all('td', {'class': 'col'})
+                    cols = row.find_all("td", {"class": "col"})
                     if cols:
                         rank = cols[0].get_text().strip()
-                        driver_name = cols[1].find('a').get_text().strip() if cols[1].find('a') is not None else ''
+                        driver_name = (
+                            cols[1].find("a").get_text().strip()
+                            if cols[1].find("a") is not None
+                            else ""
+                        )
                         number = cols[2].get_text().strip()
                         manufacturer = cols[3].get_text().strip()
                         time = HtmlToCsvConverter.convert_to_seconds(cols[4].get_text().strip())
@@ -279,7 +361,19 @@ class HtmlToCsvConverter:
                         speed = cols[6].get_text().strip()
                         num_laps = cols[7].get_text().strip()
                         best_lap = cols[8].get_text().strip()
-                        csv_list.append({"rank": rank, "driver_name": driver_name, "number": number, "manufacturer": manufacturer, "time": time, "diff": diff, "speed": speed, "num_laps": num_laps, "best_lap": best_lap}.values())
+                        csv_list.append(
+                            {
+                                "rank": rank,
+                                "driver_name": driver_name,
+                                "number": number,
+                                "manufacturer": manufacturer,
+                                "time": time,
+                                "diff": diff,
+                                "speed": speed,
+                                "num_laps": num_laps,
+                                "best_lap": best_lap,
+                            }.values()
+                        )
             else:
                 print("No practice was found")
             csv_file_path = path.replace(".html", ".csv")
@@ -291,15 +385,15 @@ class HtmlToCsvConverter:
         if path is None:
             print("No qualifying data exists")
             return
-        html_file = open(path, "r")
-        soup = BeautifulSoup(html_file, 'html.parser')
-        tables = soup.find_all('table', {'class': 'qualResultTbl'})
+        html_file = open(path)
+        soup = BeautifulSoup(html_file, "html.parser")
+        tables = soup.find_all("table", {"class": "qualResultTbl"})
         tableIndex = None
         index = 0
         csv_list = list()
         headers = ["rank", "driver_name", "number", "manufacturer", "time", "speed"]
         for table in tables:
-            table_heading = table.find('td', {'class':'newhead'}).get_text().strip().lower()
+            table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
             logging.info(f"table_heading: {table_heading}")
             if "qualifying" in table_heading and "results" in table_heading:
                 tableIndex = index
@@ -308,17 +402,30 @@ class HtmlToCsvConverter:
         if tableIndex is not None:
             print("Qualifying was found")
             table = tables[tableIndex]
-            rows = table.find_all('tr', class_=["odd", "even"])
+            rows = table.find_all("tr", class_=["odd", "even"])
             for row in rows:
-                cols = row.find_all('td', {'class': 'col'})
+                cols = row.find_all("td", {"class": "col"})
                 if cols:
                     rank = cols[0].get_text().strip()
-                    driver_name = cols[1].find('a').get_text().strip() if cols[1].find('a') is not None else ''
+                    driver_name = (
+                        cols[1].find("a").get_text().strip()
+                        if cols[1].find("a") is not None
+                        else ""
+                    )
                     number = cols[2].get_text().strip()
                     manufacturer = cols[3].get_text().strip()
                     time = HtmlToCsvConverter.convert_to_seconds(cols[4].get_text().strip())
                     speed = cols[5].get_text().strip()
-                    csv_list.append({"rank": rank, "driver_name": driver_name, "number": number, "manufacturer": manufacturer, "time": time, "speed": speed}.values())
+                    csv_list.append(
+                        {
+                            "rank": rank,
+                            "driver_name": driver_name,
+                            "number": number,
+                            "manufacturer": manufacturer,
+                            "time": time,
+                            "speed": speed,
+                        }.values()
+                    )
         else:
             print("No qualifying was found")
         csv_file_path = path.replace(".html", ".csv")
@@ -330,15 +437,35 @@ class HtmlToCsvConverter:
         if path is None:
             print("No loop data exists")
             return
-        html_file = open(path, "r")
-        soup = BeautifulSoup(html_file, 'html.parser')
-        tables = soup.find_all('table', {'class': 'loopData'})
+        html_file = open(path)
+        soup = BeautifulSoup(html_file, "html.parser")
+        tables = soup.find_all("table", {"class": "loopData"})
         tableIndex = None
         index = 0
         csv_list = list()
-        headers = ["driver_name", "start", "mid_race", "finish", "high_pos", "low_pos", "avg_pos", "pass_diff", "green_flag_passes", "green_flag_times_passed", "quality_passes", "pct_quality_passes", "fastest_lap", "top_15_laps", "pct_top_15_laps", "laps_led", "pct_laps_led", "total_laps", "driver_rating"]
+        headers = [
+            "driver_name",
+            "start",
+            "mid_race",
+            "finish",
+            "high_pos",
+            "low_pos",
+            "avg_pos",
+            "pass_diff",
+            "green_flag_passes",
+            "green_flag_times_passed",
+            "quality_passes",
+            "pct_quality_passes",
+            "fastest_lap",
+            "top_15_laps",
+            "pct_top_15_laps",
+            "laps_led",
+            "pct_laps_led",
+            "total_laps",
+            "driver_rating",
+        ]
         for table in tables:
-            table_heading = table.find('td', {'class':'newhead'}).get_text().strip().lower()
+            table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
             logging.info(f"table_heading: {table_heading}")
             if "loop" in table_heading and "data" in table_heading:
                 tableIndex = index
@@ -347,11 +474,15 @@ class HtmlToCsvConverter:
         if tableIndex is not None:
             print("Loop data was found")
             table = tables[tableIndex]
-            rows = table.find_all('tr', class_=["odd", "even"])
+            rows = table.find_all("tr", class_=["odd", "even"])
             for row in rows:
-                cols = row.find_all('td', {'class': 'col'})
+                cols = row.find_all("td", {"class": "col"})
                 if cols:
-                    driver_name = cols[0].find('a').get_text().strip() if cols[0].find('a') is not None else ''
+                    driver_name = (
+                        cols[0].find("a").get_text().strip()
+                        if cols[0].find("a") is not None
+                        else ""
+                    )
                     start = cols[1].get_text().strip()
                     mid_race = cols[2].get_text().strip()
                     finish = cols[3].get_text().strip()
@@ -370,7 +501,29 @@ class HtmlToCsvConverter:
                     pct_laps_led = cols[16].get_text().strip()
                     total_laps = cols[17].get_text().strip()
                     driver_rating = cols[18].get_text().strip()
-                    csv_list.append({"driver_name": driver_name, "start": start, "mid_race": mid_race, "finish": finish, "high_pos": high_pos, "low_pos": low_pos, "avg_pos": avg_pos, "pass_diff": pass_diff, "green_flag_passes": green_flag_passes, "green_flag_times_passed": green_flag_times_passed, "quality_passes": quality_passes, "pct_quality_passes": pct_quality_passes, "fastest_lap": fastest_lap, "top_15_laps": top_15_laps, "pct_top_15_laps": pct_top_15_laps, "laps_led": laps_led, "pct_laps_led": pct_laps_led, "total_laps": total_laps, "driver_rating": driver_rating}.values())
+                    csv_list.append(
+                        {
+                            "driver_name": driver_name,
+                            "start": start,
+                            "mid_race": mid_race,
+                            "finish": finish,
+                            "high_pos": high_pos,
+                            "low_pos": low_pos,
+                            "avg_pos": avg_pos,
+                            "pass_diff": pass_diff,
+                            "green_flag_passes": green_flag_passes,
+                            "green_flag_times_passed": green_flag_times_passed,
+                            "quality_passes": quality_passes,
+                            "pct_quality_passes": pct_quality_passes,
+                            "fastest_lap": fastest_lap,
+                            "top_15_laps": top_15_laps,
+                            "pct_top_15_laps": pct_top_15_laps,
+                            "laps_led": laps_led,
+                            "pct_laps_led": pct_laps_led,
+                            "total_laps": total_laps,
+                            "driver_rating": driver_rating,
+                        }.values()
+                    )
         else:
             print("No loop data was found")
         csv_file_path = path.replace(".html", ".csv")
@@ -382,15 +535,15 @@ class HtmlToCsvConverter:
         if path is None:
             print("No penalty data exists")
             return
-        html_file = open(path, "r")
-        soup = BeautifulSoup(html_file, 'html.parser')
-        tables = soup.find_all('table', {'class': 'penaltTbl'})
+        html_file = open(path)
+        soup = BeautifulSoup(html_file, "html.parser")
+        tables = soup.find_all("table", {"class": "penaltTbl"})
         tableIndex = None
         index = 0
         csv_list = list()
         headers = ["number", "driver_name", "lap", "flag", "infraction", "penalty"]
         for table in tables:
-            table_heading = table.find('td', {'class':'newhead'}).get_text().strip().lower()
+            table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
             logging.info(f"table_heading: {table_heading}")
             if "penalty" in table_heading:
                 tableIndex = index
@@ -399,17 +552,32 @@ class HtmlToCsvConverter:
         if tableIndex is not None:
             print("Penalty data was found")
             table = tables[tableIndex]
-            rows = table.find_all('tr', class_=["odd", "even"])[1:]
+            rows = table.find_all("tr", class_=["odd", "even"])[1:]
             for row in rows:
-                cols = row.find_all('td', {'class': 'col'})
+                cols = row.find_all("td", {"class": "col"})
                 if cols:
                     number = cols[0].get_text().strip()
-                    driver_name = cols[1].find('a').get_text().strip() if cols[1].find('a') is not None else ''
+                    driver_name = (
+                        cols[1].find("a").get_text().strip()
+                        if cols[1].find("a") is not None
+                        else ""
+                    )
                     lap = cols[2].get_text().strip()
-                    flag = os.path.splitext(os.path.basename(cols[3].find('img').get("src")))[0].replace("_flag", "")
+                    flag = os.path.splitext(os.path.basename(cols[3].find("img").get("src")))[
+                        0
+                    ].replace("_flag", "")
                     infraction = cols[4].get_text().strip()
                     penalty = cols[5].get_text().strip()
-                    csv_list.append({"number": number, "driver_name": driver_name, "lap": lap, "flag": flag, "infraction": infraction, "penalty": penalty}.values())
+                    csv_list.append(
+                        {
+                            "number": number,
+                            "driver_name": driver_name,
+                            "lap": lap,
+                            "flag": flag,
+                            "infraction": infraction,
+                            "penalty": penalty,
+                        }.values()
+                    )
         else:
             print("No penalty data was found")
         csv_file_path = path.replace(".html", ".csv")
@@ -420,7 +588,7 @@ class HtmlToCsvConverter:
     def convert_to_seconds(time_str):
         if not time_str:
             return 0.0
-        
+
         if ":" in time_str:
             minutes, seconds = time_str.split(":")
             return int(minutes) * 60 + float(seconds)

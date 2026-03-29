@@ -124,7 +124,9 @@ def test_iter_practice_session_urls_empty_without_select(source: RacingReference
     assert source.iter_practice_session_urls(soup) == []
 
 
-def test_racing_reference_converters_delegates_to_html_to_csv(tmp_path, source: RacingReferenceSource) -> None:
+def test_racing_reference_converters_delegates_to_html_to_csv(
+    tmp_path, source: RacingReferenceSource
+) -> None:
     """Smoke test: adapter calls through to HtmlToCsvConverter.convert_schedule."""
     html = tmp_path / "sched.html"
     csv_out = tmp_path / "sched.csv"

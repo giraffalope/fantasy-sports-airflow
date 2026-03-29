@@ -1,6 +1,6 @@
-# Lightweight image for unit tests (no Airflow / Playwright — only code under include/ + pytest).
+# Lightweight test image (no Airflow / Playwright — include/ + pytest).
 # Build: docker build -f Dockerfile.unit-tests -t fantasy-sports-airflow-unit-tests .
-# Run:   ./scripts/test   OR   docker run --rm fantasy-sports-airflow-unit-tests
+# Run:   ./script/test [--unit] [--integration]   OR   docker run --rm … python -m pytest tests/unit tests/integration
 
 FROM python:3.12-slim-bookworm
 
@@ -17,4 +17,4 @@ COPY include ./include
 COPY tests ./tests
 COPY pyproject.toml ./pyproject.toml
 
-CMD ["python", "-m", "pytest", "tests", "-v", "--tb=short"]
+CMD ["python", "-m", "pytest", "tests/unit", "tests/integration", "-v", "--tb=short"]

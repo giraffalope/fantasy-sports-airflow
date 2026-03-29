@@ -4,3 +4,6 @@ venv
 logs
 .vscode
 .idea
+
+# Scraped HTML / generated CSV (Docker bind mount; see docker-compose.yaml)
+scraper-data/

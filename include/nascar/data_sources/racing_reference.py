@@ -6,7 +6,8 @@ from bs4 import BeautifulSoup
 
 from include.nascar.html_to_csv_converter import HtmlToCsvConverter
 
-# Default matches existing DAG layout: /home/airflow/scraper/nascar/<host>/...
+# Default layout: /home/airflow/scraper/nascar/<host>/… — mount host scraper-data at /home/airflow/scraper
+# so the nascar directory appears on the host under scraper-data/nascar/.
 DEFAULT_NASCAR_SCRAPER_ROOT = "/home/airflow/scraper/nascar"
 
 
@@ -112,7 +113,9 @@ class RacingReferenceSource:
     def extract_penalties_url(self, soup: BeautifulSoup) -> str | None:
         return self._find_first_href_containing(soup, "penalties")
 
-    def iter_practice_session_urls(self, practice_index_soup: BeautifulSoup) -> list[tuple[int, str]]:
+    def iter_practice_session_urls(
+        self, practice_index_soup: BeautifulSoup
+    ) -> list[tuple[int, str]]:
         select = practice_index_soup.find("select", attrs={"name": "qnum"})
         if select is None:
             return []

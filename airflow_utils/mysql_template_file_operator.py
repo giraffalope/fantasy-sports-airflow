@@ -1,12 +1,11 @@
-import os
-
-from airflow.sdk import BaseOperator
 from airflow.providers.mysql.hooks.mysql import MySqlHook
+from airflow.sdk import BaseOperator
+
 
 class MySQLTemplateFileOperator(BaseOperator):
     """
     Executes SQL statements from a Jinja-templated file using MySQL.
-    
+
     :param sql_file_path: Path to your .sql file
     :param mysql_conn_id: Airflow connection ID
     :param parameters: Dict of Jinja parameters
@@ -32,7 +31,7 @@ class MySQLTemplateFileOperator(BaseOperator):
 
     def execute(self, context):
         # Read SQL template file
-        with open(self.sql_file_path, "r") as f:
+        with open(self.sql_file_path) as f:
             sql_template = f.read()
 
         # Render with Airflow context + user params

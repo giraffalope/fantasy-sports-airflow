@@ -1,7 +1,9 @@
-import os
 import logging
+import os
+
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 from jinja2 import Template
+
 
 class MySqlTemplateFileExecutor(MySqlHook):
     def run_templated_sql_file(self, file_path, context=None):
@@ -12,14 +14,14 @@ class MySqlTemplateFileExecutor(MySqlHook):
             raise FileNotFoundError(f"SQL file not found: {file_path}")
 
         logging.info(f"Attempting to read {file_path}")
-        with open(file_path, 'r') as f:
+        with open(file_path) as f:
             raw_template = f.read()
 
         # Render Jinja template
         rendered_sql = Template(raw_template).render(context or {})
 
         # Split on triple dash separator
-        statements = [stmt.strip() for stmt in rendered_sql.split('---') if stmt.strip()]
+        statements = [stmt.strip() for stmt in rendered_sql.split("---") if stmt.strip()]
 
         # Execute each statement
         for statement in statements:

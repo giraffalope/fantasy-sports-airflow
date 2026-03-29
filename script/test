@@ -1,15 +1,70 @@
 #!/usr/bin/env bash
-# Build the unit-test image and run pytest inside Docker.
+# Build the test image and run pytest inside Docker.
+#   ./script/test              — unit + integration (default)
+#   ./script/test --unit       — tests/unit only
+#   ./script/test --integration — tests/integration only
+#   ./script/test --unit --integration — same as default
+# Options must come first; remaining args are passed to pytest (e.g. --unit -k schedule).
 set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Build the test image and run pytest inside Docker.
+
+  ./script/test                  Run unit and integration tests (default)
+  ./script/test --unit           Run tests/unit only
+  ./script/test --integration    Run tests/integration only
+  ./script/test --unit --integration   Same as default (both)
+
+Place --unit / --integration before any pytest options, e.g.:
+  ./script/test --unit -k schedule
+
+Environment:
+  UNIT_TESTS_IMAGE   Docker image tag (default: fantasy-sports-airflow-unit-tests:latest)
+EOF
+}
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 IMAGE_NAME="${UNIT_TESTS_IMAGE:-fantasy-sports-airflow-unit-tests:latest}"
 
-docker build -f Dockerfile.unit-tests -t "$IMAGE_NAME" "$ROOT"
-if [[ $# -eq 0 ]]; then
-  exec docker run --rm "$IMAGE_NAME"
-else
-  exec docker run --rm "$IMAGE_NAME" python -m pytest tests "$@"
+run_unit=false
+run_integration=false
+
+while (($#)); do
+  case "$1" in
+    --unit)
+      run_unit=true
+      shift
+      ;;
+    --integration)
+      run_integration=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if ! $run_unit && ! $run_integration; then
+  run_unit=true
+  run_integration=true
 fi
+
+paths=()
+$run_unit && paths+=(tests/unit)
+$run_integration && paths+=(tests/integration)
+
+if [[ ${#paths[@]} -eq 0 ]]; then
+  echo "No test paths selected." >&2
+  exit 1
+fi
+
+docker build -f Dockerfile.unit-tests -t "$IMAGE_NAME" "$ROOT"
+exec docker run --rm "$IMAGE_NAME" python -m pytest "${paths[@]}" "$@"

@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+# Apply Ruff formatter to project Python trees (same paths as script/lint).
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(dirname "$0")/.."
+cd "${BASEDIR}"
+
+case "${1:-}" in
+  --help | -h)
+    printf '%s\n' \
+      "Usage: ./script/format [ruff-format-args]" \
+      "" \
+      "Runs \`ruff format\` on dags/, include/, airflow_utils/, tests/." \
+      "Requires uv (see script/setup). Does not run \`ruff check\`; use ./script/lint for that." \
+      "Examples:" \
+      "  ./script/format" \
+      "  ./script/format --diff"
+    exit 0
+    ;;
+esac
+
+uv_bin="$(command -v uv)"
+if [ -z "$uv_bin" ]; then
+  echo "uv not found; install from https://docs.astral.sh/uv/ or run script/setup" >&2
+  exit 1
+fi
+
+paths="dags include airflow_utils tests"
+
+exec "$uv_bin" run ruff format $paths "$@"

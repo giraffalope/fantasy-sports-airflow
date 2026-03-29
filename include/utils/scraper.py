@@ -1,11 +1,11 @@
 import os
-import random
 import time
-from .utils import Utils
+
 from .file import File
+from .utils import Utils
+
 
 class Scraper(Utils):
-
     def __init__(self, output_folder: str):
         super().__init__()
         self.output_folder = output_folder
@@ -20,7 +20,6 @@ class Scraper(Utils):
 
         attempt = 0
         last_exception = None
-
 
         while attempt < max_attempts:
             try:
@@ -48,4 +47,3 @@ class Scraper(Utils):
 
         # If we reach here, all attempts failed
         raise last_exception
-        

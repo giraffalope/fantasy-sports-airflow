@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+# Run Ruff lint + format check on project Python trees.
+# Extra arguments are passed only to `ruff check` (e.g. --fix).
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(dirname "$0")/.."
+cd "${BASEDIR}"
+
+case "${1:-}" in
+  --help | -h)
+    printf '%s\n' \
+      "Usage: ./script/lint [ruff-check-args]" \
+      "" \
+      "Runs \`ruff check\` then \`ruff format --check\` on dags/, include/, airflow_utils/, tests/." \
+      "To apply formatting, run ./script/format. Requires uv (see script/setup). Examples:" \
+      "  ./script/lint" \
+      "  ./script/lint --fix"
+    exit 0
+    ;;
+esac
+
+uv_bin="$(command -v uv)"
+if [ -z "$uv_bin" ]; then
+  echo "uv not found; install from https://docs.astral.sh/uv/ or run script/setup" >&2
+  exit 1
+fi
+
+paths="dags include airflow_utils tests"
+
+"$uv_bin" run ruff check $paths "$@"
+"$uv_bin" run ruff format --check $paths

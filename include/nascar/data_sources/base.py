@@ -81,7 +81,9 @@ class NascarScrapeSource(Protocol):
 
     def extract_penalties_url(self, soup: BeautifulSoup) -> str | None: ...
 
-    def iter_practice_session_urls(self, practice_index_soup: BeautifulSoup) -> list[tuple[int, str]]:
+    def iter_practice_session_urls(
+        self, practice_index_soup: BeautifulSoup
+    ) -> list[tuple[int, str]]:
         """
         From the first practice-results page, return (session_number, absolute_url) pairs.
         Empty list if the page has no session selector.
