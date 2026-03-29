@@ -16,15 +16,16 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-COPY pyproject.toml uv.lock /opt/airflow/
+COPY --chown=airflow:root pyproject.toml uv.lock /opt/airflow/
 WORKDIR /opt/airflow
 
-# Install as root: Airflow image Python lives under /usr/python (not writable by airflow user).
+# This image only adds ~/.local to sys.path (not /usr/python/.../site-packages), so dependencies
+# must be installed under /home/airflow/.local or they are never imported.
+USER airflow
 RUN uv export --frozen --no-dev -o /tmp/requirements-export.txt \
-    && uv pip sync --system --break-system-packages --python /usr/python/bin/python \
-        /tmp/requirements-export.txt \
+    && uv pip install --python "$(which python)" --prefix /home/airflow/.local \
+        -r /tmp/requirements-export.txt \
     && rm -f /tmp/requirements-export.txt \
     && uv cache clean
 
-USER airflow
 RUN playwright install

@@ -20,23 +20,46 @@ FIELDS TERMINATED BY ','
 ENCLOSED BY '"'
 LINES TERMINATED BY '\n'
 IGNORE 1 LINES
-(number, driver_name, owner, manufacturer, crew_chief, sponsor, team_id)
+(number, driver_name, owner, manufacturer, crew_chief, sponsor)
 ;
 
 ---
 
-INSERT IGNORE INTO nascar.teams (rr_name)
-SELECT TRIM(e.owner) AS rr_name
+INSERT INTO nascar.racing_reference_teams (name)
+SELECT DISTINCT TRIM(e.owner) AS name
 FROM nascar.temp_entrylist_{{ week_id }} e
+WHERE TRIM(e.owner) IS NOT NULL AND TRIM(e.owner) != ''
+ON DUPLICATE KEY UPDATE deleted_at = NULL
+;
+
+---
+
+INSERT INTO nascar.teams (name)
+SELECT DISTINCT TRIM(rrt.name) AS name
+FROM nascar.racing_reference_teams rrt
+WHERE rrt.team_id IS NULL AND rrt.deleted_at IS NULL
+ON DUPLICATE KEY UPDATE deleted_at = NULL
+;
+
+---
+
+UPDATE nascar.racing_reference_teams rrt
+JOIN nascar.teams t
+    ON TRIM(t.name) = TRIM(rrt.name)
+    AND t.deleted_at IS NULL
+SET
+    rrt.team_id = t.id
+WHERE
+    rrt.team_id IS NULL
+    AND rrt.deleted_at IS NULL
 ;
 
 ---
 
 UPDATE nascar.temp_entrylist_{{ week_id }} e
 LEFT JOIN nascar.teams t
-    ON t.rr_name = TRIM(e.owner)
+    ON TRIM(t.name) = TRIM(e.owner)
+    AND t.deleted_at IS NULL
 SET
     e.team_id = t.id
-WHERE
-    t.deleted_at IS NULL
 ;

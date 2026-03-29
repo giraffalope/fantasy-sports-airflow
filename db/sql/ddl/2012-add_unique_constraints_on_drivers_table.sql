@@ -1,3 +1,2 @@
 ALTER TABLE `drivers`
-  ADD UNIQUE KEY `unique_drivers_rr_full_name` (`rr_full_name`);
-  
+  ADD UNIQUE KEY `unique_drivers_name_parts` (`first_name`, `last_name`, `suffix`);

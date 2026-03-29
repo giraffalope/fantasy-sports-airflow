@@ -1,6 +1,5 @@
 CREATE TABLE `drivers` (
     `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    `rr_full_name` VARCHAR(255) NOT NULL,
     `first_name` VARCHAR(255),
     `last_name` VARCHAR(255),
     `suffix` VARCHAR(255) NULL,

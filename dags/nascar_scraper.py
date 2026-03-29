@@ -62,10 +62,18 @@ def create_tracks_if_not_exists(series_name, **kwargs):
     for row in rows:
         logging.info(str(row))
         track_name = row.get("week_track")
-        select_sql = f"""
-            SELECT COUNT(*) as total_matches
-            FROM `nascar`.`tracks`
-            WHERE `rr_name` = %s
+        hook.run(
+            """
+            INSERT IGNORE INTO `nascar`.`racing_reference_tracks` (`name`)
+            VALUES (%s)
+            """,
+            parameters=(track_name,),
+        )
+        select_sql = """
+            SELECT COUNT(*) AS total_matches
+            FROM `nascar`.`tracks` t
+            WHERE TRIM(t.`name`) = TRIM(%s)
+                AND t.`deleted_at` IS NULL
             ;
         """
         results = hook.get_records(select_sql, parameters=(track_name,))
@@ -74,16 +82,28 @@ def create_tracks_if_not_exists(series_name, **kwargs):
             total_matches = int(result[0])
             logging.info(f"Number of tracks named \"{track_name}\": {str(total_matches)}")
             if total_matches == 0:
-                insert_sql = f"""
-                    INSERT IGNORE INTO `nascar`.`tracks` (rr_name)
-                    VALUES (
-                        %s
-                    )
+                hook.run(
+                    """
+                    INSERT IGNORE INTO `nascar`.`tracks` (`name`)
+                    VALUES (%s)
                     ;
-                """
-                results = hook.get_records(insert_sql, parameters=(track_name,))
-                # ALERT track needs additional data in table
-                logging.warning(f"Additional data needed in `nascar`.`tracks` for new record \"{track_name}\"")
+                    """,
+                    parameters=(track_name,),
+                )
+                logging.warning(
+                    f"Additional data needed in `nascar`.`tracks` for new record \"{track_name}\""
+                )
+    hook.run(
+        """
+        UPDATE `nascar`.`racing_reference_tracks` rrt
+        INNER JOIN `nascar`.`tracks` t
+            ON TRIM(t.`name`) = TRIM(rrt.`name`)
+            AND t.`deleted_at` IS NULL
+        SET rrt.`track_id` = t.`id`
+        WHERE rrt.`track_id` IS NULL
+            AND rrt.`deleted_at` IS NULL
+        """
+    )
 
 def download_entrylist_html(html_file_path, series_name, year, week_number):
     html_file = open(html_file_path, "r")
@@ -219,12 +239,16 @@ def create_weeks_if_not_exists(series_name, **kwargs):
 
     year = kwargs["data_interval_start"].year
 
-    select_sql = f"""
-            SELECT ss.series_id as series_id, ss.id AS season_id
+    select_sql = """
+            SELECT ss.series_id AS series_id, ss.id AS season_id
             FROM nascar.series sr
-            LEFT JOIN nascar.seasons ss ON sr.id = ss.series_id
-            WHERE sr.name = %s and ss.year = %s
-            ; 
+            INNER JOIN nascar.seasons ss
+                ON sr.id = ss.series_id
+                AND ss.deleted_at IS NULL
+            WHERE sr.name = %s
+                AND sr.deleted_at IS NULL
+                AND ss.year = %s
+            ;
         """
     season_results = hook.get_records(select_sql, parameters=(series_name, year))
     # Each result row is a tuple
@@ -240,10 +264,14 @@ def create_weeks_if_not_exists(series_name, **kwargs):
             week_track = row.get("week_track")
             week_race_name = row.get("week_race_name")
             # Get the track id of the track for the current row's race
-            select_sql = f"""
-                SELECT t.id as track_id
+            select_sql = """
+                SELECT t.id AS track_id
                 FROM nascar.tracks t
-                WHERE t.rr_name = %s
+                INNER JOIN nascar.racing_reference_tracks rrt
+                    ON rrt.track_id = t.id
+                    AND rrt.deleted_at IS NULL
+                WHERE TRIM(rrt.name) = TRIM(%s)
+                    AND t.deleted_at IS NULL
                 LIMIT 1
                 ;
             """
@@ -251,13 +279,22 @@ def create_weeks_if_not_exists(series_name, **kwargs):
             # For each track that match the current row's track name
             track_id = int(track_result[0])
             # Get the week id, track id, if the week's race has been completed and total number of matches for the given season, week number and track id
-            select_sql = f"""
-                SELECT w.id as week_id, w.track_id as track_id, (rr.id IS NOT NULL) as is_completed, COUNT(*) as total_matches
+            select_sql = """
+                SELECT w.id AS week_id, w.track_id AS track_id,
+                    (MAX(rr.id IS NOT NULL)) AS is_completed,
+                    COUNT(*) AS total_matches
                 FROM nascar.weeks w
-                LEFT JOIN nascar.races r ON w.id = r.week_id
-                LEFT JOIN nascar.race_results rr ON r.id = rr.race_id
-                WHERE w.season_id = %s AND w.number = %s AND w.track_id = %s
-                GROUP BY 1,2,3
+                LEFT JOIN nascar.races r
+                    ON w.id = r.week_id
+                    AND r.deleted_at IS NULL
+                LEFT JOIN nascar.race_results rr
+                    ON r.id = rr.race_id
+                    AND rr.deleted_at IS NULL
+                WHERE w.season_id = %s
+                    AND w.number = %s
+                    AND w.track_id = %s
+                    AND w.deleted_at IS NULL
+                GROUP BY w.id, w.track_id
                 LIMIT 1
                 ;
             """
@@ -285,14 +322,15 @@ def create_weeks_if_not_exists(series_name, **kwargs):
                 """
                 hook.run(insert_sql, parameters=(season_id, track_id, week_number, week_race_name, week_date))
                 # Find the newly created week's id
-                sql = f"""
+                sql = """
                     SELECT w.id
                     FROM nascar.weeks w
                     WHERE w.season_id = %s
-                        AND w.track_id = %s 
+                        AND w.track_id = %s
                         AND w.number = %s
                         AND w.race_name = %s
                         AND w.scheduled_start = %s
+                        AND w.deleted_at IS NULL
                     LIMIT 1;
                 """
                 record = hook.get_first(sql, parameters=(season_id, track_id, week_number, week_race_name, week_date))

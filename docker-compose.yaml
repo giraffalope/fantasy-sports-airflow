@@ -80,6 +80,8 @@ x-airflow-common:
     # If you want to use it, outcomment it and replace airflow.cfg with the name of your config file
     # AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
     PYTHONPATH: /opt/airflow
+    # Provider compat layer still imports deprecated permissions; safe to ignore until upstream moves.
+    PYTHONWARNINGS: 'ignore::airflow.exceptions.RemovedInAirflow4Warning'
     AIRFLOW_CONN_MARIADB_CONN: mariadb://username:password@mariadb:3306/nascar
     AIRFLOW_CONN_NASCAR_CONN: mariadb://username:password@mariadb:3306/nascar
   volumes:
