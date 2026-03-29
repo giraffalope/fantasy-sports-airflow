@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import random
+from typing import Any, cast
+
 from bs4 import BeautifulSoup
 
 from include.nascar.html_to_csv_converter import HtmlToCsvConverter
+from include.utils.scraper import Scraper
+
+RACING_REFERENCE_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+]
 
 # Default layout: /home/airflow/scraper/nascar/<host>/… — mount host scraper-data at /home/airflow/scraper
 # so the nascar directory appears on the host under scraper-data/nascar/.
@@ -133,3 +143,51 @@ class RacingReferenceSource:
     @property
     def converters(self) -> RacingReferenceHtmlConverters:
         return self._converters
+
+
+def _resolve_racing_reference_source(source: RacingReferenceSource | None) -> RacingReferenceSource:
+    if source is not None:
+        return source
+    from include.nascar.data_sources import DEFAULT_NASCAR_DATA_SOURCE
+
+    return cast(RacingReferenceSource, DEFAULT_NASCAR_DATA_SOURCE)
+
+
+def download_year_schedule_html(
+    context: dict[str, Any],
+    series_name: str,
+    *,
+    source: RacingReferenceSource | None = None,
+) -> None:
+    """Download season schedule HTML into ``schedule.html`` under the series/year path."""
+    src = _resolve_racing_reference_source(source)
+    year = context["data_interval_start"].year
+    scraper = Scraper(src.storage_path_series_year(series_name, year))
+    scraper.download(
+        url=src.schedule_url(year),
+        filename="schedule.html",
+        user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
+    )
+
+
+def cup_series_download_year_schedule_html(**context: Any) -> None:
+    download_year_schedule_html(context, "Cup")
+
+
+def convert_year_schedule_html_to_csv(
+    context: dict[str, Any],
+    series_name: str,
+    *,
+    source: RacingReferenceSource | None = None,
+) -> None:
+    """Convert ``schedule.html`` to ``schedule.csv`` for the data interval year."""
+    src = _resolve_racing_reference_source(source)
+    year = context["data_interval_start"].year
+    base = src.storage_path_series_year(series_name, year)
+    html_file_path = f"{base}/schedule.html"
+    csv_file_path = f"{base}/schedule.csv"
+    src.converters.convert_schedule(html_file_path, csv_file_path)
+
+
+def cup_series_convert_year_schedule_html_to_csv(**context: Any) -> None:
+    convert_year_schedule_html_to_csv(context, "Cup")

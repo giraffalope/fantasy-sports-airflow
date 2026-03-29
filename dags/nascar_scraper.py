@@ -12,51 +12,18 @@ from bs4 import BeautifulSoup
 
 from airflow_utils import MySqlTemplateFileExecutor, MySQLTemplateFileOperator
 from airflow_utils.wait_operator import WaitOperator
-from include.nascar.data_sources import DEFAULT_NASCAR_DATA_SOURCE
+from include.nascar.data_sources import (
+    DEFAULT_NASCAR_DATA_SOURCE,
+    RACING_REFERENCE_USER_AGENTS,
+    cup_series_convert_year_schedule_html_to_csv,
+    cup_series_download_year_schedule_html,
+)
 from include.nascar.data_sources.base import NascarScrapeSource
 from include.utils.file import File
 from include.utils.scraper import Scraper
 
-USER_AGENTS = [
-    # "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15",
-    # "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
-]
-
 # Swap this object (or build from Airflow Variable) to use another scrape source implementation.
 NASCAR_DATA_SOURCE: NascarScrapeSource = DEFAULT_NASCAR_DATA_SOURCE
-
-
-def download_year_schedule_html(
-    context, series_name, source: NascarScrapeSource = NASCAR_DATA_SOURCE
-):
-    year = context["data_interval_start"].year
-    scraper = Scraper(source.storage_path_series_year(series_name, year))
-    scraper.download(
-        url=source.schedule_url(year),
-        filename="schedule.html",
-        user_agent=random.choice(USER_AGENTS),
-    )
-
-
-def cup_series_download_year_schedule_html(**context):
-    download_year_schedule_html(context=context, series_name="Cup")
-
-
-def convert_year_schedule_html_to_csv(
-    context, series_name, source: NascarScrapeSource = NASCAR_DATA_SOURCE
-):
-    year = context["data_interval_start"].year
-    base = source.storage_path_series_year(series_name, year)
-    html_file_path = f"{base}/schedule.html"
-    csv_file_path = f"{base}/schedule.csv"
-    source.converters.convert_schedule(html_file_path, csv_file_path)
-
-
-def cup_series_convert_year_schedule_html_to_csv(**context):
-    convert_year_schedule_html_to_csv(context=context, series_name="Cup")
 
 
 def create_tracks_if_not_exists(
@@ -125,7 +92,7 @@ def download_entrylist_html(source, html_file_path, series_name, year, week_numb
         return
     scraper = Scraper(source.storage_path_week(series_name, year, week_number))
     time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="entrylist.html", user_agent=random.choice(USER_AGENTS))
+    scraper.download(url=url, filename="entrylist.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
 
 
 def download_practices(source, html_file_path, series_name, year, week_number):
@@ -138,7 +105,7 @@ def download_practices(source, html_file_path, series_name, year, week_number):
     week_path = source.storage_path_week(series_name, year, week_number)
     scraper = Scraper(week_path)
     time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="practice-01.html", user_agent=random.choice(USER_AGENTS))
+    scraper.download(url=url, filename="practice-01.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
     first_practice_html = f"{week_path}/practice-01.html"
     html_file_paths.append(first_practice_html)
     with open(first_practice_html) as html_file:
@@ -150,7 +117,7 @@ def download_practices(source, html_file_path, series_name, year, week_number):
         scraper.download(
             url=session_url,
             filename=f"practice-{number:02d}.html",
-            user_agent=random.choice(USER_AGENTS),
+            user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
         )
         html_file_paths.append(f"{week_path}/practice-{number:02d}.html")
     return html_file_paths
@@ -164,7 +131,7 @@ def download_qualifying(source, html_file_path, series_name, year, week_number):
         return None
     scraper = Scraper(source.storage_path_week(series_name, year, week_number))
     time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="qualifying.html", user_agent=random.choice(USER_AGENTS))
+    scraper.download(url=url, filename="qualifying.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
     return f"{source.storage_path_week(series_name, year, week_number)}/qualifying.html"
 
 
@@ -176,7 +143,7 @@ def download_loop_data(source, html_file_path, series_name, year, week_number):
         return None
     scraper = Scraper(source.storage_path_week(series_name, year, week_number))
     time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="loop-data.html", user_agent=random.choice(USER_AGENTS))
+    scraper.download(url=url, filename="loop-data.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
     return f"{source.storage_path_week(series_name, year, week_number)}/loop-data.html"
 
 
@@ -188,7 +155,7 @@ def download_penalties(source, html_file_path, series_name, year, week_number):
         return None
     scraper = Scraper(source.storage_path_week(series_name, year, week_number))
     time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="penalties.html", user_agent=random.choice(USER_AGENTS))
+    scraper.download(url=url, filename="penalties.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
     return f"{source.storage_path_week(series_name, year, week_number)}/penalties.html"
 
 
@@ -320,7 +287,7 @@ def create_weeks_if_not_exists(
                 scraper.download(
                     url=resolved_week_url,
                     filename="race-results.html",
-                    user_agent=random.choice(USER_AGENTS),
+                    user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
                 )
                 race_results_html = f"{base_path}/race-results.html"
                 conv.convert_race_results(race_results_html, f"{base_path}/race-results.csv")

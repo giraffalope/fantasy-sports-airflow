@@ -7,3 +7,9 @@ logs
 
 # Scraped HTML / generated CSV (Docker bind mount; see docker-compose.yaml)
 scraper-data/
+
+# coverage.py / pytest-cov
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

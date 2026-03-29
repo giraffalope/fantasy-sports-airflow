@@ -27,13 +27,35 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.8.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
-pythonpath = ["."]
-addopts = "-ra --tb=short"
+pythonpath = [".", "dags"]
+addopts = [
+    "-ra",
+    "--tb=short",
+    "--cov=include",
+    "--cov=dags",
+    "--cov=airflow_utils",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=xml",
+    "--cov-fail-under=30",
+]
+
+[tool.coverage.run]
+source = ["include", "dags", "airflow_utils"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+]
+precision = 1
+skip_empty = true
 
 [tool.ruff]
 target-version = "py312"

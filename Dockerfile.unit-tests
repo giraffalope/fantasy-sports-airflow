@@ -1,4 +1,5 @@
-# Lightweight test image (no Airflow / Playwright — include/ + pytest).
+# Test image: include/, dags/, airflow_utils/, pytest, apache-airflow + providers-standard
+# (DAG tests import airflow.sdk; lazy airflow_utils __init__ avoids mysqlclient in this image).
 # Build: docker build -f Dockerfile.unit-tests -t fantasy-sports-airflow-unit-tests .
 # Run:   ./script/test [--unit] [--integration]   OR   docker run --rm … python -m pytest tests/unit tests/integration
 
@@ -10,11 +11,18 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 RUN pip install --no-cache-dir \
     pytest==9.0.2 \
+    pytest-cov==7.1.0 \
+    coverage==7.13.5 \
     beautifulsoup4 \
-    lxml
+    lxml \
+    "apache-airflow==3.1.8" \
+    apache-airflow-providers-standard
 
 COPY include ./include
+COPY airflow_utils ./airflow_utils
+COPY dags ./dags
 COPY tests ./tests
 COPY pyproject.toml ./pyproject.toml
 
-CMD ["python", "-m", "pytest", "tests/unit", "tests/integration", "-v", "--tb=short"]
+# Options (incl. coverage) come from [tool.pytest.ini_options] in pyproject.toml
+CMD ["python", "-m", "pytest"]

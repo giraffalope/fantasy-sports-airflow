@@ -46,18 +46,19 @@ Use **`./script/lint`** afterward to ensure **`ruff check`** and **`format --che
 
 ## Tests
 
-Run pytest on the host (after `uv sync --group dev`):
+Run pytest on the host (after `uv sync --group dev`). Coverage is configured in **`pyproject.toml`**: **`include/`**, **`dags/`**, and **`airflow_utils/`** are measured; the run fails if line coverage is below **30%** (raise **`--cov-fail-under`** in **`[tool.pytest.ini_options]`** as the suite grows). Reports: terminal (with missed lines) and **`coverage.xml`**. Skip coverage with **`pytest --no-cov`**.
 
 ```bash
 uv run --group dev pytest
 ```
 
-Run tests inside a small Docker image (no full Airflow install):
+Run tests inside the unit-test Docker image (same coverage rules via **`pyproject.toml`**):
 
 ```bash
 ./script/test                 # unit + integration
 ./script/test --unit
 ./script/test --integration
+./script/test --no-cov        # faster, no coverage gate
 ```
 
 Compose also defines a `unit-tests` service (profile `tests`) that builds the same test image.

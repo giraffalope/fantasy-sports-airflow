@@ -325,7 +325,7 @@ services:
       context: .
       dockerfile: Dockerfile.unit-tests
     image: ${UNIT_TESTS_IMAGE:-fantasy-sports-airflow-unit-tests:latest}
-    command: ["python", "-m", "pytest", "tests/unit", "tests/integration", "-v", "--tb=short"]
+    command: ["python", "-m", "pytest"]
 
   mariadb:
     build:

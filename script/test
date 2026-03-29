@@ -19,6 +19,9 @@ Build the test image and run pytest inside Docker.
 Place --unit / --integration before any pytest options, e.g.:
   ./script/test --unit -k schedule
 
+Coverage is enabled via pyproject.toml (fails under 30% line coverage). To skip:
+  ./script/test --no-cov
+
 Environment:
   UNIT_TESTS_IMAGE   Docker image tag (default: fantasy-sports-airflow-unit-tests:latest)
 EOF
