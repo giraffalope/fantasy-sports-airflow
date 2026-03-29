@@ -14,14 +14,12 @@ from airflow_utils import MySQLTemplateFileOperator
 from airflow_utils import MySqlTemplateFileExecutor
 
 from include.utils.scraper import Scraper
-from include.nascar.html_to_csv_converter import HtmlToCsvConverter
 from include.utils.file import File
 
 from bs4 import BeautifulSoup
 
-DOMAIN = "www.racing-reference.info"
-BASE_URL = f"https://{DOMAIN}"
-BASE_FOLDER = f"/home/airflow/scraper/nascar/{DOMAIN}"
+from include.nascar.data_sources import DEFAULT_NASCAR_DATA_SOURCE
+from include.nascar.data_sources.base import NascarScrapeSource
 
 USER_AGENTS = [
     # "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -31,11 +29,15 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0"
 ]
 
-def download_year_schedule_html(context, series_name):
+# Swap this object (or build from Airflow Variable) to use another scrape source implementation.
+NASCAR_DATA_SOURCE: NascarScrapeSource = DEFAULT_NASCAR_DATA_SOURCE
+
+
+def download_year_schedule_html(context, series_name, source: NascarScrapeSource = NASCAR_DATA_SOURCE):
     year = context["data_interval_start"].year
-    scraper = Scraper(f"{BASE_FOLDER}/{series_name.lower()}/{year}")
+    scraper = Scraper(source.storage_path_series_year(series_name, year))
     scraper.download(
-        url=f"{BASE_URL}/raceyear/{year}/W",
+        url=source.schedule_url(year),
         filename="schedule.html",
         user_agent=random.choice(USER_AGENTS)
     )
@@ -43,21 +45,23 @@ def download_year_schedule_html(context, series_name):
 def cup_series_download_year_schedule_html(**context):
     download_year_schedule_html(context=context, series_name='Cup')
 
-def convert_year_schedule_html_to_csv(context, series_name):
+def convert_year_schedule_html_to_csv(context, series_name, source: NascarScrapeSource = NASCAR_DATA_SOURCE):
     year = context["data_interval_start"].year
-    html_file_path = f"{BASE_FOLDER}/{series_name.lower()}/{year}/schedule.html"
-    csv_file_path = f"{BASE_FOLDER}/{series_name.lower()}/{year}/schedule.csv"
-    HtmlToCsvConverter.convert_schedule(html_file_path, csv_file_path)
+    base = source.storage_path_series_year(series_name, year)
+    html_file_path = f"{base}/schedule.html"
+    csv_file_path = f"{base}/schedule.csv"
+    source.converters.convert_schedule(html_file_path, csv_file_path)
 
 def cup_series_convert_year_schedule_html_to_csv(**context):
     convert_year_schedule_html_to_csv(context=context, series_name='Cup')
 
-def create_tracks_if_not_exists(series_name, **kwargs):
+def create_tracks_if_not_exists(series_name, source: NascarScrapeSource = NASCAR_DATA_SOURCE, **kwargs):
     # Get the MySQL (MariaDB) connection from Airflow
     hook = MySqlHook(mysql_conn_id="nascar_conn")
 
     year = kwargs["data_interval_start"].year
-    rows = File.read_csv(filename=f"{BASE_FOLDER}/{series_name.lower()}/{year}/schedule.csv", as_dict=True)
+    base = source.storage_path_series_year(series_name, year)
+    rows = File.read_csv(filename=f"{base}/schedule.csv", as_dict=True)
 
     for row in rows:
         logging.info(str(row))
@@ -105,17 +109,14 @@ def create_tracks_if_not_exists(series_name, **kwargs):
         """
     )
 
-def download_entrylist_html(html_file_path, series_name, year, week_number):
-    html_file = open(html_file_path, "r")
-    soup = BeautifulSoup(html_file, 'html.parser')
-    links_for_race_rows = soup.find('table', {'class': 'tb'}).find_all('tr')
-    for row in links_for_race_rows:
-        for cell in row.find_all('td'):
-            for a in cell.find_all('a', href=True):
-                if "entrylist" in a['href']:
-                    url = BASE_URL + a['href']
-                    break
-    scraper = Scraper(f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}")
+def download_entrylist_html(source, html_file_path, series_name, year, week_number):
+    with open(html_file_path, "r") as html_file:
+        soup = BeautifulSoup(html_file, 'html.parser')
+    url = source.extract_entrylist_url(soup)
+    if not url:
+        logging.warning("No entry list link found on race results page")
+        return
+    scraper = Scraper(source.storage_path_week(series_name, year, week_number))
     time.sleep(random.randint(2, 5))
     scraper.download(
         url=url,
@@ -123,121 +124,89 @@ def download_entrylist_html(html_file_path, series_name, year, week_number):
         user_agent=random.choice(USER_AGENTS)
     )
 
-def download_practices(html_file_path, series_name, year, week_number):
-    html_file = open(html_file_path, "r")
+def download_practices(source, html_file_path, series_name, year, week_number):
     html_file_paths = list()
-    soup = BeautifulSoup(html_file, 'html.parser')
-    links_for_race_rows = soup.find('table', {'class': 'tb'}).find_all('tr')
-    url = None
-    for row in links_for_race_rows:
-        for cell in row.find_all('td'):
-            for a in cell.find_all('a', href=True):
-                if "practice-results" in a['href']:
-                    url = BASE_URL + a['href']
-                    break
+    with open(html_file_path, "r") as html_file:
+        soup = BeautifulSoup(html_file, 'html.parser')
+    url = source.extract_practice_results_url(soup)
     if url is None:
         return html_file_paths
-    scraper = Scraper(f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}")
+    week_path = source.storage_path_week(series_name, year, week_number)
+    scraper = Scraper(week_path)
     time.sleep(random.randint(2, 5))
     scraper.download(
         url=url,
         filename="practice-01.html",
         user_agent=random.choice(USER_AGENTS)
     )
-    html_file_path = f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}/practice-01.html"
-    html_file_paths.append(html_file_path)
-    html_file = open(html_file_path, "r")
-    soup = BeautifulSoup(html_file, 'html.parser')
+    first_practice_html = f"{week_path}/practice-01.html"
+    html_file_paths.append(first_practice_html)
+    with open(first_practice_html, "r") as html_file:
+        soup = BeautifulSoup(html_file, 'html.parser')
     logging.info(soup.find('div', {'class': 'entry-content'}))
-    select = soup.find('select', attrs={"name": "qnum"})
-    options = select.find_all('option')[1:-1]
-    for option in options:
-        url = f"{BASE_URL}{option.get("value")}"
-        number = int(option.get_text().strip())
-        scraper = Scraper(f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}")
+    for number, session_url in source.iter_practice_session_urls(soup):
+        scraper = Scraper(week_path)
         time.sleep(random.randint(2, 5))
         scraper.download(
-            url=url,
+            url=session_url,
             filename=f"practice-{number:02d}.html",
             user_agent=random.choice(USER_AGENTS)
         )
-        html_file_paths.append(f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}/practice-{number:02d}.html")
+        html_file_paths.append(f"{week_path}/practice-{number:02d}.html")
     return html_file_paths
 
-def download_qualifying(html_file_path, series_name, year, week_number):
-    html_file = open(html_file_path, "r")
-    html_file_paths = None
-    soup = BeautifulSoup(html_file, 'html.parser')
-    links_for_race_rows = soup.find('table', {'class': 'tb'}).find_all('tr')
-    url = None
-    for row in links_for_race_rows:
-        for cell in row.find_all('td'):
-            for a in cell.find_all('a', href=True):
-                if "qual-results" in a['href']:
-                    url = BASE_URL + a['href']
-                    break
+def download_qualifying(source, html_file_path, series_name, year, week_number):
+    with open(html_file_path, "r") as html_file:
+        soup = BeautifulSoup(html_file, 'html.parser')
+    url = source.extract_qualifying_url(soup)
     if url is None:
-        return html_file_paths
-    scraper = Scraper(f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}")
+        return None
+    scraper = Scraper(source.storage_path_week(series_name, year, week_number))
     time.sleep(random.randint(2, 5))
     scraper.download(
         url=url,
         filename="qualifying.html",
         user_agent=random.choice(USER_AGENTS)
     )
-    return f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}/qualifying.html"
+    return f"{source.storage_path_week(series_name, year, week_number)}/qualifying.html"
 
-def download_loop_data(html_file_path, series_name, year, week_number):
-    html_file = open(html_file_path, "r")
-    html_file_paths = None
-    soup = BeautifulSoup(html_file, 'html.parser')
-    links_for_race_rows = soup.find('table', {'class': 'tb'}).find_all('tr')
-    url = None
-    for row in links_for_race_rows:
-        for cell in row.find_all('td'):
-            for a in cell.find_all('a', href=True):
-                if "loopdata" in a['href']:
-                    url = BASE_URL + a['href']
-                    break
+def download_loop_data(source, html_file_path, series_name, year, week_number):
+    with open(html_file_path, "r") as html_file:
+        soup = BeautifulSoup(html_file, 'html.parser')
+    url = source.extract_loopdata_url(soup)
     if url is None:
-        return html_file_paths
-    scraper = Scraper(f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}")
+        return None
+    scraper = Scraper(source.storage_path_week(series_name, year, week_number))
     time.sleep(random.randint(2, 5))
     scraper.download(
         url=url,
         filename="loop-data.html",
         user_agent=random.choice(USER_AGENTS)
     )
-    return f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}/loop-data.html"
+    return f"{source.storage_path_week(series_name, year, week_number)}/loop-data.html"
 
-def download_penalties(html_file_path, series_name, year, week_number):
-    html_file = open(html_file_path, "r")
-    html_file_paths = None
-    soup = BeautifulSoup(html_file, 'html.parser')
-    links_for_race_rows = soup.find('table', {'class': 'tb'}).find_all('tr')
-    url = None
-    for row in links_for_race_rows:
-        for cell in row.find_all('td'):
-            for a in cell.find_all('a', href=True):
-                if "penalties" in a['href']:
-                    url = BASE_URL + a['href']
-                    break
+def download_penalties(source, html_file_path, series_name, year, week_number):
+    with open(html_file_path, "r") as html_file:
+        soup = BeautifulSoup(html_file, 'html.parser')
+    url = source.extract_penalties_url(soup)
     if url is None:
-        return html_file_paths
-    scraper = Scraper(f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}")
+        return None
+    scraper = Scraper(source.storage_path_week(series_name, year, week_number))
     time.sleep(random.randint(2, 5))
     scraper.download(
         url=url,
         filename="penalties.html",
         user_agent=random.choice(USER_AGENTS)
     )
-    return f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}/penalties.html"
+    return f"{source.storage_path_week(series_name, year, week_number)}/penalties.html"
 
-def create_weeks_if_not_exists(series_name, **kwargs):
+def create_weeks_if_not_exists(series_name, source: NascarScrapeSource = NASCAR_DATA_SOURCE, **kwargs):
     # Get the MySQL (MariaDB) connectionf from Airflow
     hook = MySqlHook(mysql_conn_id="nascar_conn")
 
     year = kwargs["data_interval_start"].year
+    base = source.storage_path_series_year(series_name, year)
+    conv = source.converters
 
     select_sql = """
             SELECT ss.series_id AS series_id, ss.id AS season_id
@@ -255,7 +224,7 @@ def create_weeks_if_not_exists(series_name, **kwargs):
     for season_result in season_results:
         series_id = int(season_result[0])
         season_id = int(season_result[1])
-        rows = File.read_csv(filename=f"{BASE_FOLDER}/{series_name.lower()}/{year}/schedule.csv", as_dict=True)
+        rows = File.read_csv(filename=f"{base}/schedule.csv", as_dict=True)
         for row in rows:
             logging.info(str(row))
             week_number = int(row.get("week_number"))
@@ -340,30 +309,37 @@ def create_weeks_if_not_exists(series_name, **kwargs):
                 logging.info(f"No race recorded for {series_name} series {str(year)} week {week_number}")
                 logging.info(f"Downloading files and attempting to insert available data...")
                 # Follow the week_url
-                base_path = f"{BASE_FOLDER}/{series_name.lower()}/{year}/{week_number:02d}"
+                base_path = source.storage_path_week(series_name, year, week_number)
                 scraper = Scraper(base_path)
                 time.sleep(random.randint(2, 5))
+                resolved_week_url = source.resolve_page_url(week_url)
+                if not resolved_week_url:
+                    logging.warning("Could not resolve week_url; skipping downloads for this week")
+                    continue
                 # Download race results page
                 scraper.download(
-                    url=week_url,
+                    url=resolved_week_url,
                     filename="race-results.html",
                     user_agent=random.choice(USER_AGENTS)
                 )
                 race_results_html = f"{base_path}/race-results.html"
-                HtmlToCsvConverter.convert_race_results(race_results_html, f"{base_path}/race-results.csv")
-                HtmlToCsvConverter.convert_prerace_penalties(race_results_html, f"{base_path}/pre-race-penalties.csv")
-                HtmlToCsvConverter.convert_caution_flags(race_results_html, f"{base_path}/caution-flags.csv")
-                HtmlToCsvConverter.convert_lap_leaders(race_results_html, f"{base_path}/lap-leaders.csv")
-                download_entrylist_html(html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
-                HtmlToCsvConverter.convert_entrylist(f"{base_path}/entrylist.html", f"{base_path}/entrylist.csv")
-                practice_html_file_paths = download_practices(html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
-                HtmlToCsvConverter.convert_practices(practice_html_file_paths)
-                qualifying_html_file_path = download_qualifying(html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
-                HtmlToCsvConverter.convert_qualifying(qualifying_html_file_path)
-                loop_data_html_file_path = download_loop_data(html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
-                HtmlToCsvConverter.convert_loop_data(loop_data_html_file_path)
-                penalties_html_file_path = download_penalties(html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
-                HtmlToCsvConverter.convert_penalties(penalties_html_file_path)
+                conv.convert_race_results(race_results_html, f"{base_path}/race-results.csv")
+                conv.convert_prerace_penalties(race_results_html, f"{base_path}/pre-race-penalties.csv")
+                conv.convert_caution_flags(race_results_html, f"{base_path}/caution-flags.csv")
+                conv.convert_lap_leaders(race_results_html, f"{base_path}/lap-leaders.csv")
+                download_entrylist_html(source, html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
+                entrylist_html_path = f"{base_path}/entrylist.html"
+                entrylist_csv_path = f"{base_path}/entrylist.csv"
+                if Path(entrylist_html_path).is_file():
+                    conv.convert_entrylist(entrylist_html_path, entrylist_csv_path)
+                practice_html_file_paths = download_practices(source, html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
+                conv.convert_practices(practice_html_file_paths)
+                qualifying_html_file_path = download_qualifying(source, html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
+                conv.convert_qualifying(qualifying_html_file_path)
+                loop_data_html_file_path = download_loop_data(source, html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
+                conv.convert_loop_data(loop_data_html_file_path)
+                penalties_html_file_path = download_penalties(source, html_file_path=race_results_html, series_name=series_name, year=year, week_number=week_number)
+                conv.convert_penalties(penalties_html_file_path)
 
                 hook = MySqlTemplateFileExecutor(
                     mysql_conn_id="nascar_conn",
@@ -372,13 +348,14 @@ def create_weeks_if_not_exists(series_name, **kwargs):
                     }
                 )
 
-                hook.run_templated_sql_file(
-                    file_path=Path(__file__).parent / "sql" / "nascar_scraper" / "load_entrylist_data.sql",
-                    context={
-                        "week_id": week_id,
-                        "entrylist_csv_file_path" : f"{base_path}/entrylist.csv"
-                    }
-                )
+                if Path(entrylist_csv_path).is_file():
+                    hook.run_templated_sql_file(
+                        file_path=Path(__file__).parent / "sql" / "nascar_scraper" / "load_entrylist_data.sql",
+                        context={
+                            "week_id": week_id,
+                            "entrylist_csv_file_path": entrylist_csv_path
+                        }
+                    )
 
                 practice_files = glob.glob(f"{base_path}/practice-*.csv")
                 number_of_practices = len(practice_files)

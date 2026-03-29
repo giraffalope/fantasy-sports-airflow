@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Build the unit-test image and run pytest inside Docker.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+IMAGE_NAME="${UNIT_TESTS_IMAGE:-fantasy-sports-airflow-unit-tests:latest}"
+
+docker build -f Dockerfile.unit-tests -t "$IMAGE_NAME" "$ROOT"
+if [[ $# -eq 0 ]]; then
+  exec docker run --rm "$IMAGE_NAME"
+else
+  exec docker run --rm "$IMAGE_NAME" python -m pytest tests "$@"
+fi

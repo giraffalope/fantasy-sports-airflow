@@ -24,5 +24,15 @@ dependencies = [
     "pymysql",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --tb=short"
+
 [tool.uv]
 package = false

@@ -314,6 +314,15 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+  unit-tests:
+    profiles:
+      - tests
+    build:
+      context: .
+      dockerfile: Dockerfile.unit-tests
+    image: ${UNIT_TESTS_IMAGE:-fantasy-sports-airflow-unit-tests:latest}
+    command: ["python", "-m", "pytest", "tests", "-v", "--tb=short"]
+
   mariadb:
     build:
       context: ${FANTASY_SPORTS_DB_BUILD_CONTEXT:-../fantasy-sports-db}
