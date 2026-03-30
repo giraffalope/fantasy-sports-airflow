@@ -361,3 +361,58 @@ def test_frcs_convert_draftkings_pads_headers_when_tbody_has_more_columns(tmp_pa
     FrcsHtmlToCsv.convert_draftkings_points(str(html))
     cols = next(csv.reader(io.StringIO(csv_out.read_text(encoding="utf-8").splitlines()[0])))
     assert cols == ["a", "column", "column_2"]
+
+
+def test_frcs_convert_race_results_results_table_headers_and_values(tmp_path) -> None:
+    html = tmp_path / "race-results.html"
+    csv_out = tmp_path / "race-results.csv"
+    html.write_text(
+        """
+        <table id="resultsTable" class="cupTable">
+          <thead><tr>
+            <th><abbr>FIN</abbr></th>
+            <th><abbr>ST</abbr></th>
+            <th><abbr>#</abbr></th>
+            <th><abbr>DRIVER</abbr></th>
+            <th><abbr>MAKE</abbr></th>
+            <th><abbr>TOT PTS</abbr></th>
+            <th><abbr>FIN PTS</abbr></th>
+            <th><abbr>STG PTS</abbr></th>
+            <th><abbr>PO PTS</abbr></th>
+            <th><abbr>LAPS</abbr></th>
+            <th><abbr>LED</abbr></th>
+            <th><abbr>X LED</abbr></th>
+            <th><abbr>S1</abbr></th>
+            <th><abbr>S2</abbr></th>
+            <th><abbr>STATUS</abbr></th>
+          </tr></thead>
+          <tbody><tr>
+            <td>1</td><td>26</td><td>45</td><td><a href="/d">Tyler Reddick</a></td><td>Toyota</td>
+            <td>58</td><td>55</td><td>3</td><td>0</td><td>200</td><td>1</td><td>1</td><td>0</td><td>8</td><td>Running</td>
+          </tr></tbody>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_race_results(str(html), str(csv_out))
+    lines = csv_out.read_text(encoding="utf-8").splitlines()
+    cols = next(csv.reader(io.StringIO(lines[0])))
+    assert cols == [
+        "finish",
+        "start",
+        "number",
+        "driver_name",
+        "manufacturer",
+        "total_points",
+        "finish_points",
+        "stage_points",
+        "playoff_points",
+        "laps",
+        "laps_led",
+        "times_led",
+        "stage_1",
+        "stage_2",
+        "status",
+    ]
+    assert "Tyler Reddick" in lines[1]
+    assert "Running" in lines[1]

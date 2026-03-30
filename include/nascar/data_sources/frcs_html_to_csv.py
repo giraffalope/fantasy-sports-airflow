@@ -319,6 +319,34 @@ def _frcs_fanduel_header_to_snake(raw: str) -> str:
     return slug
 
 
+_FRCS_RACE_RESULTS_HEADER_MAP: dict[str, str] = {
+    "fin": "finish",
+    "st": "start",
+    "#": "number",
+    "driver": "driver_name",
+    "make": "manufacturer",
+    "tot pts": "total_points",
+    "fin pts": "finish_points",
+    "stg pts": "stage_points",
+    "bon pts": "bonus_points",
+    "po pts": "playoff_points",
+    "laps": "laps",
+    "led": "laps_led",
+    "x led": "times_led",
+    "s1": "stage_1",
+    "s2": "stage_2",
+    "s3": "stage_3",
+    "status": "status",
+}
+
+
+def _frcs_race_results_header_to_snake(raw: str) -> str:
+    key = re.sub(r"\s+", " ", raw.strip().lower())
+    if key in _FRCS_RACE_RESULTS_HEADER_MAP:
+        return _FRCS_RACE_RESULTS_HEADER_MAP[key]
+    return _frcs_header_label_to_snake_case(raw)
+
+
 def _frcs_unique_snake_headers(names: list[str]) -> list[str]:
     seen: dict[str, int] = {}
     out: list[str] = []
@@ -511,61 +539,25 @@ class FrcsHtmlToCsv:
     def convert_race_results(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as f:
             soup = BeautifulSoup(f, "html.parser")
-        table = soup.find("table", class_=lambda c: c and "cupTable" in str(c))
+        table = soup.find("table", id="resultsTable")
         if table is None:
-            table = soup.find("table")
-        headers = [
-            "finish_position",
-            "start_position",
-            "car_number",
-            "driver_name",
-            "manufacturer",
-            "owner",
-            "laps",
-            "laps_led",
-            "status",
-            "money_won",
-        ]
-        label_to_header = {
-            "FIN": "finish_position",
-            "ST": "start_position",
-            "#": "car_number",
-            "DRIVER": "driver_name",
-            "MAKE": "manufacturer",
-            "OWNER": "owner",
-            "LAPS": "laps",
-            "LED": "laps_led",
-            "STATUS": "status",
-            "$": "money_won",
-            "MONEY": "money_won",
-        }
+            table = soup.find("table", class_=lambda c: c and "cupTable" in str(c))
+        headers: list[str] = []
         csv_list: list[tuple[str, ...]] = []
         if table is not None:
-            labels = _frcs_table_column_labels(table)
-            idx = {lab: i for i, lab in enumerate(labels)}
-
-            def ix(lab: str) -> int | None:
-                return idx.get(lab)
-
+            raw_labels = _frcs_table_column_labels(table)
+            headers = _frcs_unique_snake_headers(
+                [_frcs_race_results_header_to_snake(x) for x in raw_labels]
+            )
             tbody = table.find("tbody")
             rows_src = tbody if tbody is not None else table
             for tr in rows_src.find_all("tr"):
                 cells = tr.find_all("td")
                 if not cells:
                     continue
-                row: dict[str, str] = {h: "" for h in headers}
-                for th_label, hdr in label_to_header.items():
-                    i = ix(th_label)
-                    if i is None or i >= len(cells):
-                        continue
-                    if hdr == "driver_name":
-                        c = cells[i]
-                        a = c.find("a", href=True)
-                        row[hdr] = a.get_text(strip=True) if a else _frcs_cell_text(c)
-                    else:
-                        row[hdr] = _frcs_cell_text(cells[i])
-                if any(row[h] for h in headers):
-                    csv_list.append(tuple(row[h] for h in headers))
+                row = tuple(_frcs_cell_text(cells[i]) if i < len(cells) else "" for i in range(len(headers)))
+                if any(row):
+                    csv_list.append(row)
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
 
