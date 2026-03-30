@@ -166,9 +166,13 @@ def download_year_schedule_html(
     """Download season schedule HTML into ``schedule.html`` under the series/year path."""
     src = _resolve_racing_reference_source(source)
     year = context["data_interval_start"].year
-    scraper = Scraper(src.storage_path_series_year(series_name, year))
+    base = src.storage_path_series_year(series_name, year)
+    url = src.schedule_url(year)
+    dest = os.path.join(base, "schedule.html")
+    logging.info("Racing Reference: downloading schedule %s -> %s", url, dest)
+    scraper = Scraper(base)
     scraper.download(
-        url=src.schedule_url(year),
+        url=url,
         filename="schedule.html",
         user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
     )
@@ -190,6 +194,7 @@ def convert_year_schedule_html_to_csv(
     base = src.storage_path_series_year(series_name, year)
     html_file_path = f"{base}/schedule.html"
     csv_file_path = f"{base}/schedule.csv"
+    logging.info("Racing Reference: converting schedule %s -> %s", html_file_path, csv_file_path)
     src.converters.convert_schedule(html_file_path, csv_file_path)
 
 
@@ -224,6 +229,7 @@ def download_race_results_html_if_missing(
         return
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("Racing Reference: downloading race-results %s -> %s", resolved, race_html)
     scraper.download(
         url=resolved,
         filename="race-results.html",
@@ -252,6 +258,7 @@ def download_entrylist_html_if_missing(
         return
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("Racing Reference: downloading entry list %s -> %s", url, entry_path)
     scraper.download(
         url=url,
         filename="entrylist.html",
@@ -280,6 +287,7 @@ def download_practices_html_if_missing(
     if not os.path.isfile(first):
         scraper = Scraper(week_path)
         _sleep_download_jitter()
+        logging.info("Racing Reference: downloading practice index %s -> %s", url, first)
         scraper.download(
             url=url,
             filename="practice-01.html",
@@ -296,6 +304,7 @@ def download_practices_html_if_missing(
         if not os.path.isfile(p):
             scraper = Scraper(week_path)
             _sleep_download_jitter()
+            logging.info("Racing Reference: downloading practice session %s %s -> %s", number, session_url, p)
             scraper.download(
                 url=session_url,
                 filename=fn,
@@ -326,6 +335,7 @@ def download_qualifying_html_if_missing(
         return None
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("Racing Reference: downloading qualifying %s -> %s", url, qpath)
     scraper.download(
         url=url,
         filename="qualifying.html",
@@ -354,6 +364,7 @@ def download_loop_data_html_if_missing(
         return None
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("Racing Reference: downloading loop data %s -> %s", url, lpath)
     scraper.download(
         url=url,
         filename="loop-data.html",
@@ -382,6 +393,7 @@ def download_penalties_html_if_missing(
         return None
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("Racing Reference: downloading penalties %s -> %s", url, ppath)
     scraper.download(
         url=url,
         filename="penalties.html",

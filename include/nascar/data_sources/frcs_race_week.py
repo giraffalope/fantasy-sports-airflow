@@ -50,6 +50,34 @@ from include.utils.file import File
 _FRCS_CUP = NascarSeries.CUP
 
 
+def _frcs_task_begin(task: str, year: int, run_anchor: datetime) -> None:
+    logging.info(
+        "FRCS race-week: %s starting year=%s run_anchor=%s",
+        task,
+        year,
+        run_anchor.isoformat(),
+    )
+
+
+def _frcs_task_end(task: str, year: int, weeks_processed: int) -> None:
+    logging.info(
+        "FRCS race-week: %s finished year=%s weeks_processed=%s",
+        task,
+        year,
+        weeks_processed,
+    )
+
+
+def _frcs_week_line(task: str, year: int, week_number: int, message: str) -> None:
+    logging.info(
+        "FRCS race-week: %s year=%s week=%02d — %s",
+        task,
+        year,
+        week_number,
+        message,
+    )
+
+
 def _sleep_frcs_task_start_jitter() -> None:
     """Match ``WaitOperator(seconds=random.randint(0, 5))`` at task run time."""
     time.sleep(random.randint(0, 5))
@@ -111,12 +139,18 @@ def cup_series_sync_weeks(**context: Any) -> None:
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
+    task = cup_series_sync_weeks.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, week_url in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
+        _frcs_week_line(task, year, week_number, "ensure race-results.html")
         download_race_results_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, week_url
         )
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_entrylists(**context: Any) -> None:
@@ -125,15 +159,30 @@ def cup_series_sync_entrylists(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_entrylists.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        _frcs_week_line(task, year, week_number, "entry list HTML + CSV")
         download_entrylist_html_if_missing(src, _FRCS_CUP.db_name, year, week_number, race_html)
         entry_html = os.path.join(base, "entrylist.html")
+        entry_csv = os.path.join(base, "entrylist.csv")
         if os.path.isfile(entry_html):
-            conv.convert_entrylist(entry_html, os.path.join(base, "entrylist.csv"))
+            logging.info("FRCS race-week: converting entry list %s -> %s", entry_html, entry_csv)
+            conv.convert_entrylist(entry_html, entry_csv)
+        else:
+            logging.info(
+                "FRCS race-week: %s year=%s week=%02d — no entrylist.html (skipped convert)",
+                task,
+                year,
+                week_number,
+            )
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_practices(**context: Any) -> None:
@@ -142,17 +191,31 @@ def cup_series_sync_practices(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_practices.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        _frcs_week_line(task, year, week_number, "practice HTML + CSV")
         download_practices_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
         paths = sorted(glob.glob(os.path.join(base, "practice-*.html")))
         if paths:
+            logging.info("FRCS race-week: converting practice files %s", paths)
             conv.convert_practices(paths)
+        else:
+            logging.info(
+                "FRCS race-week: %s year=%s week=%02d — no practice-*.html",
+                task,
+                year,
+                week_number,
+            )
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_qualifyings(**context: Any) -> None:
@@ -161,15 +224,23 @@ def cup_series_sync_qualifyings(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_qualifyings.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        _frcs_week_line(task, year, week_number, "qualifying HTML + CSV")
         qpath = download_qualifying_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
+        if qpath:
+            logging.info("FRCS race-week: converting qualifying %s", qpath)
         conv.convert_qualifying(qpath)
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_lineups(**context: Any) -> None:
@@ -178,15 +249,23 @@ def cup_series_sync_lineups(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_lineups.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        _frcs_week_line(task, year, week_number, "lineup HTML + CSV")
         lineup_path = download_lineup_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
+        if lineup_path:
+            logging.info("FRCS race-week: converting lineup %s", lineup_path)
         conv.convert_lineup(lineup_path)
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_pit_stops(**context: Any) -> None:
@@ -195,15 +274,23 @@ def cup_series_sync_pit_stops(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_pit_stops.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        _frcs_week_line(task, year, week_number, "pit stops HTML + CSV")
         pit_stops_path = download_pit_stops_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
+        if pit_stops_path:
+            logging.info("FRCS race-week: converting pit stops %s", pit_stops_path)
         conv.convert_pit_stops(pit_stops_path)
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_draftkings_points(**context: Any) -> None:
@@ -212,15 +299,23 @@ def cup_series_sync_draftkings_points(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_draftkings_points.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        _frcs_week_line(task, year, week_number, "DraftKings points HTML + CSV")
         dk_path = download_draftkings_points_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
+        if dk_path:
+            logging.info("FRCS race-week: converting DraftKings points %s", dk_path)
         conv.convert_draftkings_points(dk_path)
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_fanduel_points(**context: Any) -> None:
@@ -229,15 +324,23 @@ def cup_series_sync_fanduel_points(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_fanduel_points.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        _frcs_week_line(task, year, week_number, "FanDuel points HTML + CSV")
         fd_path = download_fanduel_points_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
+        if fd_path:
+            logging.info("FRCS race-week: converting FanDuel points %s", fd_path)
         conv.convert_fanduel_points(fd_path)
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_pit_stall_selections(**context: Any) -> None:
@@ -245,14 +348,31 @@ def cup_series_sync_pit_stall_selections(**context: Any) -> None:
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
+    task = cup_series_sync_pit_stall_selections.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
-        download_pit_stall_selections_if_missing(
+        stall_pdf = os.path.join(base, "pit-stall-selections.pdf")
+        _frcs_week_line(task, year, week_number, "pit stall selections PDF")
+        out = download_pit_stall_selections_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
+        if out and os.path.isfile(out):
+            logging.info("FRCS race-week: pit stall selections ready %s", out)
+        else:
+            logging.info(
+                "FRCS race-week: %s year=%s week=%02d — no PDF at %s",
+                task,
+                year,
+                week_number,
+                stall_pdf,
+            )
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_prerace_penalties(**context: Any) -> None:
@@ -261,16 +381,29 @@ def cup_series_sync_prerace_penalties(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_prerace_penalties.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        pre_csv = os.path.join(base, "pre-race-penalties.csv")
         if not os.path.isfile(race_html):
+            logging.info(
+                "FRCS race-week: %s year=%s week=%02d — skip (no %s)",
+                task,
+                year,
+                week_number,
+                race_html,
+            )
             continue
-        conv.convert_prerace_penalties(
-            race_html, os.path.join(base, "pre-race-penalties.csv")
-        )
+        _frcs_week_line(task, year, week_number, "pre-race penalties CSV")
+        logging.info("FRCS race-week: converting pre-race penalties %s -> %s", race_html, pre_csv)
+        conv.convert_prerace_penalties(race_html, pre_csv)
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_race_results(**context: Any) -> None:
@@ -279,18 +412,35 @@ def cup_series_sync_race_results(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_race_results.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        race_csv = os.path.join(base, "race-results.csv")
         if not os.path.isfile(race_html):
+            logging.info(
+                "FRCS race-week: %s year=%s week=%02d — skip (no %s)",
+                task,
+                year,
+                week_number,
+                race_html,
+            )
             continue
-        conv.convert_race_results(race_html, os.path.join(base, "race-results.csv"))
+        _frcs_week_line(task, year, week_number, "race results + loop data CSV")
+        logging.info("FRCS race-week: converting race results %s -> %s", race_html, race_csv)
+        conv.convert_race_results(race_html, race_csv)
         loop_path = download_loop_data_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
+        if loop_path:
+            logging.info("FRCS race-week: converting loop data %s", loop_path)
         conv.convert_loop_data(loop_path)
+    _frcs_task_end(task, year, weeks)
 
 
 def cup_series_sync_penalties(**context: Any) -> None:
@@ -299,12 +449,20 @@ def cup_series_sync_penalties(**context: Any) -> None:
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
+    task = cup_series_sync_penalties.__name__
+    _frcs_task_begin(task, year, run_anchor)
+    weeks = 0
     for week_number, _ in _iter_week_numbers_with_url_throttled(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
+        weeks += 1
         base = src.storage_path_week(_FRCS_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
+        _frcs_week_line(task, year, week_number, "penalties from race-results HTML")
         pen_path = download_penalties_html_if_missing(
             src, _FRCS_CUP.db_name, year, week_number, race_html
         )
+        if pen_path:
+            logging.info("FRCS race-week: converting penalties (source %s)", pen_path)
         conv.convert_penalties(pen_path)
+    _frcs_task_end(task, year, weeks)

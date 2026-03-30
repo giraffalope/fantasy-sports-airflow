@@ -74,6 +74,7 @@ class RacingReferenceHtmlToCsv:
             csv_list.append(csv_row.values())
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, csv_row.keys())
+        logging.info("Racing Reference: schedule %d rows -> %s", len(csv_list), csv_file_path)
 
     @staticmethod
     def _race_results_row_cells(tr) -> list:
@@ -194,6 +195,7 @@ class RacingReferenceHtmlToCsv:
                 csv_list.append(fields.values())
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
+        logging.info("Racing Reference: race results %d rows -> %s", len(csv_list), csv_file_path)
 
     @staticmethod
     def convert_prerace_penalties(html_file_path: str, csv_file_path: str) -> None:
@@ -215,7 +217,6 @@ class RacingReferenceHtmlToCsv:
                 break
             index += 1
         if tableIndex is not None:
-            print("Prerace penalties was found")
             table = other_results_tables[tableIndex]
             rows = table.find_all("tr")[2:]
             for row in rows:
@@ -226,10 +227,13 @@ class RacingReferenceHtmlToCsv:
                 number = cols[1].get_text().strip()
                 reason = cols[2].get_text().strip()
                 csv_list.append({"name": name, "number": number, "reason": reason}.values())
-        else:
-            print("No prerace penalties were found")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
+        logging.info(
+            "Racing Reference: pre-race penalties %d rows -> %s",
+            len(csv_list),
+            csv_file_path,
+        )
 
     @staticmethod
     def convert_caution_flags(html_file_path: str, csv_file_path: str) -> None:
@@ -251,7 +255,6 @@ class RacingReferenceHtmlToCsv:
                 break
             index += 1
         if tableIndex is not None:
-            print("Caution flag breakdown was found")
             table = other_results_tables[tableIndex]
             rows = table.find_all("tr")[2:]
             for row in rows:
@@ -279,10 +282,13 @@ class RacingReferenceHtmlToCsv:
                         "free_pass_cars": free_pass_cars,
                     }.values()
                 )
-        else:
-            print("No caution flag breakdown was found")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
+        logging.info(
+            "Racing Reference: caution flags %d rows -> %s",
+            len(csv_list),
+            csv_file_path,
+        )
 
     @staticmethod
     def convert_lap_leaders(html_file_path: str, csv_file_path: str) -> None:
@@ -304,7 +310,6 @@ class RacingReferenceHtmlToCsv:
                 break
             index += 1
         if tableIndex is not None:
-            print("Lap leader breakdown was found")
             table = other_results_tables[tableIndex]
             rows = table.find_all("tr")[2:]
             for row in rows:
@@ -323,10 +328,13 @@ class RacingReferenceHtmlToCsv:
                         "number_of_laps": number_of_laps,
                     }.values()
                 )
-        else:
-            print("No lap leader breakdown was found")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
+        logging.info(
+            "Racing Reference: lap leaders %d rows -> %s",
+            len(csv_list),
+            csv_file_path,
+        )
 
     @staticmethod
     def convert_entrylist(html_file_path: str, csv_file_path: str) -> None:
@@ -344,7 +352,6 @@ class RacingReferenceHtmlToCsv:
                 break
             index += 1
         if tableIndex is not None:
-            print("Entry list was found")
             table = tables[tableIndex]
             rows = table.find_all("tr", class_=["odd", "even"])
             for row in rows:
@@ -370,15 +377,13 @@ class RacingReferenceHtmlToCsv:
                             "sponsor": sponsor,
                         }.values()
                     )
-        else:
-            print("No Entry list was found")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
+        logging.info("Racing Reference: entry list %d rows -> %s", len(csv_list), csv_file_path)
 
     @staticmethod
     def convert_practices(paths: list[str]) -> None:
         for path in paths:
-            logging.info(path)
             with open(path, encoding="utf-8") as html_file:
                 soup = BeautifulSoup(html_file, "html.parser")
             tables = soup.find_all("table", {"class": "pracResultsTbl"})
@@ -398,13 +403,12 @@ class RacingReferenceHtmlToCsv:
             for table in tables:
                 nh = table.find("td", {"class": "newhead"})
                 table_heading = nh.get_text().strip().lower() if nh else ""
-                logging.info(f"table_heading: {table_heading}")
+                logging.debug("Racing Reference: practice table_heading=%r path=%s", table_heading, path)
                 if "practice" in table_heading and "results" in table_heading:
                     tableIndex = index
                     break
                 index += 1
             if tableIndex is not None:
-                print("Practice was found")
                 table = tables[tableIndex]
                 rows = table.find_all("tr", class_=["odd", "even"])
                 for row in rows:
@@ -445,16 +449,20 @@ class RacingReferenceHtmlToCsv:
                             "best_lap": best_lap,
                         }.values()
                     )
-            else:
-                print("No practice was found")
             csv_file_path = path.replace(".html", ".csv")
             File.silent_remove(csv_file_path)
             File.write_csv(csv_file_path, csv_list, headers)
+            logging.info(
+                "Racing Reference: practice %d rows %s -> %s",
+                len(csv_list),
+                path,
+                csv_file_path,
+            )
 
     @staticmethod
     def convert_qualifying(path: str | None) -> None:
         if path is None:
-            print("No qualifying data exists")
+            logging.info("Racing Reference: qualifying skipped (no HTML path)")
             return
         with open(path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
@@ -465,13 +473,16 @@ class RacingReferenceHtmlToCsv:
         headers = ["rank", "driver_name", "number", "manufacturer", "time", "speed"]
         for table in tables:
             table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
-            logging.info(f"table_heading: {table_heading}")
+            logging.debug(
+                "Racing Reference: qualifying table_heading=%r path=%s",
+                table_heading,
+                path,
+            )
             if "qualifying" in table_heading and "results" in table_heading:
                 tableIndex = index
                 break
             index += 1
         if tableIndex is not None:
-            print("Qualifying was found")
             table = tables[tableIndex]
             rows = table.find_all("tr", class_=["odd", "even"])
             for row in rows:
@@ -497,16 +508,20 @@ class RacingReferenceHtmlToCsv:
                             "speed": speed,
                         }.values()
                     )
-        else:
-            print("No qualifying was found")
         csv_file_path = path.replace(".html", ".csv")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
+        logging.info(
+            "Racing Reference: qualifying %d rows %s -> %s",
+            len(csv_list),
+            path,
+            csv_file_path,
+        )
 
     @staticmethod
     def convert_loop_data(path: str | None) -> None:
         if path is None:
-            print("No loop data exists")
+            logging.info("Racing Reference: loop data skipped (no HTML path)")
             return
         with open(path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
@@ -537,13 +552,16 @@ class RacingReferenceHtmlToCsv:
         ]
         for table in tables:
             table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
-            logging.info(f"table_heading: {table_heading}")
+            logging.debug(
+                "Racing Reference: loop data table_heading=%r path=%s",
+                table_heading,
+                path,
+            )
             if "loop" in table_heading and "data" in table_heading:
                 tableIndex = index
                 break
             index += 1
         if tableIndex is not None:
-            print("Loop data was found")
             table = tables[tableIndex]
             rows = table.find_all("tr", class_=["odd", "even"])
             for row in rows:
@@ -595,16 +613,20 @@ class RacingReferenceHtmlToCsv:
                             "driver_rating": driver_rating,
                         }.values()
                     )
-        else:
-            print("No loop data was found")
         csv_file_path = path.replace(".html", ".csv")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
+        logging.info(
+            "Racing Reference: loop data %d rows %s -> %s",
+            len(csv_list),
+            path,
+            csv_file_path,
+        )
 
     @staticmethod
     def convert_penalties(path: str | None) -> None:
         if path is None:
-            print("No penalty data exists")
+            logging.info("Racing Reference: penalties skipped (no HTML path)")
             return
         with open(path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
@@ -615,13 +637,16 @@ class RacingReferenceHtmlToCsv:
         headers = ["number", "driver_name", "lap", "flag", "infraction", "penalty"]
         for table in tables:
             table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
-            logging.info(f"table_heading: {table_heading}")
+            logging.debug(
+                "Racing Reference: penalties table_heading=%r path=%s",
+                table_heading,
+                path,
+            )
             if "penalty" in table_heading:
                 tableIndex = index
                 break
             index += 1
         if tableIndex is not None:
-            print("Penalty data was found")
             table = tables[tableIndex]
             rows = table.find_all("tr", class_=["odd", "even"])[1:]
             for row in rows:
@@ -649,11 +674,15 @@ class RacingReferenceHtmlToCsv:
                             "penalty": penalty,
                         }.values()
                     )
-        else:
-            print("No penalty data was found")
         csv_file_path = path.replace(".html", ".csv")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
+        logging.info(
+            "Racing Reference: penalties %d rows %s -> %s",
+            len(csv_list),
+            path,
+            csv_file_path,
+        )
 
     @staticmethod
     def convert_to_seconds(time_str: str) -> float:

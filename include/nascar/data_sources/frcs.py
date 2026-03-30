@@ -145,10 +145,14 @@ def download_year_schedule_html(
 ) -> None:
     src = _resolve_frcs_source(source)
     year = context["data_interval_start"].year
-    scraper = Scraper(src.storage_path_series_year(series_name, year))
+    base = src.storage_path_series_year(series_name, year)
+    url = src.schedule_url(year)
+    dest = os.path.join(base, "schedule.html")
+    logging.info("FRCS: downloading schedule %s -> %s", url, dest)
+    scraper = Scraper(base)
     _sleep_download_jitter()
     scraper.download(
-        url=src.schedule_url(year),
+        url=url,
         filename="schedule.html",
         user_agent=_frcs_random_user_agent(),
     )
@@ -169,6 +173,7 @@ def convert_year_schedule_html_to_csv(
     base = src.storage_path_series_year(series_name, year)
     html_file_path = f"{base}/schedule.html"
     csv_file_path = f"{base}/schedule.csv"
+    logging.info("FRCS: converting schedule %s -> %s", html_file_path, csv_file_path)
     src.converters.convert_schedule(html_file_path, csv_file_path)
 
 
@@ -202,6 +207,7 @@ def download_race_results_html_if_missing(
         return
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("FRCS: downloading race-results %s -> %s", resolved, race_html)
     scraper.download(
         url=resolved,
         filename="race-results.html",
@@ -230,6 +236,7 @@ def download_entrylist_html_if_missing(
         return
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("FRCS: downloading entry list %s -> %s", url, entry_path)
     scraper.download(
         url=url,
         filename="entrylist.html",
@@ -259,6 +266,7 @@ def download_practices_html_if_missing(
         if not os.path.isfile(p):
             scraper = Scraper(week_path)
             _sleep_download_jitter()
+            logging.info("FRCS: downloading practice session %s %s -> %s", number, session_url, p)
             scraper.download(
                 url=session_url,
                 filename=fn,
@@ -289,6 +297,7 @@ def download_qualifying_html_if_missing(
         return None
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("FRCS: downloading qualifying %s -> %s", url, qpath)
     scraper.download(
         url=url,
         filename="qualifying.html",
@@ -317,6 +326,7 @@ def download_loop_data_html_if_missing(
         return None
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("FRCS: downloading loop data %s -> %s", url, lpath)
     scraper.download(
         url=url,
         filename="loop-data.html",
@@ -369,6 +379,7 @@ def _download_related_page_if_missing(
         return None
     scraper = Scraper(week_path)
     _sleep_download_jitter()
+    logging.info("FRCS: downloading %s %s -> %s", output_filename, url, out_path)
     try:
         scraper.download(
             url=url,

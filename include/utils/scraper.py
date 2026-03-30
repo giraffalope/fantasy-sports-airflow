@@ -1,8 +1,11 @@
+import logging
 import os
 import time
 
 from .file import File
 from .utils import Utils
+
+_log = logging.getLogger(__name__)
 
 
 class Scraper(Utils):
@@ -42,8 +45,21 @@ class Scraper(Utils):
             except Exception as e:
                 attempt += 1
                 last_exception = e
-                print(f"Attempt {attempt} failed: {e}")
+                if attempt < max_attempts:
+                    _log.debug(
+                        "Download attempt %s/%s failed for %s: %s",
+                        attempt,
+                        max_attempts,
+                        filename,
+                        e,
+                    )
                 time.sleep(1)  # optional backoff between retries
 
-        # If we reach here, all attempts failed
+        _log.error(
+            "Download failed after %s attempts (%s -> %s): %s",
+            max_attempts,
+            url,
+            os.path.join(self.output_folder, filename),
+            last_exception,
+        )
         raise last_exception
