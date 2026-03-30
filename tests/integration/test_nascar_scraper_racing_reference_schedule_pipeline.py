@@ -17,6 +17,7 @@ from include.nascar.data_sources.racing_reference import (
     cup_series_convert_year_schedule_html_to_csv,
     cup_series_download_year_schedule_html,
 )
+from include.nascar.enums import NascarSeries
 from include.utils.file import File
 from include.utils.scraper import Scraper
 
@@ -48,7 +49,7 @@ def test_cup_schedule_download_then_convert_integration(
     cup_series_convert_year_schedule_html_to_csv(**airflow_schedule_context)
 
     year = airflow_schedule_context["data_interval_start"].year
-    base = source.storage_path_series_year("Cup", year)
+    base = source.storage_path_series_year(NascarSeries.CUP.db_name, year)
     html_path = Path(base) / "schedule.html"
     csv_path = Path(base) / "schedule.csv"
 

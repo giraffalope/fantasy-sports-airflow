@@ -16,6 +16,7 @@ from include.nascar.data_sources.racing_reference import RacingReferenceSource
 from include.nascar.data_sources.racing_reference_race_week import (
     cup_series_sync_weeks,
 )
+from include.nascar.enums import NascarSeries
 from include.utils.file import File
 from include.utils.scraper import Scraper
 
@@ -36,7 +37,7 @@ def test_cup_sync_weeks_downloads_when_missing(
     monkeypatch.setattr(nascar_data_sources, "DEFAULT_NASCAR_DATA_SOURCE", source)
 
     year = airflow_race_week_context["data_interval_start"].year
-    series_year = source.storage_path_series_year("Cup", year)
+    series_year = source.storage_path_series_year(NascarSeries.CUP.db_name, year)
     schedule_csv = Path(series_year) / "schedule.csv"
     schedule_csv.parent.mkdir(parents=True, exist_ok=True)
     File.write_csv(
@@ -62,5 +63,5 @@ def test_cup_sync_weeks_downloads_when_missing(
 
     cup_series_sync_weeks(**airflow_race_week_context)
 
-    week_dir = Path(source.storage_path_week("Cup", year, 1))
+    week_dir = Path(source.storage_path_week(NascarSeries.CUP.db_name, year, 1))
     assert (week_dir / "race-results.html").is_file()

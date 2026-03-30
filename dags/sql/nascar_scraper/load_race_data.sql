@@ -259,8 +259,8 @@ ON DUPLICATE KEY UPDATE deleted_at = NULL
 
 ---
 
-INSERT INTO nascar.manufacturers (name)
-SELECT DISTINCT TRIM(rrm.name) AS name
+INSERT INTO nascar.manufacturers (series_id, name)
+SELECT DISTINCT {{ series_id }}, TRIM(rrm.name) AS name
 FROM nascar.racing_reference_manufacturers rrm
 JOIN nascar.temp_race_{{ week_id }} t
     ON TRIM(t.car) = TRIM(rrm.name)

@@ -34,9 +34,11 @@ ON DUPLICATE KEY UPDATE deleted_at = NULL
 
 ---
 
-INSERT INTO nascar.teams (name)
-SELECT DISTINCT TRIM(rrt.name) AS name
+INSERT INTO nascar.teams (series_id, name)
+SELECT DISTINCT {{ series_id }}, TRIM(rrt.name) AS name
 FROM nascar.racing_reference_teams rrt
+INNER JOIN nascar.temp_entrylist_{{ week_id }} e
+    ON TRIM(e.owner) = TRIM(rrt.name)
 WHERE rrt.team_id IS NULL AND rrt.deleted_at IS NULL
 ON DUPLICATE KEY UPDATE deleted_at = NULL
 ;

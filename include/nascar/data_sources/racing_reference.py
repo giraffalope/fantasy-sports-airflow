@@ -11,6 +11,7 @@ from typing import Any, cast
 from bs4 import BeautifulSoup
 
 from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
+from include.nascar.enums import NascarSeries
 from include.utils.scraper import Scraper
 
 RACING_REFERENCE_USER_AGENTS = [
@@ -174,7 +175,7 @@ def download_year_schedule_html(
 
 
 def cup_series_download_year_schedule_html(**context: Any) -> None:
-    download_year_schedule_html(context, "Cup")
+    download_year_schedule_html(context, NascarSeries.CUP.db_name)
 
 
 def convert_year_schedule_html_to_csv(
@@ -193,7 +194,7 @@ def convert_year_schedule_html_to_csv(
 
 
 def cup_series_convert_year_schedule_html_to_csv(**context: Any) -> None:
-    convert_year_schedule_html_to_csv(context, "Cup")
+    convert_year_schedule_html_to_csv(context, NascarSeries.CUP.db_name)
 
 
 def _sleep_download_jitter() -> None:

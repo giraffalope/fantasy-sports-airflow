@@ -25,6 +25,7 @@ from include.nascar.data_sources.racing_reference import (
     download_practices_html_if_missing,
     download_qualifying_html_if_missing,
 )
+from include.nascar.enums import NascarSeries
 from include.utils.file import File
 from include.utils.scraper import Scraper
 
@@ -33,13 +34,13 @@ NASCAR_DATA_SOURCE: NascarScrapeSource = DEFAULT_NASCAR_DATA_SOURCE
 
 
 def create_tracks_if_not_exists(
-    series_name, source: NascarScrapeSource = NASCAR_DATA_SOURCE, **kwargs
+    series: NascarSeries, source: NascarScrapeSource = NASCAR_DATA_SOURCE, **kwargs
 ):
     # Get the MySQL (MariaDB) connection from Airflow
     hook = MySqlHook(mysql_conn_id="nascar_conn")
 
     year = kwargs["data_interval_start"].year
-    base = source.storage_path_series_year(series_name, year)
+    base = source.storage_path_series_year(series.db_name, year)
     rows = File.read_csv(filename=f"{base}/schedule.csv", as_dict=True)
 
     for row in rows:
@@ -90,27 +91,27 @@ def create_tracks_if_not_exists(
 
 
 def create_weeks_if_not_exists(
-    series_name, source: NascarScrapeSource = NASCAR_DATA_SOURCE, **kwargs
+    series: NascarSeries, source: NascarScrapeSource = NASCAR_DATA_SOURCE, **kwargs
 ):
     # Get the MySQL (MariaDB) connectionf from Airflow
     hook = MySqlHook(mysql_conn_id="nascar_conn")
 
     year = kwargs["data_interval_start"].year
-    base = source.storage_path_series_year(series_name, year)
+    base = source.storage_path_series_year(series.db_name, year)
     conv = source.converters
 
     select_sql = """
             SELECT ss.series_id AS series_id, ss.id AS season_id
-            FROM nascar.series sr
-            INNER JOIN nascar.seasons ss
+            FROM nascar.seasons ss
+            INNER JOIN nascar.series sr
                 ON sr.id = ss.series_id
-                AND ss.deleted_at IS NULL
-            WHERE sr.name = %s
                 AND sr.deleted_at IS NULL
+            WHERE ss.series_id = %s
+                AND ss.deleted_at IS NULL
                 AND ss.year = %s
             ;
         """
-    season_results = hook.get_records(select_sql, parameters=(series_name, year))
+    season_results = hook.get_records(select_sql, parameters=(series.series_id, year))
     # Each result row is a tuple
     for season_result in season_results:
         season_id = int(season_result[1])
@@ -202,11 +203,11 @@ def create_weeks_if_not_exists(
             # If the week does not have a recorded race
             if week_is_race_completed is False and week_url is not None and week_url != "":
                 logging.info(
-                    f"No race recorded for {series_name} series {str(year)} week {week_number}"
+                    f"No race recorded for {series.db_name} series {str(year)} week {week_number}"
                 )
                 logging.info("Downloading files and attempting to insert available data...")
                 # Follow the week_url
-                base_path = source.storage_path_week(series_name, year, week_number)
+                base_path = source.storage_path_week(series.db_name, year, week_number)
                 scraper = Scraper(base_path)
                 time.sleep(random.randint(2, 5))
                 resolved_week_url = source.resolve_page_url(week_url)
@@ -228,7 +229,7 @@ def create_weeks_if_not_exists(
                 conv.convert_lap_leaders(race_results_html, f"{base_path}/lap-leaders.csv")
                 download_entrylist_html_if_missing(
                     source,
-                    series_name,
+                    series.db_name,
                     year,
                     week_number,
                     race_results_html,
@@ -239,7 +240,7 @@ def create_weeks_if_not_exists(
                     conv.convert_entrylist(entrylist_html_path, entrylist_csv_path)
                 practice_html_file_paths = download_practices_html_if_missing(
                     source,
-                    series_name,
+                    series.db_name,
                     year,
                     week_number,
                     race_results_html,
@@ -247,7 +248,7 @@ def create_weeks_if_not_exists(
                 conv.convert_practices(practice_html_file_paths)
                 qualifying_html_file_path = download_qualifying_html_if_missing(
                     source,
-                    series_name,
+                    series.db_name,
                     year,
                     week_number,
                     race_results_html,
@@ -255,7 +256,7 @@ def create_weeks_if_not_exists(
                 conv.convert_qualifying(qualifying_html_file_path)
                 loop_data_html_file_path = download_loop_data_html_if_missing(
                     source,
-                    series_name,
+                    series.db_name,
                     year,
                     week_number,
                     race_results_html,
@@ -263,7 +264,7 @@ def create_weeks_if_not_exists(
                 conv.convert_loop_data(loop_data_html_file_path)
                 penalties_html_file_path = download_penalties_html_if_missing(
                     source,
-                    series_name,
+                    series.db_name,
                     year,
                     week_number,
                     race_results_html,
@@ -280,7 +281,11 @@ def create_weeks_if_not_exists(
                         / "sql"
                         / "nascar_scraper"
                         / "load_entrylist_data.sql",
-                        context={"week_id": week_id, "entrylist_csv_file_path": entrylist_csv_path},
+                        context={
+                            "week_id": week_id,
+                            "series_id": series.series_id,
+                            "entrylist_csv_file_path": entrylist_csv_path,
+                        },
                     )
 
                 practice_files = glob.glob(f"{base_path}/practice-*.csv")
@@ -293,6 +298,7 @@ def create_weeks_if_not_exists(
                         / "load_practice_data.sql",
                         context={
                             "week_id": week_id,
+                            "series_id": series.series_id,
                             "number": i,
                             "practice_csv_file_path": practice_files[i - 1],
                         },
@@ -306,6 +312,7 @@ def create_weeks_if_not_exists(
                         / "load_qualifying_data.sql",
                         context={
                             "week_id": week_id,
+                            "series_id": series.series_id,
                             "qualifying_csv_file_path": f"{base_path}/qualifying.csv",
                         },
                     )
@@ -318,6 +325,7 @@ def create_weeks_if_not_exists(
                         / "load_race_data.sql",
                         context={
                             "week_id": week_id,
+                            "series_id": series.series_id,
                             "race_results_csv_file_path": f"{base_path}/race-results.csv",
                             "race_loop_data_csv_file_path": f"{base_path}/loop-data.csv",
                         },
@@ -370,19 +378,19 @@ with DAG(
         / "nascar_scraper"
         / "create_season_if_not_exists.sql",
         mysql_conn_id="nascar_conn",
-        parameters={"series_name": "Cup"},
+        parameters={"series_name": NascarSeries.CUP.db_name},
     )
 
     cup_series_create_tracks_if_not_exists_task = PythonOperator(
         task_id="cup_series_create_tracks_if_not_exists",
         python_callable=create_tracks_if_not_exists,
-        op_kwargs={"series_name": "Cup"},
+        op_kwargs={"series": NascarSeries.CUP},
     )
 
     cup_series_create_weeks_if_not_exists_task = PythonOperator(
         task_id="cup_series_create_weeks_if_not_exists",
         python_callable=create_weeks_if_not_exists,
-        op_kwargs={"series_name": "Cup"},
+        op_kwargs={"series": NascarSeries.CUP},
     )
 
     (

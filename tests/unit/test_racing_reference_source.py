@@ -6,6 +6,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from include.nascar.data_sources.racing_reference import RacingReferenceSource
+from include.nascar.enums import NascarSeries
 
 
 @pytest.fixture
@@ -23,10 +24,11 @@ def test_schedule_url(source: RacingReferenceSource) -> None:
 
 
 def test_storage_paths(source: RacingReferenceSource) -> None:
-    assert source.storage_path_series_year("Cup", 2025) == (
+    cup = NascarSeries.CUP.db_name
+    assert source.storage_path_series_year(cup, 2025) == (
         "/tmp/scraper/nascar/www.racing-reference.info/cup/2025"
     )
-    assert source.storage_path_week("Cup", 2025, 3) == (
+    assert source.storage_path_week(cup, 2025, 3) == (
         "/tmp/scraper/nascar/www.racing-reference.info/cup/2025/03"
     )
 

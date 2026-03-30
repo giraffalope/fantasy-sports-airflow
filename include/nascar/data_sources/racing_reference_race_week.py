@@ -23,7 +23,10 @@ from include.nascar.data_sources.racing_reference import (
     download_qualifying_html_if_missing,
     download_race_results_html_if_missing,
 )
+from include.nascar.enums import NascarSeries
 from include.utils.file import File
+
+_RR_CUP = NascarSeries.CUP
 
 
 def _parse_iso_datetime_string(s: str) -> datetime | None:
@@ -159,18 +162,18 @@ def iter_week_numbers_with_url(
 def cup_series_sync_weeks(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
-    for week_number, week_url in iter_week_numbers_with_url(src, "Cup", year):
-        download_race_results_html_if_missing(src, "Cup", year, week_number, week_url)
+    for week_number, week_url in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+        download_race_results_html_if_missing(src, _RR_CUP.db_name, year, week_number, week_url)
 
 
 def cup_series_sync_entrylists(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, "Cup", year):
-        base = src.storage_path_week("Cup", year, week_number)
+    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+        base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
-        download_entrylist_html_if_missing(src, "Cup", year, week_number, race_html)
+        download_entrylist_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
         entry_html = os.path.join(base, "entrylist.html")
         if os.path.isfile(entry_html):
             conv.convert_entrylist(entry_html, os.path.join(base, "entrylist.csv"))
@@ -180,10 +183,10 @@ def cup_series_sync_practices(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, "Cup", year):
-        base = src.storage_path_week("Cup", year, week_number)
+    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+        base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
-        download_practices_html_if_missing(src, "Cup", year, week_number, race_html)
+        download_practices_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
         paths = sorted(glob.glob(os.path.join(base, "practice-*.html")))
         if paths:
             conv.convert_practices(paths)
@@ -193,10 +196,10 @@ def cup_series_sync_qualifyings(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, "Cup", year):
-        base = src.storage_path_week("Cup", year, week_number)
+    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+        base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
-        qpath = download_qualifying_html_if_missing(src, "Cup", year, week_number, race_html)
+        qpath = download_qualifying_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
         conv.convert_qualifying(qpath)
 
 
@@ -204,8 +207,8 @@ def cup_series_sync_prerace_penalties(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, "Cup", year):
-        base = src.storage_path_week("Cup", year, week_number)
+    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+        base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         if not os.path.isfile(race_html):
             continue
@@ -218,8 +221,8 @@ def cup_series_sync_caution_flags(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, "Cup", year):
-        base = src.storage_path_week("Cup", year, week_number)
+    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+        base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         if not os.path.isfile(race_html):
             continue
@@ -230,14 +233,14 @@ def cup_series_sync_race_results(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, "Cup", year):
-        base = src.storage_path_week("Cup", year, week_number)
+    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+        base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         if not os.path.isfile(race_html):
             continue
         conv.convert_race_results(race_html, os.path.join(base, "race-results.csv"))
         loop_path = download_loop_data_html_if_missing(
-            src, "Cup", year, week_number, race_html
+            src, _RR_CUP.db_name, year, week_number, race_html
         )
         conv.convert_loop_data(loop_path)
 
@@ -246,11 +249,11 @@ def cup_series_sync_penalties_and_lap_leaders(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, "Cup", year):
-        base = src.storage_path_week("Cup", year, week_number)
+    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+        base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         pen_path = download_penalties_html_if_missing(
-            src, "Cup", year, week_number, race_html
+            src, _RR_CUP.db_name, year, week_number, race_html
         )
         conv.convert_penalties(pen_path)
         if os.path.isfile(race_html):
