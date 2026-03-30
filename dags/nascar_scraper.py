@@ -8,7 +8,6 @@ from pathlib import Path
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG
-from bs4 import BeautifulSoup
 
 from airflow_utils import MySqlTemplateFileExecutor, MySQLTemplateFileOperator
 from airflow_utils.wait_operator import WaitOperator
@@ -19,6 +18,13 @@ from include.nascar.data_sources import (
     cup_series_download_year_schedule_html,
 )
 from include.nascar.data_sources.base import NascarScrapeSource
+from include.nascar.data_sources.racing_reference import (
+    download_entrylist_html_if_missing,
+    download_loop_data_html_if_missing,
+    download_penalties_html_if_missing,
+    download_practices_html_if_missing,
+    download_qualifying_html_if_missing,
+)
 from include.utils.file import File
 from include.utils.scraper import Scraper
 
@@ -81,82 +87,6 @@ def create_tracks_if_not_exists(
             AND rrt.`deleted_at` IS NULL
         """
     )
-
-
-def download_entrylist_html(source, html_file_path, series_name, year, week_number):
-    with open(html_file_path) as html_file:
-        soup = BeautifulSoup(html_file, "html.parser")
-    url = source.extract_entrylist_url(soup)
-    if not url:
-        logging.warning("No entry list link found on race results page")
-        return
-    scraper = Scraper(source.storage_path_week(series_name, year, week_number))
-    time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="entrylist.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
-
-
-def download_practices(source, html_file_path, series_name, year, week_number):
-    html_file_paths = list()
-    with open(html_file_path) as html_file:
-        soup = BeautifulSoup(html_file, "html.parser")
-    url = source.extract_practice_results_url(soup)
-    if url is None:
-        return html_file_paths
-    week_path = source.storage_path_week(series_name, year, week_number)
-    scraper = Scraper(week_path)
-    time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="practice-01.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
-    first_practice_html = f"{week_path}/practice-01.html"
-    html_file_paths.append(first_practice_html)
-    with open(first_practice_html) as html_file:
-        soup = BeautifulSoup(html_file, "html.parser")
-    logging.info(soup.find("div", {"class": "entry-content"}))
-    for number, session_url in source.iter_practice_session_urls(soup):
-        scraper = Scraper(week_path)
-        time.sleep(random.randint(2, 5))
-        scraper.download(
-            url=session_url,
-            filename=f"practice-{number:02d}.html",
-            user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
-        )
-        html_file_paths.append(f"{week_path}/practice-{number:02d}.html")
-    return html_file_paths
-
-
-def download_qualifying(source, html_file_path, series_name, year, week_number):
-    with open(html_file_path) as html_file:
-        soup = BeautifulSoup(html_file, "html.parser")
-    url = source.extract_qualifying_url(soup)
-    if url is None:
-        return None
-    scraper = Scraper(source.storage_path_week(series_name, year, week_number))
-    time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="qualifying.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
-    return f"{source.storage_path_week(series_name, year, week_number)}/qualifying.html"
-
-
-def download_loop_data(source, html_file_path, series_name, year, week_number):
-    with open(html_file_path) as html_file:
-        soup = BeautifulSoup(html_file, "html.parser")
-    url = source.extract_loopdata_url(soup)
-    if url is None:
-        return None
-    scraper = Scraper(source.storage_path_week(series_name, year, week_number))
-    time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="loop-data.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
-    return f"{source.storage_path_week(series_name, year, week_number)}/loop-data.html"
-
-
-def download_penalties(source, html_file_path, series_name, year, week_number):
-    with open(html_file_path) as html_file:
-        soup = BeautifulSoup(html_file, "html.parser")
-    url = source.extract_penalties_url(soup)
-    if url is None:
-        return None
-    scraper = Scraper(source.storage_path_week(series_name, year, week_number))
-    time.sleep(random.randint(2, 5))
-    scraper.download(url=url, filename="penalties.html", user_agent=random.choice(RACING_REFERENCE_USER_AGENTS))
-    return f"{source.storage_path_week(series_name, year, week_number)}/penalties.html"
 
 
 def create_weeks_if_not_exists(
@@ -296,47 +226,47 @@ def create_weeks_if_not_exists(
                 )
                 conv.convert_caution_flags(race_results_html, f"{base_path}/caution-flags.csv")
                 conv.convert_lap_leaders(race_results_html, f"{base_path}/lap-leaders.csv")
-                download_entrylist_html(
+                download_entrylist_html_if_missing(
                     source,
-                    html_file_path=race_results_html,
-                    series_name=series_name,
-                    year=year,
-                    week_number=week_number,
+                    series_name,
+                    year,
+                    week_number,
+                    race_results_html,
                 )
                 entrylist_html_path = f"{base_path}/entrylist.html"
                 entrylist_csv_path = f"{base_path}/entrylist.csv"
                 if Path(entrylist_html_path).is_file():
                     conv.convert_entrylist(entrylist_html_path, entrylist_csv_path)
-                practice_html_file_paths = download_practices(
+                practice_html_file_paths = download_practices_html_if_missing(
                     source,
-                    html_file_path=race_results_html,
-                    series_name=series_name,
-                    year=year,
-                    week_number=week_number,
+                    series_name,
+                    year,
+                    week_number,
+                    race_results_html,
                 )
                 conv.convert_practices(practice_html_file_paths)
-                qualifying_html_file_path = download_qualifying(
+                qualifying_html_file_path = download_qualifying_html_if_missing(
                     source,
-                    html_file_path=race_results_html,
-                    series_name=series_name,
-                    year=year,
-                    week_number=week_number,
+                    series_name,
+                    year,
+                    week_number,
+                    race_results_html,
                 )
                 conv.convert_qualifying(qualifying_html_file_path)
-                loop_data_html_file_path = download_loop_data(
+                loop_data_html_file_path = download_loop_data_html_if_missing(
                     source,
-                    html_file_path=race_results_html,
-                    series_name=series_name,
-                    year=year,
-                    week_number=week_number,
+                    series_name,
+                    year,
+                    week_number,
+                    race_results_html,
                 )
                 conv.convert_loop_data(loop_data_html_file_path)
-                penalties_html_file_path = download_penalties(
+                penalties_html_file_path = download_penalties_html_if_missing(
                     source,
-                    html_file_path=race_results_html,
-                    series_name=series_name,
-                    year=year,
-                    week_number=week_number,
+                    series_name,
+                    year,
+                    week_number,
+                    race_results_html,
                 )
                 conv.convert_penalties(penalties_html_file_path)
 

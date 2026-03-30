@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import random
+import time
 from typing import Any, cast
 
 from bs4 import BeautifulSoup
 
-from include.nascar.html_to_csv_converter import HtmlToCsvConverter
+from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
 from include.utils.scraper import Scraper
 
 RACING_REFERENCE_USER_AGENTS = [
@@ -22,37 +25,37 @@ DEFAULT_NASCAR_SCRAPER_ROOT = "/home/airflow/scraper/nascar"
 
 
 class RacingReferenceHtmlConverters:
-    """Delegates to HtmlToCsvConverter (Racing Reference markup)."""
+    """Delegates to RacingReferenceHtmlToCsv (www.racing-reference.info markup)."""
 
     def convert_schedule(self, html_file_path: str, csv_file_path: str) -> None:
-        HtmlToCsvConverter.convert_schedule(html_file_path, csv_file_path)
+        RacingReferenceHtmlToCsv.convert_schedule(html_file_path, csv_file_path)
 
     def convert_race_results(self, html_file_path: str, csv_file_path: str) -> None:
-        HtmlToCsvConverter.convert_race_results(html_file_path, csv_file_path)
+        RacingReferenceHtmlToCsv.convert_race_results(html_file_path, csv_file_path)
 
     def convert_prerace_penalties(self, html_file_path: str, csv_file_path: str) -> None:
-        HtmlToCsvConverter.convert_prerace_penalties(html_file_path, csv_file_path)
+        RacingReferenceHtmlToCsv.convert_prerace_penalties(html_file_path, csv_file_path)
 
     def convert_caution_flags(self, html_file_path: str, csv_file_path: str) -> None:
-        HtmlToCsvConverter.convert_caution_flags(html_file_path, csv_file_path)
+        RacingReferenceHtmlToCsv.convert_caution_flags(html_file_path, csv_file_path)
 
     def convert_lap_leaders(self, html_file_path: str, csv_file_path: str) -> None:
-        HtmlToCsvConverter.convert_lap_leaders(html_file_path, csv_file_path)
+        RacingReferenceHtmlToCsv.convert_lap_leaders(html_file_path, csv_file_path)
 
     def convert_entrylist(self, html_file_path: str, csv_file_path: str) -> None:
-        HtmlToCsvConverter.convert_entrylist(html_file_path, csv_file_path)
+        RacingReferenceHtmlToCsv.convert_entrylist(html_file_path, csv_file_path)
 
     def convert_practices(self, paths: list[str]) -> None:
-        HtmlToCsvConverter.convert_practices(paths)
+        RacingReferenceHtmlToCsv.convert_practices(paths)
 
     def convert_qualifying(self, path: str | None) -> None:
-        HtmlToCsvConverter.convert_qualifying(path)
+        RacingReferenceHtmlToCsv.convert_qualifying(path)
 
     def convert_loop_data(self, path: str | None) -> None:
-        HtmlToCsvConverter.convert_loop_data(path)
+        RacingReferenceHtmlToCsv.convert_loop_data(path)
 
     def convert_penalties(self, path: str | None) -> None:
-        HtmlToCsvConverter.convert_penalties(path)
+        RacingReferenceHtmlToCsv.convert_penalties(path)
 
 
 class RacingReferenceSource:
@@ -191,3 +194,196 @@ def convert_year_schedule_html_to_csv(
 
 def cup_series_convert_year_schedule_html_to_csv(**context: Any) -> None:
     convert_year_schedule_html_to_csv(context, "Cup")
+
+
+def _sleep_download_jitter() -> None:
+    time.sleep(random.randint(2, 5))
+
+
+def download_race_results_html_if_missing(
+    source: RacingReferenceSource,
+    series_name: str,
+    year: int,
+    week_number: int,
+    week_url: str,
+) -> None:
+    """Fetch ``race-results.html`` from ``week_url`` when the file is absent."""
+    week_path = source.storage_path_week(series_name, year, week_number)
+    race_html = os.path.join(week_path, "race-results.html")
+    if os.path.isfile(race_html):
+        return
+    resolved = source.resolve_page_url(week_url.strip())
+    if not resolved:
+        logging.warning(
+            "Could not resolve week_url for %s year %s week %s; skipping race results download",
+            series_name,
+            year,
+            week_number,
+        )
+        return
+    scraper = Scraper(week_path)
+    _sleep_download_jitter()
+    scraper.download(
+        url=resolved,
+        filename="race-results.html",
+        user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
+    )
+
+
+def download_entrylist_html_if_missing(
+    source: RacingReferenceSource,
+    series_name: str,
+    year: int,
+    week_number: int,
+    race_results_html_path: str,
+) -> None:
+    if not os.path.isfile(race_results_html_path):
+        return
+    week_path = source.storage_path_week(series_name, year, week_number)
+    entry_path = os.path.join(week_path, "entrylist.html")
+    if os.path.isfile(entry_path):
+        return
+    with open(race_results_html_path, encoding="utf-8") as html_file:
+        soup = BeautifulSoup(html_file, "html.parser")
+    url = source.extract_entrylist_url(soup)
+    if not url:
+        logging.warning("No entry list link for %s year %s week %s", series_name, year, week_number)
+        return
+    scraper = Scraper(week_path)
+    _sleep_download_jitter()
+    scraper.download(
+        url=url,
+        filename="entrylist.html",
+        user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
+    )
+
+
+def download_practices_html_if_missing(
+    source: RacingReferenceSource,
+    series_name: str,
+    year: int,
+    week_number: int,
+    race_results_html_path: str,
+) -> list[str]:
+    """Ensure practice session HTML exists; return paths to all ``practice-*.html`` files."""
+    week_path = source.storage_path_week(series_name, year, week_number)
+    out: list[str] = []
+    if not os.path.isfile(race_results_html_path):
+        return out
+    with open(race_results_html_path, encoding="utf-8") as html_file:
+        soup_rr = BeautifulSoup(html_file, "html.parser")
+    url = source.extract_practice_results_url(soup_rr)
+    if url is None:
+        return out
+    first = os.path.join(week_path, "practice-01.html")
+    if not os.path.isfile(first):
+        scraper = Scraper(week_path)
+        _sleep_download_jitter()
+        scraper.download(
+            url=url,
+            filename="practice-01.html",
+            user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
+        )
+    if not os.path.isfile(first):
+        return out
+    out.append(first)
+    with open(first, encoding="utf-8") as html_file:
+        soup_p = BeautifulSoup(html_file, "html.parser")
+    for number, session_url in source.iter_practice_session_urls(soup_p):
+        fn = f"practice-{number:02d}.html"
+        p = os.path.join(week_path, fn)
+        if not os.path.isfile(p):
+            scraper = Scraper(week_path)
+            _sleep_download_jitter()
+            scraper.download(
+                url=session_url,
+                filename=fn,
+                user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
+            )
+        if os.path.isfile(p) and p not in out:
+            out.append(p)
+    return out
+
+
+def download_qualifying_html_if_missing(
+    source: RacingReferenceSource,
+    series_name: str,
+    year: int,
+    week_number: int,
+    race_results_html_path: str,
+) -> str | None:
+    week_path = source.storage_path_week(series_name, year, week_number)
+    qpath = os.path.join(week_path, "qualifying.html")
+    if os.path.isfile(qpath):
+        return qpath
+    if not os.path.isfile(race_results_html_path):
+        return None
+    with open(race_results_html_path, encoding="utf-8") as html_file:
+        soup = BeautifulSoup(html_file, "html.parser")
+    url = source.extract_qualifying_url(soup)
+    if url is None:
+        return None
+    scraper = Scraper(week_path)
+    _sleep_download_jitter()
+    scraper.download(
+        url=url,
+        filename="qualifying.html",
+        user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
+    )
+    return qpath if os.path.isfile(qpath) else None
+
+
+def download_loop_data_html_if_missing(
+    source: RacingReferenceSource,
+    series_name: str,
+    year: int,
+    week_number: int,
+    race_results_html_path: str,
+) -> str | None:
+    week_path = source.storage_path_week(series_name, year, week_number)
+    lpath = os.path.join(week_path, "loop-data.html")
+    if os.path.isfile(lpath):
+        return lpath
+    if not os.path.isfile(race_results_html_path):
+        return None
+    with open(race_results_html_path, encoding="utf-8") as html_file:
+        soup = BeautifulSoup(html_file, "html.parser")
+    url = source.extract_loopdata_url(soup)
+    if url is None:
+        return None
+    scraper = Scraper(week_path)
+    _sleep_download_jitter()
+    scraper.download(
+        url=url,
+        filename="loop-data.html",
+        user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
+    )
+    return lpath if os.path.isfile(lpath) else None
+
+
+def download_penalties_html_if_missing(
+    source: RacingReferenceSource,
+    series_name: str,
+    year: int,
+    week_number: int,
+    race_results_html_path: str,
+) -> str | None:
+    week_path = source.storage_path_week(series_name, year, week_number)
+    ppath = os.path.join(week_path, "penalties.html")
+    if os.path.isfile(ppath):
+        return ppath
+    if not os.path.isfile(race_results_html_path):
+        return None
+    with open(race_results_html_path, encoding="utf-8") as html_file:
+        soup = BeautifulSoup(html_file, "html.parser")
+    url = source.extract_penalties_url(soup)
+    if url is None:
+        return None
+    scraper = Scraper(week_path)
+    _sleep_download_jitter()
+    scraper.download(
+        url=url,
+        filename="penalties.html",
+        user_agent=random.choice(RACING_REFERENCE_USER_AGENTS),
+    )
+    return ppath if os.path.isfile(ppath) else None
