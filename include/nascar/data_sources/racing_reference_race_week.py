@@ -2,6 +2,11 @@
 Cup race-week HTML sync from ``schedule.csv`` (Racing Reference).
 
 Each callable matches one DAG task: download missing artifacts, then convert where applicable.
+
+Schedule rows are skipped when ``week_date`` is missing/unparseable or when that date
+(start of day UTC) is **not** strictly before the DAG run anchor plus
+``RACE_WEEK_SCRAPE_HORIZON_DAYS`` — so distant future races are not scraped on
+every asset-triggered run.
 """
 
 from __future__ import annotations
@@ -10,7 +15,7 @@ import glob
 import logging
 import os
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from include.nascar.data_sources.racing_reference import (
@@ -27,6 +32,8 @@ from include.nascar.enums import NascarSeries
 from include.utils.file import File
 
 _RR_CUP = NascarSeries.CUP
+
+RACE_WEEK_SCRAPE_HORIZON_DAYS = 14
 
 
 def _parse_iso_datetime_string(s: str) -> datetime | None:
@@ -62,6 +69,117 @@ def _year_from_airflow_run_id(run_id: str | None) -> int | None:
         return int(dt.year) if dt is not None else None
 
     return None
+
+
+def _datetime_from_airflow_run_id(run_id: str | None) -> datetime | None:
+    """Parse full datetime from ``scheduled__…`` / ``asset_triggered__…`` run ids."""
+    if not run_id:
+        return None
+    if run_id.startswith("scheduled__"):
+        return _parse_iso_datetime_string(run_id[len("scheduled__") :])
+    if run_id.startswith("asset_triggered__"):
+        rest = run_id[len("asset_triggered__") :]
+        if "_" not in rest:
+            return None
+        iso_candidate = rest.rsplit("_", 1)[0]
+        return _parse_iso_datetime_string(iso_candidate)
+    return None
+
+
+def _as_utc_datetime(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def parse_schedule_week_date(raw: str | None) -> date | None:
+    """Parse ``week_date`` from schedule CSV (``YYYY-MM-DD`` or a string that starts with it)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    head = s[:10]
+    try:
+        return date.fromisoformat(head)
+    except ValueError:
+        return None
+
+
+def week_date_within_race_week_scrape_horizon(week_date: date, run_anchor: datetime) -> bool:
+    """
+    True if this race week should be scraped for the given DAG run.
+
+    The week is included when the start of ``week_date`` in UTC is strictly before
+    ``run_anchor`` (normalized to UTC) plus ``RACE_WEEK_SCRAPE_HORIZON_DAYS``.
+    """
+    run_utc = _as_utc_datetime(run_anchor)
+    cutoff = run_utc + timedelta(days=RACE_WEEK_SCRAPE_HORIZON_DAYS)
+    week_start = datetime(week_date.year, week_date.month, week_date.day, tzinfo=UTC)
+    return week_start < cutoff
+
+
+def race_week_run_anchor_from_context(context: dict[str, Any]) -> datetime:
+    """
+    DAG run instant for schedule filtering (mirrors year-resolution fallbacks in
+    :func:`_cup_series_schedule_year_from_context`).
+    """
+    dis = context.get("data_interval_start")
+    if dis is not None:
+        return _as_utc_datetime(dis)
+    logical = context.get("logical_date")
+    if logical is not None:
+        return _as_utc_datetime(logical)
+
+    events_map = context.get("triggering_asset_events")
+    if events_map is not None:
+        for events in events_map.values():
+            for event in events or ():
+                src = getattr(event, "source_dag_run", None)
+                if src is not None:
+                    for attr in (
+                        "data_interval_start",
+                        "logical_date",
+                        "run_after",
+                        "start_date",
+                    ):
+                        dt = getattr(src, attr, None)
+                        if dt is not None:
+                            return _as_utc_datetime(dt)
+                dt = _datetime_from_airflow_run_id(getattr(event, "source_run_id", None))
+                if dt is not None:
+                    return _as_utc_datetime(dt)
+                ts = getattr(event, "timestamp", None)
+                if ts is not None:
+                    return _as_utc_datetime(ts)
+
+    dag_run = context.get("dag_run")
+    if dag_run is not None:
+        for attr in (
+            "data_interval_start",
+            "logical_date",
+            "run_after",
+            "start_date",
+        ):
+            dt = getattr(dag_run, attr, None)
+            if dt is not None:
+                return _as_utc_datetime(dt)
+        dt = _datetime_from_airflow_run_id(getattr(dag_run, "run_id", None))
+        if dt is not None:
+            return _as_utc_datetime(dt)
+
+    ti = context.get("ti")
+    if ti is not None:
+        dr = getattr(ti, "dag_run", None)
+        if dr is not None:
+            dt = _datetime_from_airflow_run_id(getattr(dr, "run_id", None))
+            if dt is not None:
+                return _as_utc_datetime(dt)
+
+    raise ValueError(
+        "Cannot resolve race-week run anchor: no data_interval_start, logical_date, "
+        "triggering_asset_events, or dag_run date/run_id fallbacks"
+    )
 
 
 def _year_from_airflow_scheduled_run_id(run_id: str | None) -> int | None:
@@ -140,7 +258,11 @@ def _schedule_csv_path(source: RacingReferenceSource, series_name: str, year: in
 
 
 def iter_week_numbers_with_url(
-    source: RacingReferenceSource, series_name: str, year: int
+    source: RacingReferenceSource,
+    series_name: str,
+    year: int,
+    *,
+    run_anchor: datetime | None = None,
 ) -> Iterator[tuple[int, str]]:
     path = _schedule_csv_path(source, series_name, year)
     if not os.path.isfile(path):
@@ -156,21 +278,34 @@ def iter_week_numbers_with_url(
         except (KeyError, TypeError, ValueError):
             logging.warning("Bad week_number in schedule row: %s", row)
             continue
+        if run_anchor is not None:
+            wd = parse_schedule_week_date(row.get("week_date"))
+            if wd is None:
+                logging.warning("Skipping schedule row without parseable week_date: %s", row)
+                continue
+            if not week_date_within_race_week_scrape_horizon(wd, run_anchor):
+                continue
         yield week_number, week_url
 
 
 def cup_series_sync_weeks(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
-    for week_number, week_url in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+    run_anchor = race_week_run_anchor_from_context(context)
+    for week_number, week_url in iter_week_numbers_with_url(
+        src, _RR_CUP.db_name, year, run_anchor=run_anchor
+    ):
         download_race_results_html_if_missing(src, _RR_CUP.db_name, year, week_number, week_url)
 
 
 def cup_series_sync_entrylists(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
+    run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+    for week_number, _ in iter_week_numbers_with_url(
+        src, _RR_CUP.db_name, year, run_anchor=run_anchor
+    ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         download_entrylist_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
@@ -182,8 +317,11 @@ def cup_series_sync_entrylists(**context: Any) -> None:
 def cup_series_sync_practices(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
+    run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+    for week_number, _ in iter_week_numbers_with_url(
+        src, _RR_CUP.db_name, year, run_anchor=run_anchor
+    ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         download_practices_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
@@ -195,8 +333,11 @@ def cup_series_sync_practices(**context: Any) -> None:
 def cup_series_sync_qualifyings(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
+    run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+    for week_number, _ in iter_week_numbers_with_url(
+        src, _RR_CUP.db_name, year, run_anchor=run_anchor
+    ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         qpath = download_qualifying_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
@@ -206,8 +347,11 @@ def cup_series_sync_qualifyings(**context: Any) -> None:
 def cup_series_sync_prerace_penalties(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
+    run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+    for week_number, _ in iter_week_numbers_with_url(
+        src, _RR_CUP.db_name, year, run_anchor=run_anchor
+    ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         if not os.path.isfile(race_html):
@@ -220,8 +364,11 @@ def cup_series_sync_prerace_penalties(**context: Any) -> None:
 def cup_series_sync_caution_flags(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
+    run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+    for week_number, _ in iter_week_numbers_with_url(
+        src, _RR_CUP.db_name, year, run_anchor=run_anchor
+    ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         if not os.path.isfile(race_html):
@@ -232,8 +379,11 @@ def cup_series_sync_caution_flags(**context: Any) -> None:
 def cup_series_sync_race_results(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
+    run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+    for week_number, _ in iter_week_numbers_with_url(
+        src, _RR_CUP.db_name, year, run_anchor=run_anchor
+    ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         if not os.path.isfile(race_html):
@@ -248,8 +398,11 @@ def cup_series_sync_race_results(**context: Any) -> None:
 def cup_series_sync_penalties_and_lap_leaders(**context: Any) -> None:
     src = _resolve_racing_reference_source(None)
     year = _cup_series_schedule_year_from_context(context)
+    run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    for week_number, _ in iter_week_numbers_with_url(src, _RR_CUP.db_name, year):
+    for week_number, _ in iter_week_numbers_with_url(
+        src, _RR_CUP.db_name, year, run_anchor=run_anchor
+    ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
         race_html = os.path.join(base, "race-results.html")
         pen_path = download_penalties_html_if_missing(

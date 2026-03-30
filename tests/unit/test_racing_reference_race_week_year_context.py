@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
 from include.nascar.data_sources.racing_reference_race_week import (
+    RACE_WEEK_SCRAPE_HORIZON_DAYS,
     _cup_series_schedule_year_from_context,
     _year_from_airflow_run_id,
     _year_from_airflow_scheduled_run_id,
+    parse_schedule_week_date,
+    race_week_run_anchor_from_context,
+    week_date_within_race_week_scrape_horizon,
 )
 
 
@@ -69,3 +73,33 @@ def test_year_from_triggering_asset_event_timestamp() -> None:
 def test_raises_when_unresolvable() -> None:
     with pytest.raises(ValueError):
         _cup_series_schedule_year_from_context({})
+
+
+def test_race_week_run_anchor_matches_data_interval_start() -> None:
+    ctx = {"data_interval_start": datetime(2025, 7, 15, 14, 30, tzinfo=UTC)}
+    assert race_week_run_anchor_from_context(ctx) == datetime(2025, 7, 15, 14, 30, tzinfo=UTC)
+
+
+def test_parse_schedule_week_date() -> None:
+    assert parse_schedule_week_date("2025-03-09") == date(2025, 3, 9)
+    assert parse_schedule_week_date("  2025-03-09T00:00:00  ") == date(2025, 3, 9)
+    assert parse_schedule_week_date("") is None
+    assert parse_schedule_week_date("nope") is None
+
+
+def test_week_date_within_horizon_past_and_near_future() -> None:
+    run = datetime(2025, 7, 15, 12, 0, tzinfo=UTC)
+    assert week_date_within_race_week_scrape_horizon(date(2025, 2, 16), run)
+    assert week_date_within_race_week_scrape_horizon(date(2025, 7, 28), run)
+
+
+def test_week_date_within_horizon_excludes_far_future() -> None:
+    run = datetime(2025, 7, 15, 12, 0, tzinfo=UTC)
+    cutoff_day = (run + timedelta(days=RACE_WEEK_SCRAPE_HORIZON_DAYS)).date()
+    far = cutoff_day + timedelta(days=30)
+    assert not week_date_within_race_week_scrape_horizon(far, run)
+
+
+def test_race_week_run_anchor_raises_without_fallbacks() -> None:
+    with pytest.raises(ValueError, match="race-week run anchor"):
+        race_week_run_anchor_from_context({})
