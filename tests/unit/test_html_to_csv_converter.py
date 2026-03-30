@@ -79,6 +79,57 @@ def test_convert_race_results_no_results_table_no_crash(tmp_path) -> None:
     assert "position" in text
 
 
+def test_convert_race_results_plain_td_without_col_class(tmp_path) -> None:
+    """Saved RR pages sometimes omit ``class=\"col\"`` on ``td`` cells."""
+    html = tmp_path / "race.html"
+    csv_path = tmp_path / "race.csv"
+    html.write_text(
+        """
+        <table class="race-results-tbl">
+          <tbody>
+            <tr><td>Pos</td><td>St</td><td>#</td><td>Driver</td><td>Sp</td><td>Car</td>
+                <td>Laps</td><td>Stat</td><td>Led</td><td>Pts</td><td>PP</td></tr>
+            <tr>
+              <td>1</td><td>3</td><td>11</td><td>Jane</td>
+              <td><b>Co</b> <a>Own</a></td><td>Ford</td><td>200</td><td>Running</td>
+              <td>5</td><td>40</td><td>5</td>
+            </tr>
+          </tbody>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_race_results(str(html), str(csv_path))
+    body = csv_path.read_text(encoding="utf-8")
+    assert "Jane" in body
+    assert "Co" in body
+
+
+def test_convert_race_results_twelve_columns_skips_money_column(tmp_path) -> None:
+    """Money sits between Laps and Status on many RR result tables."""
+    html = tmp_path / "race.html"
+    csv_path = tmp_path / "race.csv"
+    html.write_text(
+        """
+        <table class="race-results-tbl"><tbody>
+          <tr><td>Pos</td><td>St</td><td>#</td><td>D</td><td>S</td><td>C</td>
+              <td>L</td><td>$</td><td>Stt</td><td>Ld</td><td>Pts</td><td>PP</td></tr>
+          <tr>
+            <td>1</td><td>1</td><td>2</td><td>Bob</td>
+            <td><b>B</b> <a>O</a></td><td>Ch</td><td>100</td><td>999</td>
+            <td>Run</td><td>10</td><td>50</td><td>7</td>
+          </tr>
+        </tbody></table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_race_results(str(html), str(csv_path))
+    body = csv_path.read_text(encoding="utf-8")
+    assert "Bob" in body
+    assert "Run" in body
+    assert "999" not in body
+
+
 def test_convert_race_results_skips_short_rows(tmp_path) -> None:
     html = tmp_path / "race.html"
     csv_path = tmp_path / "race.csv"
@@ -220,3 +271,71 @@ def test_convert_prerace_penalties_to_the_back_skips_short_rows(tmp_path) -> Non
     body = csv_path.read_text(encoding="utf-8")
     assert "A" in body
     assert "only one" not in body
+
+
+def test_convert_practices_nine_columns_omits_behind_leader(tmp_path) -> None:
+    """Matches RR Cup markup: col 5 = sec behind (e.g. 0.121), col 6 = MPH (~175+)."""
+    html = tmp_path / "practice-01.html"
+    html.write_text(
+        """
+        <table class="pracResultsTbl">
+          <tr><td class="newhead">Practice 1 results for this race:</td></tr>
+          <tr class="odd">
+            <td class="col">1</td>
+            <td class="col"><a>Leader</a></td>
+            <td class="col">2</td>
+            <td class="col">Ford</td>
+            <td class="col">48.025</td>
+            <td class="col"></td>
+            <td class="col">187.402</td>
+            <td class="col">13</td>
+            <td class="col">3</td>
+          </tr>
+          <tr class="even">
+            <td class="col">2</td>
+            <td class="col"><a>Chaser</a></td>
+            <td class="col">1</td>
+            <td class="col">Chevrolet</td>
+            <td class="col">48.146</td>
+            <td class="col">0.121</td>
+            <td class="col">186.931</td>
+            <td class="col">6</td>
+            <td class="col">4</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_practices([str(html)])
+    csv_path = tmp_path / "practice-01.csv"
+    body = csv_path.read_text(encoding="utf-8")
+    assert "187.402" in body
+    assert "186.931" in body
+    assert "0.121" not in body
+    assert "Leader" in body
+
+
+def test_convert_practices_eight_columns(tmp_path) -> None:
+    html = tmp_path / "practice-01.html"
+    html.write_text(
+        """
+        <table class="pracResultsTbl">
+          <tr><td class="newhead">Practice Results</td></tr>
+          <tr class="even">
+            <td class="col">2</td>
+            <td class="col"><a>Other</a></td>
+            <td class="col">3</td>
+            <td class="col">Ford</td>
+            <td class="col">31.0</td>
+            <td class="col">175.0</td>
+            <td class="col">12</td>
+            <td class="col">30.5</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_practices([str(html)])
+    body = (tmp_path / "practice-01.csv").read_text(encoding="utf-8")
+    assert "175.0" in body
+    assert "Other" in body

@@ -12,6 +12,9 @@ from bs4 import BeautifulSoup
 
 from include.utils.file import File
 
+# ``td`` race rows: class may be ``col``, ``col odd``, or (on some saves) omitted.
+_RR_TD_COL_CLASS = re.compile(r"(^|\s)col(\s|$)")
+
 
 class RacingReferenceHtmlToCsv:
     """Parsers for Racing Reference result/schedule tables (used by load SQL)."""
@@ -73,11 +76,96 @@ class RacingReferenceHtmlToCsv:
         File.write_csv(csv_file_path, csv_list, csv_row.keys())
 
     @staticmethod
+    def _race_results_row_cells(tr) -> list:
+        """Collect result ``td``/``th`` cells; RR sometimes omits ``class=\"col\"`` on saved HTML."""
+        cols = tr.find_all("td", class_=_RR_TD_COL_CLASS)
+        if len(cols) >= 10:
+            return cols
+        direct = tr.find_all(["td", "th"], recursive=False)
+        if len(direct) >= 10:
+            return direct
+        return tr.find_all(["td", "th"])
+
+    @staticmethod
+    def _race_results_row_to_fields(cells: list) -> dict[str, str] | None:
+        """
+        Map table cells to CSV columns expected by ``load_race_data.sql``.
+
+        Layouts:
+        - 11 cells: no Money column (Cup-style).
+        - 12 cells: Money between Laps and Status (many RR tables).
+        - 10 cells: no Playoff points column.
+        """
+        n = len(cells)
+        if n < 10:
+            return None
+
+        def txt(i: int) -> str:
+            return cells[i].get_text(strip=True) if i < n else ""
+
+        sponsor_cell = cells[4]
+        sponsor = (
+            sponsor_cell.find("b").get_text(strip=True) if sponsor_cell.find("b") else ""
+        )
+        owner = (
+            sponsor_cell.find("a").get_text(strip=True) if sponsor_cell.find("a") else ""
+        )
+
+        first = txt(0).lower()
+        if first in ("pos", "fin", "pst", "#", "st") or first.startswith("pos"):
+            return None
+
+        if n == 10:
+            return {
+                "position": txt(0),
+                "starting_position": txt(1),
+                "number": txt(2),
+                "name": txt(3),
+                "sponsor": sponsor,
+                "owner": owner,
+                "car": txt(5),
+                "laps": txt(6),
+                "status": txt(7),
+                "laps_led": txt(8),
+                "points": txt(9),
+                "playoff_points": "",
+            }
+        if n == 11:
+            return {
+                "position": txt(0),
+                "starting_position": txt(1),
+                "number": txt(2),
+                "name": txt(3),
+                "sponsor": sponsor,
+                "owner": owner,
+                "car": txt(5),
+                "laps": txt(6),
+                "status": txt(7),
+                "laps_led": txt(8),
+                "points": txt(9),
+                "playoff_points": txt(10),
+            }
+        # 12+ : Money (or similar) at index 7 after laps
+        return {
+            "position": txt(0),
+            "starting_position": txt(1),
+            "number": txt(2),
+            "name": txt(3),
+            "sponsor": sponsor,
+            "owner": owner,
+            "car": txt(5),
+            "laps": txt(6),
+            "status": txt(8),
+            "laps_led": txt(9),
+            "points": txt(10),
+            "playoff_points": txt(11) if n > 11 else "",
+        }
+
+    @staticmethod
     def convert_race_results(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
         results_table = soup.find("table", {"class": "race-results-tbl"})
-        rows = results_table.find_all("tr")[1:] if results_table is not None else []
         csv_list: list = []
         headers = [
             "position",
@@ -93,39 +181,17 @@ class RacingReferenceHtmlToCsv:
             "points",
             "playoff_points",
         ]
-        for row in rows:
-            cols = row.find_all("td", {"class": "col"})
-            if len(cols) < 11:
-                continue
-            position = cols[0].get_text().strip()
-            starting_position = cols[1].get_text().strip()
-            number = cols[2].get_text().strip()
-            name = cols[3].get_text().strip()
-            sponsor_owner = cols[4]
-            sponsor = sponsor_owner.find("b").get_text().strip() if sponsor_owner.find("b") else ""
-            owner = sponsor_owner.find("a").get_text().strip() if sponsor_owner.find("a") else ""
-            car = cols[5].get_text().strip()
-            laps = cols[6].get_text().strip()
-            status = cols[7].get_text().strip()
-            laps_led = cols[8].get_text().strip()
-            points = cols[9].get_text().strip()
-            playoff_points = cols[10].get_text().strip()
-            csv_list.append(
-                {
-                    "position": position,
-                    "starting_position": starting_position,
-                    "number": number,
-                    "name": name,
-                    "sponsor": sponsor,
-                    "owner": owner,
-                    "car": car,
-                    "laps": laps,
-                    "status": status,
-                    "laps_led": laps_led,
-                    "points": points,
-                    "playoff_points": playoff_points,
-                }.values()
-            )
+        if results_table is not None:
+            tbody = results_table.find("tbody")
+            row_container = tbody or results_table
+            for row in row_container.find_all("tr"):
+                if row.find("td") is None and row.find("th") is not None:
+                    continue
+                cells = RacingReferenceHtmlToCsv._race_results_row_cells(row)
+                fields = RacingReferenceHtmlToCsv._race_results_row_to_fields(cells)
+                if fields is None:
+                    continue
+                csv_list.append(fields.values())
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
 
@@ -330,7 +396,8 @@ class RacingReferenceHtmlToCsv:
                 "best_lap",
             ]
             for table in tables:
-                table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
+                nh = table.find("td", {"class": "newhead"})
+                table_heading = nh.get_text().strip().lower() if nh else ""
                 logging.info(f"table_heading: {table_heading}")
                 if "practice" in table_heading and "results" in table_heading:
                     tableIndex = index
@@ -342,33 +409,42 @@ class RacingReferenceHtmlToCsv:
                 rows = table.find_all("tr", class_=["odd", "even"])
                 for row in rows:
                     cols = row.find_all("td", {"class": "col"})
-                    if cols:
-                        rank = cols[0].get_text().strip()
-                        driver_name = (
-                            cols[1].find("a").get_text().strip()
-                            if cols[1].find("a") is not None
-                            else ""
-                        )
-                        number = cols[2].get_text().strip()
-                        manufacturer = cols[3].get_text().strip()
-                        time = RacingReferenceHtmlToCsv.convert_to_seconds(cols[4].get_text().strip())
-                        diff = cols[5].get_text().strip()
+                    if not cols:
+                        continue
+                    # Cup practice table (``pracResultsTbl``), 9 data cells:
+                    # 0 Pos, 1 Driver, 2 #, 3 Mfr, 4 lap time, 5 sec behind leader (omit),
+                    # 6 speed (MPH), 7 laps, 8 best lap. Leader row often has empty col 5.
+                    if len(cols) < 8:
+                        continue
+                    rank = cols[0].get_text().strip()
+                    driver_name = (
+                        cols[1].find("a").get_text().strip()
+                        if cols[1].find("a") is not None
+                        else cols[1].get_text().strip()
+                    )
+                    number = cols[2].get_text().strip()
+                    manufacturer = cols[3].get_text().strip()
+                    time = RacingReferenceHtmlToCsv.convert_to_seconds(cols[4].get_text().strip())
+                    if len(cols) >= 9:
                         speed = cols[6].get_text().strip()
                         num_laps = cols[7].get_text().strip()
                         best_lap = cols[8].get_text().strip()
-                        csv_list.append(
-                            {
-                                "rank": rank,
-                                "driver_name": driver_name,
-                                "number": number,
-                                "manufacturer": manufacturer,
-                                "time": time,
-                                "diff": diff,
-                                "speed": speed,
-                                "num_laps": num_laps,
-                                "best_lap": best_lap,
-                            }.values()
-                        )
+                    else:
+                        speed = cols[5].get_text().strip()
+                        num_laps = cols[6].get_text().strip()
+                        best_lap = cols[7].get_text().strip()
+                    csv_list.append(
+                        {
+                            "rank": rank,
+                            "driver_name": driver_name,
+                            "number": number,
+                            "manufacturer": manufacturer,
+                            "time": time,
+                            "speed": speed,
+                            "num_laps": num_laps,
+                            "best_lap": best_lap,
+                        }.values()
+                    )
             else:
                 print("No practice was found")
             csv_file_path = path.replace(".html", ".csv")

@@ -15,7 +15,6 @@ CREATE TABLE nascar.temp_practice_{{ week_id }}_{{ number }} (
     number VARCHAR(255),
     manufacturer VARCHAR(255),
     time VARCHAR(255),
-    time_diff VARCHAR(255),
     speed VARCHAR(255),
     num_laps VARCHAR(255),
     best_lap VARCHAR(255),
@@ -36,7 +35,7 @@ FIELDS TERMINATED BY ','
 ENCLOSED BY '"'
 LINES TERMINATED BY '\n'
 IGNORE 1 LINES
-(rank, driver_name, number, manufacturer, time, time_diff, speed, num_laps, best_lap)
+(rank, driver_name, number, manufacturer, time, speed, num_laps, best_lap)
 ;
 
 ---
