@@ -8,7 +8,7 @@ Downstream DAGs should depend on the emitted **Asset** so they run after each
 successful hourly conversion::
 
     from airflow.sdk import DAG
-    from nascar_scraper_racing_reference_schedule import (
+    from nascar.scraper.racing_reference.schedule import (
         NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET,
     )
 

@@ -279,7 +279,6 @@ def create_weeks_if_not_exists(
                     hook.run_templated_sql_file(
                         file_path=Path(__file__).parent
                         / "sql"
-                        / "nascar_scraper"
                         / "load_entrylist_data.sql",
                         context={
                             "week_id": week_id,
@@ -294,7 +293,6 @@ def create_weeks_if_not_exists(
                     hook.run_templated_sql_file(
                         file_path=Path(__file__).parent
                         / "sql"
-                        / "nascar_scraper"
                         / "load_practice_data.sql",
                         context={
                             "week_id": week_id,
@@ -308,7 +306,6 @@ def create_weeks_if_not_exists(
                     hook.run_templated_sql_file(
                         file_path=Path(__file__).parent
                         / "sql"
-                        / "nascar_scraper"
                         / "load_qualifying_data.sql",
                         context={
                             "week_id": week_id,
@@ -321,7 +318,6 @@ def create_weeks_if_not_exists(
                     hook.run_templated_sql_file(
                         file_path=Path(__file__).parent
                         / "sql"
-                        / "nascar_scraper"
                         / "load_race_data.sql",
                         context={
                             "week_id": week_id,
@@ -334,7 +330,6 @@ def create_weeks_if_not_exists(
                 hook.run_templated_sql_file(
                     file_path=Path(__file__).parent
                     / "sql"
-                    / "nascar_scraper"
                     / "load_clean_up.sql",
                     context={
                         "week_id": week_id,
@@ -375,7 +370,6 @@ with DAG(
         task_id="cup_series_create_season_if_not_exists",
         sql_file_path=Path(__file__).parent
         / "sql"
-        / "nascar_scraper"
         / "create_season_if_not_exists.sql",
         mysql_conn_id="nascar_conn",
         parameters={"series_name": NascarSeries.CUP.db_name},

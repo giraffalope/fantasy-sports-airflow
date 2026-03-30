@@ -19,9 +19,6 @@ from datetime import datetime
 
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG
-from nascar_scraper_racing_reference_schedule import (
-    NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET,
-)
 
 from airflow_utils.wait_operator import WaitOperator
 from include.nascar.data_sources.racing_reference_race_week import (
@@ -33,6 +30,9 @@ from include.nascar.data_sources.racing_reference_race_week import (
     cup_series_sync_qualifyings,
     cup_series_sync_race_results,
     cup_series_sync_weeks,
+)
+from nascar.scraper.racing_reference.schedule import (
+    NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET,
 )
 
 with DAG(

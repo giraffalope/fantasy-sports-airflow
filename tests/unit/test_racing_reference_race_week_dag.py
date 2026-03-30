@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import nascar_scraper_racing_reference_race_week as race_week_dag
-import nascar_scraper_racing_reference_schedule as schedule_dag
+import nascar.scraper.racing_reference.race_week as race_week_dag
+import nascar.scraper.racing_reference.schedule as schedule_dag
 
 from include.nascar.data_sources.racing_reference_race_week import (
     cup_series_sync_caution_flags,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import nascar_scraper_racing_reference_schedule as schedule_dag
+import nascar.scraper.racing_reference.schedule as schedule_dag
 
 from include.nascar.data_sources.racing_reference import (
     cup_series_convert_year_schedule_html_to_csv,

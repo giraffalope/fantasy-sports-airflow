@@ -8,7 +8,7 @@ The stack is intended to run in Docker (Airflow with Celery, PostgreSQL, Redis, 
 
 | Path | Purpose |
 |------|---------|
-| `dags/` | DAG definitions (for example `nascar_scraper`) and SQL used by tasks |
+| `dags/` | NASCAR DAGs under `dags/nascar/scraper/` (`dag.py`, `sql/`, `racing_reference/`) |
 | `include/` | Reusable libraries: NASCAR scrape sources, HTML→CSV conversion, file utilities |
 | `airflow_utils/` | Custom Airflow operators/executors |
 | `config/`, `plugins/` | Airflow configuration and plugins |
