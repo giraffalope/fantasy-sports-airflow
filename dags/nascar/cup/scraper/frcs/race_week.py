@@ -12,7 +12,7 @@ import random
 from datetime import datetime
 
 from airflow.providers.standard.operators.python import PythonOperator
-from airflow.sdk import DAG
+from airflow.sdk import DAG, Asset
 from nascar.cup.scraper.frcs.schedule import NASCAR_FRCS_CUP_SCHEDULE_ASSET
 
 from airflow_utils.wait_operator import WaitOperator
@@ -30,8 +30,15 @@ from include.nascar.data_sources.frcs_race_week import (
     cup_series_sync_weeks,
 )
 
+DAG_ID = "nascar.cup.scraper.frcs.race_week"
+
+NASCAR_FRCS_CUP_RACE_WEEK_ASSET = Asset(
+    uri="nascar://frcs/cup/race-week.csv",
+    name=DAG_ID,
+)
+
 with DAG(
-    dag_id="nascar.cup.scraper.frcs.race_week",
+    dag_id=DAG_ID,
     start_date=datetime(2025, 7, 11),
     schedule=[NASCAR_FRCS_CUP_SCHEDULE_ASSET],
     catchup=False,
@@ -96,6 +103,7 @@ with DAG(
     sync_race_results_task = PythonOperator(
         task_id="sync_race_results",
         python_callable=cup_series_sync_race_results,
+        outlets=[NASCAR_FRCS_CUP_RACE_WEEK_ASSET],
     )
 
     (
