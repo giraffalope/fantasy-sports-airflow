@@ -377,13 +377,13 @@ def cup_series_sync_pit_stops(**context: Any) -> None:
     _frcs_task_end(task, year, weeks)
 
 
-def cup_series_sync_draftkings_points(**context: Any) -> None:
+def cup_series_sync_draftkings(**context: Any) -> None:
     _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    task = cup_series_sync_draftkings_points.__name__
+    task = cup_series_sync_draftkings.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
     for event_number, _ in _iter_week_numbers_with_url_throttled(
@@ -408,13 +408,13 @@ def cup_series_sync_draftkings_points(**context: Any) -> None:
     _frcs_task_end(task, year, weeks)
 
 
-def cup_series_sync_fanduel_points(**context: Any) -> None:
+def cup_series_sync_fanduel(**context: Any) -> None:
     _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     conv = src.converters
-    task = cup_series_sync_fanduel_points.__name__
+    task = cup_series_sync_fanduel.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
     for event_number, _ in _iter_week_numbers_with_url_throttled(

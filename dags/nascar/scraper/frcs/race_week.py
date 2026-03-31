@@ -17,9 +17,9 @@ from nascar.scraper.frcs.schedule import NASCAR_FRCS_CUP_SCHEDULE_ASSET
 
 from airflow_utils.wait_operator import WaitOperator
 from include.nascar.data_sources.frcs_race_week import (
-    cup_series_sync_draftkings_points,
+    cup_series_sync_draftkings,
     cup_series_sync_entrylists,
-    cup_series_sync_fanduel_points,
+    cup_series_sync_fanduel,
     cup_series_sync_lineups,
     cup_series_sync_penalties,
     cup_series_sync_pit_stall_selections,
@@ -74,14 +74,14 @@ with DAG(
         python_callable=cup_series_sync_pit_stops,
     )
 
-    cup_series_sync_draftkings_points_task = PythonOperator(
-        task_id="cup_series_sync_draftkings_points",
-        python_callable=cup_series_sync_draftkings_points,
+    cup_series_sync_draftkings_task = PythonOperator(
+        task_id="cup_series_sync_draftkings",
+        python_callable=cup_series_sync_draftkings,
     )
 
-    cup_series_sync_fanduel_points_task = PythonOperator(
-        task_id="cup_series_sync_fanduel_points",
-        python_callable=cup_series_sync_fanduel_points,
+    cup_series_sync_fanduel_task = PythonOperator(
+        task_id="cup_series_sync_fanduel",
+        python_callable=cup_series_sync_fanduel,
     )
 
     cup_series_sync_pit_stall_selections_task = PythonOperator(
@@ -116,6 +116,6 @@ with DAG(
         >> cup_series_sync_pit_stops_task
         >> cup_series_sync_prerace_penalties_task
         >> cup_series_sync_penalties_task
-        >> cup_series_sync_draftkings_points_task
-        >> cup_series_sync_fanduel_points_task
+        >> cup_series_sync_draftkings_task
+        >> cup_series_sync_fanduel_task
     )

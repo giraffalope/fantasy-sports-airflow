@@ -9,9 +9,9 @@ import nascar.scraper.frcs.schedule as schedule_dag
 
 from include.nascar.data_sources.frcs_race_week import (
     _frcs_week_loop_data_csv_has_data_rows,
-    cup_series_sync_draftkings_points,
+    cup_series_sync_draftkings,
     cup_series_sync_entrylists,
-    cup_series_sync_fanduel_points,
+    cup_series_sync_fanduel,
     cup_series_sync_lineups,
     cup_series_sync_penalties,
     cup_series_sync_pit_stall_selections,
@@ -53,8 +53,8 @@ def test_task_ids_and_count() -> None:
         "cup_series_sync_qualifyings",
         "cup_series_sync_lineups",
         "cup_series_sync_pit_stops",
-        "cup_series_sync_draftkings_points",
-        "cup_series_sync_fanduel_points",
+        "cup_series_sync_draftkings",
+        "cup_series_sync_fanduel",
         "cup_series_sync_pit_stall_selections",
         "cup_series_sync_prerace_penalties",
         "cup_series_sync_penalties",
@@ -77,8 +77,8 @@ def test_linear_dependencies() -> None:
         "cup_series_sync_pit_stops",
         "cup_series_sync_prerace_penalties",
         "cup_series_sync_penalties",
-        "cup_series_sync_draftkings_points",
-        "cup_series_sync_fanduel_points",
+        "cup_series_sync_draftkings",
+        "cup_series_sync_fanduel",
     ]
     for i, tid in enumerate(order[:-1]):
         t = dag.get_task(tid)
@@ -96,12 +96,12 @@ def test_python_callables_match_operators() -> None:
     assert dag.get_task("cup_series_sync_lineups").python_callable is cup_series_sync_lineups
     assert dag.get_task("cup_series_sync_pit_stops").python_callable is cup_series_sync_pit_stops
     assert (
-        dag.get_task("cup_series_sync_draftkings_points").python_callable
-        is cup_series_sync_draftkings_points
+        dag.get_task("cup_series_sync_draftkings").python_callable
+        is cup_series_sync_draftkings
     )
     assert (
-        dag.get_task("cup_series_sync_fanduel_points").python_callable
-        is cup_series_sync_fanduel_points
+        dag.get_task("cup_series_sync_fanduel").python_callable
+        is cup_series_sync_fanduel
     )
     assert (
         dag.get_task("cup_series_sync_pit_stall_selections").python_callable
