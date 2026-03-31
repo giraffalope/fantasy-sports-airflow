@@ -38,7 +38,7 @@ NASCAR_FRCS_CUP_SCHEDULE_ASSET = Asset(
 )
 
 with DAG(
-    dag_id="nascar_scraper_frcs_schedule",
+    dag_id="nascar.scraper.frcs.schedule",
     start_date=datetime(2025, 7, 11),
     schedule="0 * * * *",
     catchup=False,

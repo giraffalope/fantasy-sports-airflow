@@ -15,6 +15,15 @@ from include.utils.file import File
 _FRCS_SCHEDULE_RACE_COL = "race"
 _FRCS_SCHEDULE_TRACK_COL = "track"
 _FRCS_SCHEDULE_DATE_COL = "date"
+# Tabulator column for the schedule table header shown as ``#`` (race index in season).
+_FRCS_SCHEDULE_NUMBER_COL = "number"
+
+
+def _frcs_schedule_cell_sort_or_text(td: Tag) -> str:
+    ds = td.get("data-sort")
+    if ds is not None and str(ds).strip():
+        return str(ds).strip()
+    return td.get_text(strip=True)
 
 
 def _strip_html(fragment: str) -> str:
@@ -482,6 +491,7 @@ class FrcsHtmlToCsv:
             soup = BeautifulSoup(f, "html.parser")
         tbody = soup.find("tbody")
         keys = [
+            "event_number",
             "week_number",
             "week_url",
             "week_date",
@@ -495,7 +505,7 @@ class FrcsHtmlToCsv:
             File.write_csv(csv_file_path, [], keys)
             return
         csv_list: list = []
-        row_idx = 0
+        event_number = 0
         for tr in tbody.find_all("tr"):
             tds = {
                 td.get("data-column"): td
@@ -507,7 +517,15 @@ class FrcsHtmlToCsv:
             race_a = race_td.find("a", href=True)
             if race_a is None:
                 continue
-            row_idx += 1
+            num_td = tds.get(_FRCS_SCHEDULE_NUMBER_COL)
+            if num_td is None:
+                logging.warning("FRCS schedule: row missing # column (%r); skipped", _FRCS_SCHEDULE_NUMBER_COL)
+                continue
+            week_number_raw = _frcs_schedule_cell_sort_or_text(num_td)
+            if not week_number_raw:
+                logging.warning("FRCS schedule: empty # cell; skipped row with race %s", race_a.get_text(strip=True))
+                continue
+            event_number += 1
             week_url = race_a["href"].strip()
             week_race_name = race_a.get_text(strip=True)
             track_td = tds.get(_FRCS_SCHEDULE_TRACK_COL)
@@ -524,7 +542,8 @@ class FrcsHtmlToCsv:
                     week_date = date_td.get_text(strip=True)
             csv_list.append(
                 (
-                    str(row_idx),
+                    str(event_number),
+                    week_number_raw,
                     week_url,
                     week_date,
                     week_track,
@@ -534,6 +553,7 @@ class FrcsHtmlToCsv:
             )
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, keys)
+        logging.info("FRCS: schedule %d rows -> %s", len(csv_list), csv_file_path)
 
     @staticmethod
     def convert_race_results(html_file_path: str, csv_file_path: str) -> None:
@@ -541,7 +561,21 @@ class FrcsHtmlToCsv:
             soup = BeautifulSoup(f, "html.parser")
         table = soup.find("table", id="resultsTable")
         if table is None:
-            table = soup.find("table", class_=lambda c: c and "cupTable" in str(c))
+            # Some saved pages omit ``id=resultsTable``; pick table nearest a "Race Results"
+            # heading and avoid unrelated sections like "Race Infractions".
+            heading = soup.find(
+                re.compile(r"^h[1-6]$"), string=re.compile(r"Race Results", re.I)
+            )
+            if heading is not None:
+                table = heading.find_next("table")
+            if table is None:
+                for candidate in soup.find_all("table", class_=lambda c: c and "cupTable" in str(c)):
+                    labels = _frcs_table_column_labels(candidate)
+                    labels_norm = {re.sub(r"[^a-z0-9]+", "", x.lower()) for x in labels}
+                    # Require race-results-like labels, not infractions columns.
+                    if {"fin", "st", "driver"} <= labels_norm:
+                        table = candidate
+                        break
         headers: list[str] = []
         csv_list: list[tuple[str, ...]] = []
         if table is not None:
@@ -586,7 +620,7 @@ class FrcsHtmlToCsv:
     @staticmethod
     def convert_practices(paths: list[str]) -> None:
         headers = [
-            "session_rank",
+            "rank",
             "driver_name",
             "number",
             "manufacturer",
@@ -627,7 +661,7 @@ class FrcsHtmlToCsv:
         r2 = _parse_js_const_json_array(html, "roundTwo")
         r1 = _parse_js_const_json_array(html, "roundOne")
         data = r2 if r2 else r1
-        headers = ["rank", "driver_name", "number", "manufacturer", "time", "speed"]
+        headers = ["rank", "driver_name", "number", "manufacturer", "lap_time", "lap_speed"]
         csv_list: list = []
         if data:
             for row in data:
@@ -782,24 +816,63 @@ class FrcsHtmlToCsv:
     def convert_penalties(path: str | None) -> None:
         if path is None:
             return
+
+        def _norm(label: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "", label.lower())
+
+        def _first_idx(labels: list[str], choices: set[str]) -> int | None:
+            for i, label in enumerate(labels):
+                if _norm(label) in choices:
+                    return i
+            return None
+
+        def _val(cells: list, idx: int | None) -> str:
+            if idx is None or idx >= len(cells):
+                return ""
+            return cells[idx].get_text(strip=True)
+
         with open(path, encoding="utf-8") as f:
             soup = BeautifulSoup(f, "html.parser")
-        h4 = soup.find("h4", string=re.compile(r"Race Infractions", re.I))
-        table = h4.find_next("table", class_=lambda c: c and "cupTable" in str(c)) if h4 else None
+
+        heading = soup.find(re.compile(r"^h[1-6]$"), string=re.compile(r"Race Infractions", re.I))
+        table = heading.find_next("table") if heading else None
         headers_csv = ["number", "driver_name", "lap", "flag", "infraction", "penalty"]
         csv_list: list = []
         if table is not None:
+            header_cells = table.find_all("th")
+            header_labels = [h.get_text(strip=True) for h in header_cells]
+            idx_number = _first_idx(header_labels, {"number", "carno", "carnumber", "#", "no"})
+            idx_driver = _first_idx(header_labels, {"driver", "drivername", "name"})
+            idx_lap = _first_idx(header_labels, {"lap", "laps"})
+            idx_flag = _first_idx(header_labels, {"flag"})
+            idx_infraction = _first_idx(header_labels, {"infraction", "violation", "reason"})
+            idx_penalty = _first_idx(header_labels, {"penalty", "action"})
             tbody = table.find("tbody")
             for tr in (tbody.find_all("tr") if tbody else table.find_all("tr")):
                 cells = tr.find_all("td")
                 if len(cells) < 3:
                     continue
-                driver_name = cells[0].get_text(strip=True)
-                infraction = cells[1].get_text(strip=True)
-                penalty = cells[2].get_text(strip=True)
-                lap = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                flag = cells[5].get_text(strip=True) if len(cells) > 5 else ""
-                csv_list.append(("", driver_name, lap, flag, infraction, penalty))
+                number = _val(cells, idx_number)
+                driver_name = _val(cells, idx_driver)
+                lap = _val(cells, idx_lap)
+                flag = _val(cells, idx_flag)
+                infraction = _val(cells, idx_infraction)
+                penalty = _val(cells, idx_penalty)
+
+                # Fallbacks for FRCS variants with no/partial headers.
+                if not driver_name:
+                    driver_name = cells[0].get_text(strip=True)
+                if not infraction and len(cells) > 1:
+                    infraction = cells[1].get_text(strip=True)
+                if not penalty and len(cells) > 2:
+                    penalty = cells[2].get_text(strip=True)
+                if not lap and len(cells) > 3:
+                    lap = cells[3].get_text(strip=True)
+                if not flag and len(cells) > 5:
+                    flag = cells[5].get_text(strip=True)
+
+                if any((number, driver_name, lap, flag, infraction, penalty)):
+                    csv_list.append((number, driver_name, lap, flag, infraction, penalty))
         csv_file_path = path.replace(".html", ".csv")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers_csv)

@@ -1,11 +1,14 @@
-"""Unit tests for DAG ``nascar_scraper_frcs_race_week``."""
+"""Unit tests for DAG ``nascar.scraper.frcs.race_week``."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import nascar.scraper.frcs.race_week as race_week_dag
 import nascar.scraper.frcs.schedule as schedule_dag
 
 from include.nascar.data_sources.frcs_race_week import (
+    _frcs_week_loop_data_csv_has_data_rows,
     cup_series_sync_draftkings_points,
     cup_series_sync_entrylists,
     cup_series_sync_fanduel_points,
@@ -21,9 +24,20 @@ from include.nascar.data_sources.frcs_race_week import (
 )
 
 
+def test_loop_data_csv_skip_requires_data_rows(tmp_path: Path) -> None:
+    week_dir = tmp_path / "cup" / "2025" / "01"
+    week_dir.mkdir(parents=True)
+    loop_csv = week_dir / "loop-data.csv"
+    assert _frcs_week_loop_data_csv_has_data_rows(str(week_dir)) is False
+    loop_csv.write_text("driver_name,start\n", encoding="utf-8")
+    assert _frcs_week_loop_data_csv_has_data_rows(str(week_dir)) is False
+    loop_csv.write_text("driver_name,start\nA. Driver,1\n", encoding="utf-8")
+    assert _frcs_week_loop_data_csv_has_data_rows(str(week_dir)) is True
+
+
 def test_dag_metadata() -> None:
     dag = race_week_dag.dag
-    assert dag.dag_id == "nascar_scraper_frcs_race_week"
+    assert dag.dag_id == "nascar.scraper.frcs.race_week"
     assert dag.catchup is False
     assert dag.max_active_runs == 1
     assert schedule_dag.NASCAR_FRCS_CUP_SCHEDULE_ASSET in dag.schedule
@@ -58,13 +72,13 @@ def test_linear_dependencies() -> None:
         "cup_series_sync_practices",
         "cup_series_sync_qualifyings",
         "cup_series_sync_lineups",
-        "cup_series_sync_pit_stops",
-        "cup_series_sync_draftkings_points",
-        "cup_series_sync_fanduel_points",
         "cup_series_sync_pit_stall_selections",
+        "cup_series_sync_race_results",
+        "cup_series_sync_pit_stops",
         "cup_series_sync_prerace_penalties",
         "cup_series_sync_penalties",
-        "cup_series_sync_race_results",
+        "cup_series_sync_draftkings_points",
+        "cup_series_sync_fanduel_points",
     ]
     for i, tid in enumerate(order[:-1]):
         t = dag.get_task(tid)

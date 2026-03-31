@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import csv
+import io
+
 import pytest
 
 from include.nascar.html_to_csv_converter import HtmlToCsvConverter
@@ -309,6 +312,17 @@ def test_convert_practices_nine_columns_omits_behind_leader(tmp_path) -> None:
     HtmlToCsvConverter.convert_practices([str(html)])
     csv_path = tmp_path / "practice-01.csv"
     body = csv_path.read_text(encoding="utf-8")
+    header_cols = next(csv.reader(io.StringIO(body.splitlines()[0])))
+    assert header_cols == [
+        "rank",
+        "driver_name",
+        "number",
+        "manufacturer",
+        "lap_time",
+        "lap_speed",
+        "total_lap",
+        "best_lap",
+    ]
     assert "187.402" in body
     assert "186.931" in body
     assert "0.121" not in body
@@ -337,5 +351,47 @@ def test_convert_practices_eight_columns(tmp_path) -> None:
     )
     HtmlToCsvConverter.convert_practices([str(html)])
     body = (tmp_path / "practice-01.csv").read_text(encoding="utf-8")
+    header_cols = next(csv.reader(io.StringIO(body.splitlines()[0])))
+    assert header_cols == [
+        "rank",
+        "driver_name",
+        "number",
+        "manufacturer",
+        "lap_time",
+        "lap_speed",
+        "total_lap",
+        "best_lap",
+    ]
     assert "175.0" in body
     assert "Other" in body
+
+
+def test_convert_qualifying_uses_normalized_headers(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <table class="qualResultTbl">
+          <tr><td class="newhead">Qualifying results for this race:</td></tr>
+          <tr class="odd">
+            <td class="col">1</td>
+            <td class="col"><a>Leader</a></td>
+            <td class="col">2</td>
+            <td class="col">Ford</td>
+            <td class="col">48.025</td>
+            <td class="col">187.402</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_qualifying(str(html))
+    body = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    header_cols = next(csv.reader(io.StringIO(body.splitlines()[0])))
+    assert header_cols == [
+        "rank",
+        "driver_name",
+        "number",
+        "manufacturer",
+        "lap_time",
+        "lap_speed",
+    ]

@@ -1,4 +1,4 @@
-"""Unit tests for DAG ``nascar_scraper_racing_reference_schedule``."""
+"""Unit tests for DAG ``nascar.scraper.racing_reference.schedule``."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from include.nascar.data_sources.racing_reference import (
 
 def test_dag_metadata() -> None:
     dag = schedule_dag.dag
-    assert dag.dag_id == "nascar_scraper_racing_reference_schedule"
+    assert dag.dag_id == "nascar.scraper.racing_reference.schedule"
     assert str(dag.schedule) == "0 * * * *"
     assert dag.catchup is False
     assert dag.max_active_runs == 1

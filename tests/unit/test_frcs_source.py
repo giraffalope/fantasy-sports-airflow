@@ -90,13 +90,13 @@ def test_frcs_convert_schedule_row_order(tmp_path, source: FrcsSource) -> None:
         """
         <table><tbody>
         <tr>
-          <td data-column='number'>0</td>
+          <td data-column='number'>1</td>
           <td data-column='date' data-sort='2026-03-01 00:00:00'>Mar 01</td>
           <td data-column='track'><a href='https://frcs.pro/nascar/tracks/foo'>Foo Track</a></td>
           <td data-column='race'><a href='https://frcs.pro/nascar/cup/races/results/2026/foo/race-a'>Race A</a></td>
         </tr>
         <tr>
-          <td data-column='number'>0</td>
+          <td data-column='number'>2</td>
           <td data-column='date' data-sort='2026-03-08 00:00:00'>Mar 08</td>
           <td data-column='track'><a href='https://frcs.pro/nascar/tracks/bar'>Bar Track</a></td>
           <td data-column='race'><a href='https://frcs.pro/nascar/cup/races/results/2026/bar/race-b'>Race B</a></td>
@@ -107,10 +107,23 @@ def test_frcs_convert_schedule_row_order(tmp_path, source: FrcsSource) -> None:
     )
     source.converters.convert_schedule(str(html), str(csv_out))
     text = csv_out.read_text(encoding="utf-8")
+    assert "event_number" in text
     assert "week_number" in text
     assert "2026-03-01" in text
     assert "Race A" in text
-    assert "1" in text.splitlines()[1]
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    row1 = next(csv.reader(io.StringIO(lines[1])))
+    assert row1 == [
+        "1",
+        "1",
+        "https://frcs.pro/nascar/cup/races/results/2026/foo/race-a",
+        "2026-03-01",
+        "Foo Track",
+        "https://frcs.pro/nascar/tracks/foo",
+        "Race A",
+    ]
+    row2 = next(csv.reader(io.StringIO(lines[2])))
+    assert row2[0] == "2" and row2[1] == "2"
 
 
 def test_parse_js_const_entry_list(tmp_path) -> None:
@@ -130,6 +143,91 @@ def test_parse_js_const_entry_list(tmp_path) -> None:
     body = csv_out.read_text(encoding="utf-8")
     assert "A J" in body
     assert "Chevrolet" in body
+
+
+def test_frcs_convert_practices_uses_normalized_headers(tmp_path) -> None:
+    html = tmp_path / "practice-01.html"
+    html.write_text(
+        """
+        <script>
+          const practiceData = [
+            {"session_rank":"1","full_name":"Jane Driver","car_no":"12","make":"Ford","lap_time":"30.5","lap_speed":"175.0","total_lap":"12","best_lap":"7"}
+          ];
+        </script>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_practices([str(html)])
+    csv_out = tmp_path / "practice-01.csv"
+    header_line = csv_out.read_text(encoding="utf-8").splitlines()[0]
+    cols = next(csv.reader(io.StringIO(header_line)))
+    assert cols == [
+        "rank",
+        "driver_name",
+        "number",
+        "manufacturer",
+        "lap_time",
+        "lap_speed",
+        "total_lap",
+        "best_lap",
+    ]
+
+
+def test_frcs_convert_qualifying_uses_normalized_headers(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <script>
+          const roundOne = [
+            {"lap_rank":"1","full_name":"Jane Driver","car_no":"12","make":"Ford","lap_time":"30.5","lap_speed":"175.0"}
+          ];
+        </script>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    csv_out = tmp_path / "qualifying.csv"
+    header_line = csv_out.read_text(encoding="utf-8").splitlines()[0]
+    cols = next(csv.reader(io.StringIO(header_line)))
+    assert cols == [
+        "rank",
+        "driver_name",
+        "number",
+        "manufacturer",
+        "lap_time",
+        "lap_speed",
+    ]
+
+
+def test_frcs_convert_penalties_race_infractions_table(tmp_path) -> None:
+    html = tmp_path / "race-results.html"
+    csv_out = tmp_path / "race-results.csv"
+    html.write_text(
+        """
+        <h4>Race Infractions</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Driver</th><th>Lap</th><th>Flag</th><th>Infraction</th><th>Penalty</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>12</td><td>Jane Driver</td><td>22</td><td>Green</td><td>Speeding</td><td>Pass Thru</td>
+            </tr>
+          </tbody>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_penalties(str(html))
+    header_line = csv_out.read_text(encoding="utf-8").splitlines()[0]
+    cols = next(csv.reader(io.StringIO(header_line)))
+    assert cols == ["number", "driver_name", "lap", "flag", "infraction", "penalty"]
+    body = csv_out.read_text(encoding="utf-8")
+    assert "Jane Driver" in body
+    assert "Speeding" in body
+    assert "Pass Thru" in body
 
 
 def test_frcs_convert_draftkings_snake_case_headers_from_data_field(tmp_path) -> None:
@@ -416,3 +514,38 @@ def test_frcs_convert_race_results_results_table_headers_and_values(tmp_path) ->
     ]
     assert "Tyler Reddick" in lines[1]
     assert "Running" in lines[1]
+
+
+def test_frcs_convert_race_results_ignores_race_infractions_table(tmp_path) -> None:
+    html = tmp_path / "race-results.html"
+    csv_out = tmp_path / "race-results.csv"
+    html.write_text(
+        """
+        <h4>Race Infractions</h4>
+        <table class="cupTable">
+          <thead><tr><th>Driver</th><th>Infraction</th><th>Penalty</th></tr></thead>
+          <tbody><tr><td>Someone</td><td>Speeding</td><td>Pass Through</td></tr></tbody>
+        </table>
+
+        <h4>Race Results</h4>
+        <table class="cupTable">
+          <thead><tr>
+            <th><abbr>FIN</abbr></th>
+            <th><abbr>ST</abbr></th>
+            <th><abbr>#</abbr></th>
+            <th><abbr>DRIVER</abbr></th>
+            <th><abbr>MAKE</abbr></th>
+          </tr></thead>
+          <tbody><tr>
+            <td>1</td><td>10</td><td>24</td><td><a>Actual Driver</a></td><td>Chevrolet</td>
+          </tr></tbody>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_race_results(str(html), str(csv_out))
+    lines = csv_out.read_text(encoding="utf-8").splitlines()
+    cols = next(csv.reader(io.StringIO(lines[0])))
+    assert cols[:4] == ["finish", "start", "number", "driver_name"]
+    assert "Actual Driver" in lines[1]
+    assert "Someone" not in lines[1]

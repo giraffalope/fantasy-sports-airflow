@@ -47,8 +47,9 @@ class FrcsSource:
     def storage_path_series_year(self, series_name: str, year: int) -> str:
         return f"{self._scraper_root}/{self.scraper_root_segment()}/{series_name.lower()}/{year}"
 
-    def storage_path_week(self, series_name: str, year: int, week_number: int) -> str:
-        return f"{self.storage_path_series_year(series_name, year)}/{week_number:02d}"
+    def storage_path_week(self, series_name: str, year: int, event_number: int) -> str:
+        """Week folder name from ``schedule.csv`` ``event_number`` (1-based row order)."""
+        return f"{self.storage_path_series_year(series_name, year)}/{event_number:02d}"
 
     def schedule_url(self, year: int) -> str:
         return f"{self.base_url}/nascar/cup/races/schedule/{year}/"
@@ -189,20 +190,20 @@ def download_race_results_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     week_url: str,
 ) -> None:
-    week_path = source.storage_path_week(series_name, year, week_number)
+    week_path = source.storage_path_week(series_name, year, event_number)
     race_html = os.path.join(week_path, "race-results.html")
     if os.path.isfile(race_html):
         return
     resolved = source.resolve_page_url(week_url.strip())
     if not resolved:
         logging.warning(
-            "Could not resolve week_url for %s year %s week %s; skipping race results download",
+            "Could not resolve week_url for %s year %s event %s; skipping race results download",
             series_name,
             year,
-            week_number,
+            event_number,
         )
         return
     scraper = Scraper(week_path)
@@ -219,12 +220,12 @@ def download_entrylist_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> None:
     if not os.path.isfile(race_results_html_path):
         return
-    week_path = source.storage_path_week(series_name, year, week_number)
+    week_path = source.storage_path_week(series_name, year, event_number)
     entry_path = os.path.join(week_path, "entrylist.html")
     if os.path.isfile(entry_path):
         return
@@ -232,7 +233,9 @@ def download_entrylist_html_if_missing(
         soup = BeautifulSoup(html_file, "html.parser")
     url = source.extract_entrylist_url(soup)
     if not url:
-        logging.warning("No entry list link for %s year %s week %s", series_name, year, week_number)
+        logging.warning(
+            "No entry list link for %s year %s event %s", series_name, year, event_number
+        )
         return
     scraper = Scraper(week_path)
     _sleep_download_jitter()
@@ -248,10 +251,10 @@ def download_practices_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> list[str]:
-    week_path = source.storage_path_week(series_name, year, week_number)
+    week_path = source.storage_path_week(series_name, year, event_number)
     out: list[str] = []
     if not os.path.isfile(race_results_html_path):
         return out
@@ -281,10 +284,10 @@ def download_qualifying_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> str | None:
-    week_path = source.storage_path_week(series_name, year, week_number)
+    week_path = source.storage_path_week(series_name, year, event_number)
     qpath = os.path.join(week_path, "qualifying.html")
     if os.path.isfile(qpath):
         return qpath
@@ -310,10 +313,10 @@ def download_loop_data_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> str | None:
-    week_path = source.storage_path_week(series_name, year, week_number)
+    week_path = source.storage_path_week(series_name, year, event_number)
     lpath = os.path.join(week_path, "loop-data.html")
     if os.path.isfile(lpath):
         return lpath
@@ -339,10 +342,10 @@ def download_penalties_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> str | None:
-    _ = (source, series_name, year, week_number)
+    _ = (source, series_name, year, event_number)
     if not os.path.isfile(race_results_html_path):
         return None
     return race_results_html_path
@@ -354,14 +357,14 @@ def _download_related_page_if_missing(
     output_filename: str,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     *,
     url_getter: Callable[[BeautifulSoup], str | None],
     soft_fail_on_download_error: bool = False,
 ) -> str | None:
     if not os.path.isfile(race_results_html_path):
         return None
-    week_path = source.storage_path_week(series_name, year, week_number)
+    week_path = source.storage_path_week(series_name, year, event_number)
     out_path = os.path.join(week_path, output_filename)
     if os.path.isfile(out_path):
         return out_path
@@ -370,11 +373,11 @@ def _download_related_page_if_missing(
     url = url_getter(soup)
     if not url:
         logging.warning(
-            "No %s link for %s year %s week %s",
+            "No %s link for %s year %s event %s",
             output_filename,
             series_name,
             year,
-            week_number,
+            event_number,
         )
         return None
     scraper = Scraper(week_path)
@@ -389,11 +392,11 @@ def _download_related_page_if_missing(
     except Exception as exc:
         if soft_fail_on_download_error:
             logging.warning(
-                "Skipping %s for %s year %s week %s (%s): %s",
+                "Skipping %s for %s year %s event %s (%s): %s",
                 output_filename,
                 series_name,
                 year,
-                week_number,
+                event_number,
                 url,
                 exc,
             )
@@ -406,7 +409,7 @@ def download_lineup_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> str | None:
     return _download_related_page_if_missing(
@@ -415,7 +418,7 @@ def download_lineup_html_if_missing(
         "lineup.html",
         series_name,
         year,
-        week_number,
+        event_number,
         url_getter=source.extract_lineup_url,
     )
 
@@ -424,7 +427,7 @@ def download_pit_stops_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> str | None:
     return _download_related_page_if_missing(
@@ -433,7 +436,7 @@ def download_pit_stops_html_if_missing(
         "pit-stops.html",
         series_name,
         year,
-        week_number,
+        event_number,
         url_getter=source.extract_pit_stops_url,
     )
 
@@ -442,7 +445,7 @@ def download_draftkings_points_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> str | None:
     return _download_related_page_if_missing(
@@ -451,7 +454,7 @@ def download_draftkings_points_html_if_missing(
         "draftkings-points.html",
         series_name,
         year,
-        week_number,
+        event_number,
         url_getter=source.extract_draftkings_points_url,
     )
 
@@ -460,7 +463,7 @@ def download_fanduel_points_html_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> str | None:
     return _download_related_page_if_missing(
@@ -469,7 +472,7 @@ def download_fanduel_points_html_if_missing(
         "fanduel-points.html",
         series_name,
         year,
-        week_number,
+        event_number,
         url_getter=source.extract_fanduel_points_url,
     )
 
@@ -478,7 +481,7 @@ def download_pit_stall_selections_if_missing(
     source: FrcsSource,
     series_name: str,
     year: int,
-    week_number: int,
+    event_number: int,
     race_results_html_path: str,
 ) -> str | None:
     return _download_related_page_if_missing(
@@ -487,7 +490,7 @@ def download_pit_stall_selections_if_missing(
         "pit-stall-selections.pdf",
         series_name,
         year,
-        week_number,
+        event_number,
         url_getter=source.extract_pit_stall_selections_url,
         soft_fail_on_download_error=True,
     )

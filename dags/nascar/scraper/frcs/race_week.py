@@ -2,7 +2,7 @@
 Per-week FRCS.pro Cup HTML → CSV sync, driven by ``schedule.csv``.
 
 **Schedule:** runs when ``NASCAR_FRCS_CUP_SCHEDULE_ASSET`` updates — in practice each
-time ``nascar_scraper_frcs_schedule`` completes successfully (that DAG is hourly).
+time ``nascar.scraper.frcs.schedule`` completes successfully (that DAG is hourly).
 Layout matches other scrapers: ``…/frcs.pro/cup/<year>/<week>/``.
 """
 
@@ -32,7 +32,7 @@ from include.nascar.data_sources.frcs_race_week import (
 )
 
 with DAG(
-    dag_id="nascar_scraper_frcs_race_week",
+    dag_id="nascar.scraper.frcs.race_week",
     start_date=datetime(2025, 7, 11),
     schedule=[NASCAR_FRCS_CUP_SCHEDULE_ASSET],
     catchup=False,
@@ -111,11 +111,11 @@ with DAG(
         >> cup_series_sync_practices_task
         >> cup_series_sync_qualifyings_task
         >> cup_series_sync_lineups_task
-        >> cup_series_sync_pit_stops_task
-        >> cup_series_sync_draftkings_points_task
-        >> cup_series_sync_fanduel_points_task
         >> cup_series_sync_pit_stall_selections_task
+        >> cup_series_sync_race_results_task
+        >> cup_series_sync_pit_stops_task
         >> cup_series_sync_prerace_penalties_task
         >> cup_series_sync_penalties_task
-        >> cup_series_sync_race_results_task
+        >> cup_series_sync_draftkings_points_task
+        >> cup_series_sync_fanduel_points_task
     )

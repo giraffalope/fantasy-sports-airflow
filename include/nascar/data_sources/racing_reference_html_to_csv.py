@@ -395,9 +395,9 @@ class RacingReferenceHtmlToCsv:
                 "driver_name",
                 "number",
                 "manufacturer",
-                "time",
-                "speed",
-                "num_laps",
+                "lap_time",
+                "lap_speed",
+                "total_lap",
                 "best_lap",
             ]
             for table in tables:
@@ -443,9 +443,9 @@ class RacingReferenceHtmlToCsv:
                             "driver_name": driver_name,
                             "number": number,
                             "manufacturer": manufacturer,
-                            "time": time,
-                            "speed": speed,
-                            "num_laps": num_laps,
+                            "lap_time": time,
+                            "lap_speed": speed,
+                            "total_lap": num_laps,
                             "best_lap": best_lap,
                         }.values()
                     )
@@ -470,7 +470,7 @@ class RacingReferenceHtmlToCsv:
         tableIndex = None
         index = 0
         csv_list: list = []
-        headers = ["rank", "driver_name", "number", "manufacturer", "time", "speed"]
+        headers = ["rank", "driver_name", "number", "manufacturer", "lap_time", "lap_speed"]
         for table in tables:
             table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
             logging.debug(
@@ -496,16 +496,18 @@ class RacingReferenceHtmlToCsv:
                     )
                     number = cols[2].get_text().strip()
                     manufacturer = cols[3].get_text().strip()
-                    time = RacingReferenceHtmlToCsv.convert_to_seconds(cols[4].get_text().strip())
-                    speed = cols[5].get_text().strip()
+                    lap_time = RacingReferenceHtmlToCsv.convert_to_seconds(
+                        cols[4].get_text().strip()
+                    )
+                    lap_speed = cols[5].get_text().strip()
                     csv_list.append(
                         {
                             "rank": rank,
                             "driver_name": driver_name,
                             "number": number,
                             "manufacturer": manufacturer,
-                            "time": time,
-                            "speed": speed,
+                            "lap_time": lap_time,
+                            "lap_speed": lap_speed,
                         }.values()
                     )
         csv_file_path = path.replace(".html", ".csv")

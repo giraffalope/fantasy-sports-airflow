@@ -41,7 +41,7 @@ NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET = Asset(
 )
 
 with DAG(
-    dag_id="nascar_scraper_racing_reference_schedule",
+    dag_id="nascar.scraper.racing_reference.schedule",
     start_date=datetime(2025, 7, 11),
     schedule="0 * * * *",
     catchup=False,

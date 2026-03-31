@@ -2,7 +2,7 @@
 Per-week Racing Reference Cup HTML → CSV sync, driven by ``schedule.csv``.
 
 **Schedule:** this DAG is triggered when ``NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET``
-updates — in practice, each time ``nascar_scraper_racing_reference_schedule`` finishes
+updates — in practice, each time ``nascar.scraper.racing_reference.schedule`` finishes
 successfully (that DAG runs hourly). A short random wait task runs first, then tasks
 download missing HTML (only when files are absent) and emit CSVs alongside the main
 ``nascar_scraper`` layout under ``…/cup/<year>/<week>/`` (including prerace penalties,
@@ -36,7 +36,7 @@ from nascar.scraper.racing_reference.schedule import (
 )
 
 with DAG(
-    dag_id="nascar_scraper_racing_reference_race_week",
+    dag_id="nascar.scraper.racing_reference.race_week",
     start_date=datetime(2025, 7, 11),
     schedule=[NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET],
     catchup=False,
