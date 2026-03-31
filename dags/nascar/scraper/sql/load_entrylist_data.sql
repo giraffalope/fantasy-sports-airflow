@@ -25,9 +25,12 @@ IGNORE 1 LINES
 
 ---
 
-INSERT INTO nascar.racing_reference_teams (name)
-SELECT DISTINCT TRIM(e.owner) AS name
+INSERT INTO nascar.data_sources_teams (data_source_id, name)
+SELECT DISTINCT ds.id AS data_source_id, TRIM(e.owner) AS name
 FROM nascar.temp_entrylist_{{ week_id }} e
+JOIN nascar.data_sources ds
+    ON ds.name = 'racing_reference'
+    AND ds.deleted_at IS NULL
 WHERE TRIM(e.owner) IS NOT NULL AND TRIM(e.owner) != ''
 ON DUPLICATE KEY UPDATE deleted_at = NULL
 ;
@@ -35,25 +38,33 @@ ON DUPLICATE KEY UPDATE deleted_at = NULL
 ---
 
 INSERT INTO nascar.teams (series_id, name)
-SELECT DISTINCT {{ series_id }}, TRIM(rrt.name) AS name
-FROM nascar.racing_reference_teams rrt
+SELECT DISTINCT {{ series_id }}, TRIM(dst.name) AS name
+FROM nascar.data_sources_teams dst
+JOIN nascar.data_sources ds
+    ON ds.id = dst.data_source_id
+    AND ds.name = 'racing_reference'
+    AND ds.deleted_at IS NULL
 INNER JOIN nascar.temp_entrylist_{{ week_id }} e
-    ON TRIM(e.owner) = TRIM(rrt.name)
-WHERE rrt.team_id IS NULL AND rrt.deleted_at IS NULL
+    ON TRIM(e.owner) = TRIM(dst.name)
+WHERE dst.team_id IS NULL AND dst.deleted_at IS NULL
 ON DUPLICATE KEY UPDATE deleted_at = NULL
 ;
 
 ---
 
-UPDATE nascar.racing_reference_teams rrt
+UPDATE nascar.data_sources_teams dst
+JOIN nascar.data_sources ds
+    ON ds.id = dst.data_source_id
+    AND ds.name = 'racing_reference'
+    AND ds.deleted_at IS NULL
 JOIN nascar.teams t
-    ON TRIM(t.name) = TRIM(rrt.name)
+    ON TRIM(t.name) = TRIM(dst.name)
     AND t.deleted_at IS NULL
 SET
-    rrt.team_id = t.id
+    dst.team_id = t.id
 WHERE
-    rrt.team_id IS NULL
-    AND rrt.deleted_at IS NULL
+    dst.team_id IS NULL
+    AND dst.deleted_at IS NULL
 ;
 
 ---

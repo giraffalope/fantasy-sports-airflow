@@ -38,6 +38,29 @@ def create_tracks_if_not_exists(
 ):
     # Get the MySQL (MariaDB) connection from Airflow
     hook = MySqlHook(mysql_conn_id="nascar_conn")
+    source_id = getattr(source, "id", "racing_reference")
+    source_url = getattr(source, "base_url", None)
+
+    hook.run(
+        """
+        UPDATE `nascar`.`data_sources`
+        SET `url` = %s, `deleted_at` = NULL
+        WHERE `name` = %s
+        """,
+        parameters=(source_url, source_id),
+    )
+    hook.run(
+        """
+        INSERT INTO `nascar`.`data_sources` (`name`, `url`)
+        SELECT %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM `nascar`.`data_sources` ds
+            WHERE ds.`name` = %s
+        )
+        """,
+        parameters=(source_id, source_url, source_id),
+    )
 
     year = kwargs["data_interval_start"].year
     base = source.storage_path_series_year(series.db_name, year)
@@ -48,10 +71,14 @@ def create_tracks_if_not_exists(
         track_name = row.get("week_track")
         hook.run(
             """
-            INSERT IGNORE INTO `nascar`.`racing_reference_tracks` (`name`)
-            VALUES (%s)
+            INSERT INTO `nascar`.`data_sources_tracks` (`data_source_id`, `name`)
+            SELECT ds.`id`, %s
+            FROM `nascar`.`data_sources` ds
+            WHERE ds.`name` = %s
+                AND ds.`deleted_at` IS NULL
+            ON DUPLICATE KEY UPDATE `deleted_at` = NULL
             """,
-            parameters=(track_name,),
+            parameters=(track_name, source_id),
         )
         select_sql = """
             SELECT COUNT(*) AS total_matches
@@ -79,14 +106,19 @@ def create_tracks_if_not_exists(
                 )
     hook.run(
         """
-        UPDATE `nascar`.`racing_reference_tracks` rrt
+        UPDATE `nascar`.`data_sources_tracks` dst
+        JOIN `nascar`.`data_sources` ds
+            ON ds.`id` = dst.`data_source_id`
+            AND ds.`name` = %s
+            AND ds.`deleted_at` IS NULL
         INNER JOIN `nascar`.`tracks` t
-            ON TRIM(t.`name`) = TRIM(rrt.`name`)
+            ON TRIM(t.`name`) = TRIM(dst.`name`)
             AND t.`deleted_at` IS NULL
-        SET rrt.`track_id` = t.`id`
-        WHERE rrt.`track_id` IS NULL
-            AND rrt.`deleted_at` IS NULL
-        """
+        SET dst.`track_id` = t.`id`
+        WHERE dst.`track_id` IS NULL
+            AND dst.`deleted_at` IS NULL
+        """,
+        parameters=(source_id,),
     )
 
 
@@ -95,6 +127,7 @@ def create_weeks_if_not_exists(
 ):
     # Get the MySQL (MariaDB) connectionf from Airflow
     hook = MySqlHook(mysql_conn_id="nascar_conn")
+    source_id = getattr(source, "id", "racing_reference")
 
     year = kwargs["data_interval_start"].year
     base = source.storage_path_series_year(series.db_name, year)
@@ -127,15 +160,19 @@ def create_weeks_if_not_exists(
             select_sql = """
                 SELECT t.id AS track_id
                 FROM nascar.tracks t
-                INNER JOIN nascar.racing_reference_tracks rrt
-                    ON rrt.track_id = t.id
-                    AND rrt.deleted_at IS NULL
-                WHERE TRIM(rrt.name) = TRIM(%s)
+                INNER JOIN nascar.data_sources_tracks dst
+                    ON dst.track_id = t.id
+                    AND dst.deleted_at IS NULL
+                INNER JOIN nascar.data_sources ds
+                    ON ds.id = dst.data_source_id
+                    AND ds.name = %s
+                    AND ds.deleted_at IS NULL
+                WHERE TRIM(dst.name) = TRIM(%s)
                     AND t.deleted_at IS NULL
                 LIMIT 1
                 ;
             """
-            track_result = hook.get_first(select_sql, parameters=(week_track,))
+            track_result = hook.get_first(select_sql, parameters=(source_id, week_track))
             # For each track that match the current row's track name
             track_id = int(track_result[0])
             # Get the week id, track id, if the week's race has been completed and total number of matches for the given season, week number and track id
