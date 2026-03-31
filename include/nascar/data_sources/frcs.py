@@ -451,7 +451,7 @@ def download_draftkings_points_html_if_missing(
     return _download_related_page_if_missing(
         source,
         race_results_html_path,
-        "draftkings-points.html",
+        "draftkings.html",
         series_name,
         year,
         event_number,
@@ -469,7 +469,7 @@ def download_fanduel_points_html_if_missing(
     return _download_related_page_if_missing(
         source,
         race_results_html_path,
-        "fanduel-points.html",
+        "fanduel.html",
         series_name,
         year,
         event_number,

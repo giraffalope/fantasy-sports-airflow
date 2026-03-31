@@ -201,7 +201,7 @@ def test_frcs_convert_qualifying_uses_normalized_headers(tmp_path) -> None:
 
 def test_frcs_convert_penalties_race_infractions_table(tmp_path) -> None:
     html = tmp_path / "race-results.html"
-    csv_out = tmp_path / "race-results.csv"
+    csv_out = tmp_path / "penalties.csv"
     html.write_text(
         """
         <h4>Race Infractions</h4>
@@ -230,6 +230,37 @@ def test_frcs_convert_penalties_race_infractions_table(tmp_path) -> None:
     assert "Pass Thru" in body
 
 
+def test_frcs_convert_penalties_production_race_infractions_layout(tmp_path) -> None:
+    """FRCS uses an ``h4`` with classes (not plain text node) and Driver-first columns."""
+    html = tmp_path / "race-results.html"
+    csv_out = tmp_path / "penalties.csv"
+    html.write_text(
+        """
+        <div>
+        <h4 class="text-uppercase mt-4 mb-2">Race Infractions</h4>
+        <table class="table cupTable">
+          <thead><tr>
+            <th>Driver</th><th>Infraction</th><th>Penalty</th><th>Lap</th>
+            <th>Lap Assessed</th><th>Flag</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td>Bubba Wallace</td><td>Pitting early</td><td>Tail End</td>
+              <td>53</td><td>53</td><td>Yellow</td>
+            </tr>
+          </tbody>
+        </table>
+        </div>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_penalties(str(html))
+    body = csv_out.read_text(encoding="utf-8")
+    assert "Bubba Wallace" in body
+    assert "Pitting early" in body
+    assert "Yellow" in body
+
+
 def test_frcs_convert_draftkings_snake_case_headers_from_data_field(tmp_path) -> None:
     html = tmp_path / "dk.html"
     csv_out = tmp_path / "dk.csv"
@@ -256,6 +287,39 @@ def test_frcs_convert_draftkings_snake_case_headers_from_data_field(tmp_path) ->
     assert "fantasy_points" in lines[0].lower()
     assert "Jane" in body
     assert "52.5" in body
+
+
+def test_frcs_convert_draftkings_strips_salary_commas_and_sorts_desc(tmp_path) -> None:
+    html = tmp_path / "dk.html"
+    csv_out = tmp_path / "dk.csv"
+    html.write_text(
+        """
+        <table id="draftkingsTable">
+          <thead><tr><th></th><th></th><th></th></tr></thead>
+          <tbody>
+            <tr>
+              <td data-field="rank">1</td>
+              <td data-field="salary">8,200</td>
+              <td data-field="driverName">Abe</td>
+            </tr>
+            <tr>
+              <td data-field="rank">2</td>
+              <td data-field="salary">9,400</td>
+              <td data-field="driverName">Ben</td>
+            </tr>
+          </tbody>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_draftkings_points(str(html))
+    body = csv_out.read_text(encoding="utf-8")
+    assert "8,200" not in body
+    assert "9,400" not in body
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    assert "Ben" in lines[1]
+    assert "9400" in lines[1] or '"9400"' in lines[1]
+    assert "Abe" in lines[2]
 
 
 def test_frcs_convert_fanduel_snake_case_headers_from_titles(tmp_path) -> None:

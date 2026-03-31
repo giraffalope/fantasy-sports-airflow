@@ -1,8 +1,8 @@
-"""Unit tests for DAG ``nascar.scraper.frcs.schedule``."""
+"""Unit tests for DAG ``nascar.cup.scraper.frcs.schedule``."""
 
 from __future__ import annotations
 
-import nascar.scraper.frcs.schedule as schedule_dag
+import nascar.cup.scraper.frcs.schedule as schedule_dag
 
 from include.nascar.data_sources.frcs import (
     cup_series_convert_year_schedule_html_to_csv,
@@ -12,7 +12,7 @@ from include.nascar.data_sources.frcs import (
 
 def test_dag_metadata() -> None:
     dag = schedule_dag.dag
-    assert dag.dag_id == "nascar.scraper.frcs.schedule"
+    assert dag.dag_id == "nascar.cup.scraper.frcs.schedule"
     assert str(dag.schedule) == "0 * * * *"
     assert dag.catchup is False
     assert dag.max_active_runs == 1
@@ -22,8 +22,8 @@ def test_task_ids_and_count() -> None:
     dag = schedule_dag.dag
     assert set(dag.task_dict.keys()) == {
         "wait_random_time",
-        "cup_series_download_year_schedule_html",
-        "cup_series_convert_year_schedule_html_to_csv",
+        "download_year_schedule_html",
+        "convert_year_schedule_html_to_csv",
     }
     assert len(dag.tasks) == 3
 
@@ -31,8 +31,8 @@ def test_task_ids_and_count() -> None:
 def test_linear_dependencies() -> None:
     dag = schedule_dag.dag
     wait = dag.get_task("wait_random_time")
-    download = dag.get_task("cup_series_download_year_schedule_html")
-    convert = dag.get_task("cup_series_convert_year_schedule_html_to_csv")
+    download = dag.get_task("download_year_schedule_html")
+    convert = dag.get_task("convert_year_schedule_html_to_csv")
 
     assert wait.downstream_task_ids == {download.task_id}
     assert download.downstream_task_ids == {convert.task_id}
@@ -45,7 +45,7 @@ def test_linear_dependencies() -> None:
 
 def test_convert_task_outlets_emit_schedule_asset() -> None:
     dag = schedule_dag.dag
-    convert = dag.get_task("cup_series_convert_year_schedule_html_to_csv")
+    convert = dag.get_task("convert_year_schedule_html_to_csv")
     assert convert.outlets
     assert len(convert.outlets) == 1
     outlet = convert.outlets[0]
@@ -56,12 +56,12 @@ def test_convert_task_outlets_emit_schedule_asset() -> None:
 def test_module_asset_constant() -> None:
     asset = schedule_dag.NASCAR_FRCS_CUP_SCHEDULE_ASSET
     assert asset.uri == "nascar://frcs/cup/schedule.csv"
-    assert asset.name == "nascar_frcs_cup_schedule"
+    assert asset.name == "nascar.cup.scraper.frcs.schedule"
 
 
 def test_download_and_convert_callables_match_dag_operators() -> None:
     dag = schedule_dag.dag
-    dl = dag.get_task("cup_series_download_year_schedule_html")
-    cv = dag.get_task("cup_series_convert_year_schedule_html_to_csv")
+    dl = dag.get_task("download_year_schedule_html")
+    cv = dag.get_task("convert_year_schedule_html_to_csv")
     assert dl.python_callable is cup_series_download_year_schedule_html
     assert cv.python_callable is cup_series_convert_year_schedule_html_to_csv

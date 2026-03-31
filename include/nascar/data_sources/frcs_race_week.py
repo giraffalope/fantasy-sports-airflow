@@ -473,40 +473,6 @@ def cup_series_sync_pit_stall_selections(**context: Any) -> None:
     _frcs_task_end(task, year, weeks)
 
 
-def cup_series_sync_prerace_penalties(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
-    src = _resolve_frcs_source(None)
-    year = _cup_series_schedule_year_from_context(context)
-    run_anchor = race_week_run_anchor_from_context(context)
-    conv = src.converters
-    task = cup_series_sync_prerace_penalties.__name__
-    _frcs_task_begin(task, year, run_anchor)
-    weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
-        src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
-    ):
-        base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
-            continue
-        weeks += 1
-        race_html = os.path.join(base, "race-results.html")
-        pre_csv = os.path.join(base, "pre-race-penalties.csv")
-        if not os.path.isfile(race_html):
-            logging.info(
-                "FRCS race-week: %s year=%s event=%02d — skip (no %s)",
-                task,
-                year,
-                event_number,
-                race_html,
-            )
-            continue
-        _frcs_week_line(task, year, event_number, "pre-race penalties CSV")
-        logging.info("FRCS race-week: converting pre-race penalties %s -> %s", race_html, pre_csv)
-        conv.convert_prerace_penalties(race_html, pre_csv)
-        _frcs_remove_csv_if_no_data_rows(task, year, event_number, pre_csv)
-    _frcs_task_end(task, year, weeks)
-
-
 def cup_series_sync_race_results(**context: Any) -> None:
     _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
@@ -576,7 +542,10 @@ def cup_series_sync_penalties(**context: Any) -> None:
             logging.info("FRCS race-week: converting penalties (source %s)", pen_path)
         conv.convert_penalties(pen_path)
         if pen_path:
-            _frcs_remove_csv_if_no_data_rows(
-                task, year, event_number, pen_path.replace(".html", ".csv")
+            penalties_csv = (
+                os.path.join(os.path.dirname(pen_path), "penalties.csv")
+                if os.path.basename(pen_path).lower() == "race-results.html"
+                else pen_path.replace(".html", ".csv")
             )
+            _frcs_remove_csv_if_no_data_rows(task, year, event_number, penalties_csv)
     _frcs_task_end(task, year, weeks)

@@ -16,6 +16,34 @@ from include.utils.file import File
 _RR_TD_COL_CLASS = re.compile(r"(^|\s)col(\s|$)")
 
 
+def _sort_rr_rows_by_header_column(
+    rows: list,
+    headers: list[str],
+    col: str,
+    *,
+    reverse: bool = False,
+) -> None:
+    if not rows or col not in headers:
+        return
+    idx = headers.index(col)
+    tuples = [tuple(r) for r in rows]
+
+    def sort_key(row: tuple[str, ...]) -> float:
+        if idx >= len(row):
+            return float("-inf") if reverse else float("inf")
+        s = row[idx].strip().replace(",", "")
+        if not s or s in {"-", "—"}:
+            return float("-inf") if reverse else float("inf")
+        try:
+            return float(s)
+        except ValueError:
+            return float("-inf") if reverse else float("inf")
+
+    tuples.sort(key=sort_key, reverse=reverse)
+    rows.clear()
+    rows.extend(tuples)
+
+
 class RacingReferenceHtmlToCsv:
     """Parsers for Racing Reference result/schedule tables (used by load SQL)."""
 
@@ -193,6 +221,7 @@ class RacingReferenceHtmlToCsv:
                 if fields is None:
                     continue
                 csv_list.append(fields.values())
+        _sort_rr_rows_by_header_column(csv_list, headers, "position", reverse=False)
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
         logging.info("Racing Reference: race results %d rows -> %s", len(csv_list), csv_file_path)
@@ -449,6 +478,7 @@ class RacingReferenceHtmlToCsv:
                             "best_lap": best_lap,
                         }.values()
                     )
+            _sort_rr_rows_by_header_column(csv_list, headers, "rank", reverse=False)
             csv_file_path = path.replace(".html", ".csv")
             File.silent_remove(csv_file_path)
             File.write_csv(csv_file_path, csv_list, headers)
@@ -510,6 +540,7 @@ class RacingReferenceHtmlToCsv:
                             "lap_speed": lap_speed,
                         }.values()
                     )
+        _sort_rr_rows_by_header_column(csv_list, headers, "rank", reverse=False)
         csv_file_path = path.replace(".html", ".csv")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
@@ -615,6 +646,7 @@ class RacingReferenceHtmlToCsv:
                             "driver_rating": driver_rating,
                         }.values()
                     )
+        _sort_rr_rows_by_header_column(csv_list, headers, "finish", reverse=False)
         csv_file_path = path.replace(".html", ".csv")
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)

@@ -8,7 +8,7 @@ Uses task helpers in ``include.nascar.data_sources.frcs`` with the same
 Downstream DAGs should depend on the emitted **Asset** after each successful run::
 
     from airflow.sdk import DAG
-    from nascar.scraper.frcs.schedule import NASCAR_FRCS_CUP_SCHEDULE_ASSET
+    from nascar.cup.scraper.frcs.schedule import NASCAR_FRCS_CUP_SCHEDULE_ASSET
 
     with DAG(
         dag_id=\"my_downstream_dag\",
@@ -32,13 +32,15 @@ from include.nascar.data_sources.frcs import (
     cup_series_download_year_schedule_html,
 )
 
+DAG_ID = "nascar.cup.scraper.frcs.schedule"
+
 NASCAR_FRCS_CUP_SCHEDULE_ASSET = Asset(
     uri="nascar://frcs/cup/schedule.csv",
-    name="nascar_frcs_cup_schedule",
+    name=DAG_ID,
 )
 
 with DAG(
-    dag_id="nascar.scraper.frcs.schedule",
+    dag_id=DAG_ID,
     start_date=datetime(2025, 7, 11),
     schedule="0 * * * *",
     catchup=False,
@@ -50,19 +52,19 @@ with DAG(
         seconds=random.randint(0, 5),
     )
 
-    cup_series_download_year_schedule_html_task = PythonOperator(
-        task_id="cup_series_download_year_schedule_html",
+    download_year_schedule_html_task = PythonOperator(
+        task_id="download_year_schedule_html",
         python_callable=cup_series_download_year_schedule_html,
     )
 
-    cup_series_convert_year_schedule_html_to_csv_task = PythonOperator(
-        task_id="cup_series_convert_year_schedule_html_to_csv",
+    convert_year_schedule_html_to_csv_task = PythonOperator(
+        task_id="convert_year_schedule_html_to_csv",
         python_callable=cup_series_convert_year_schedule_html_to_csv,
         outlets=[NASCAR_FRCS_CUP_SCHEDULE_ASSET],
     )
 
     (
         wait_random_time_task
-        >> cup_series_download_year_schedule_html_task
-        >> cup_series_convert_year_schedule_html_to_csv_task
+        >> download_year_schedule_html_task
+        >> convert_year_schedule_html_to_csv_task
     )
