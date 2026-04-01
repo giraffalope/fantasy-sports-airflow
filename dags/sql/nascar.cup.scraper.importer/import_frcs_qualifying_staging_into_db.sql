@@ -45,7 +45,7 @@ SET
 
 ---
 
-INSERT INTO nascar.data_sources_drivers (data_source_id, full_name)
+INSERT INTO nascar.data_sources_drivers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(t.driver_name)
 FROM nascar.temp_qualifying_{{ week_id }} t
 JOIN nascar.data_sources ds ON ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
@@ -54,20 +54,34 @@ ON DUPLICATE KEY UPDATE deleted_at = NULL;
 
 ---
 
-INSERT IGNORE INTO nascar.drivers (first_name, last_name, suffix)
-SELECT nascar.get_driver_first_name(dsd.full_name), nascar.get_driver_last_name(dsd.full_name), nascar.get_driver_suffix(dsd.full_name)
-FROM nascar.data_sources_drivers dsd
-JOIN nascar.data_sources ds ON ds.id = dsd.data_source_id AND ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
-WHERE dsd.driver_id IS NULL;
+INSERT INTO nascar.drivers (first_name, last_name, suffix)
+SELECT x.first_name, x.last_name, x.suffix
+FROM (
+    SELECT DISTINCT
+        nascar.get_driver_first_name(dsd.name) AS first_name,
+        nascar.get_driver_last_name(dsd.name) AS last_name,
+        nascar.get_driver_suffix(dsd.name) AS suffix
+    FROM nascar.data_sources_drivers dsd
+    JOIN nascar.data_sources ds ON ds.id = dsd.data_source_id AND ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
+    WHERE dsd.driver_id IS NULL
+) x
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM nascar.drivers d
+    WHERE d.deleted_at IS NULL
+      AND (d.first_name COLLATE utf8mb4_unicode_ci) <=> (x.first_name COLLATE utf8mb4_unicode_ci)
+      AND (d.last_name COLLATE utf8mb4_unicode_ci) <=> (x.last_name COLLATE utf8mb4_unicode_ci)
+      AND (d.suffix COLLATE utf8mb4_unicode_ci) <=> (x.suffix COLLATE utf8mb4_unicode_ci)
+);
 
 ---
 
 UPDATE nascar.data_sources_drivers dsd
 JOIN nascar.data_sources ds ON ds.id = dsd.data_source_id AND ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
 JOIN nascar.drivers d
-    ON d.first_name = nascar.get_driver_first_name(dsd.full_name)
-    AND d.last_name = nascar.get_driver_last_name(dsd.full_name)
-    AND d.suffix = nascar.get_driver_suffix(dsd.full_name)
+    ON (d.first_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_unicode_ci)
+    AND (d.last_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_unicode_ci)
+    AND (d.suffix COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_unicode_ci)
     AND d.deleted_at IS NULL
 SET dsd.driver_id = d.id
 WHERE dsd.driver_id IS NULL;
@@ -76,7 +90,7 @@ WHERE dsd.driver_id IS NULL;
 
 UPDATE nascar.temp_qualifying_{{ week_id }} t
 JOIN nascar.data_sources_drivers dsd
-    ON TRIM(t.driver_name) = TRIM(dsd.full_name)
+    ON TRIM(t.driver_name) = TRIM(dsd.name)
     AND dsd.driver_id IS NOT NULL
     AND dsd.deleted_at IS NULL
 JOIN nascar.data_sources ds
@@ -174,10 +188,53 @@ SET t.qualifying_id = q.id;
 
 ---
 
+DELETE qr FROM nascar.qualifying_results qr
+INNER JOIN nascar.qualifyings q ON q.id = qr.qualifying_id
+WHERE q.week_id = {{ week_id }};
+
+---
+
 INSERT INTO nascar.qualifying_results (qualifying_id, car_driver_id, finish_position, best_speed, best_time)
-SELECT t.qualifying_id, t.car_driver_id, t.rank, t.speed, t.time
-FROM nascar.temp_qualifying_{{ week_id }} t
-WHERE t.time IS NOT NULL
-  AND TRIM(t.time) NOT IN ('', '0.0')
-  AND t.qualifying_id IS NOT NULL
-  AND t.car_driver_id IS NOT NULL;
+SELECT
+    by_rank.qualifying_id,
+    by_rank.car_driver_id,
+    by_rank.finish_position,
+    by_rank.speed,
+    by_rank.best_time
+FROM (
+    SELECT
+        by_driver.qualifying_id,
+        by_driver.car_driver_id,
+        by_driver.finish_position,
+        by_driver.speed,
+        by_driver.best_time,
+        ROW_NUMBER() OVER (
+            PARTITION BY by_driver.qualifying_id, by_driver.finish_position
+            ORDER BY by_driver.car_driver_id
+        ) AS rn_rank
+    FROM (
+        SELECT
+            t.qualifying_id,
+            t.car_driver_id,
+            CAST(TRIM(t.rank) AS UNSIGNED) AS finish_position,
+            t.speed,
+            CASE
+                WHEN TRIM(t.time) LIKE '%:%' THEN CAST(TRIM(t.time) AS TIME(3))
+                WHEN TRIM(t.time) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+                    SEC_TO_TIME(CAST(TRIM(t.time) AS DECIMAL(12, 3))) AS TIME(3)
+                )
+                ELSE NULL
+            END AS best_time,
+            ROW_NUMBER() OVER (
+                PARTITION BY t.qualifying_id, t.car_driver_id
+                ORDER BY CAST(TRIM(t.rank) AS UNSIGNED), TRIM(t.number)
+            ) AS rn_driver
+        FROM nascar.temp_qualifying_{{ week_id }} t
+        WHERE t.time IS NOT NULL
+          AND TRIM(t.time) NOT IN ('', '0.0')
+          AND t.qualifying_id IS NOT NULL
+          AND t.car_driver_id IS NOT NULL
+    ) by_driver
+    WHERE by_driver.rn_driver = 1
+) by_rank
+WHERE by_rank.rn_rank = 1;

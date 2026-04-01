@@ -202,8 +202,8 @@ SET
 
 ---
 
-INSERT INTO nascar.data_sources_drivers (data_source_id, full_name)
-SELECT DISTINCT ds.id AS data_source_id, TRIM(COALESCE(t.driver_name, t.name)) AS full_name
+INSERT INTO nascar.data_sources_drivers (data_source_id, name)
+SELECT DISTINCT ds.id AS data_source_id, TRIM(COALESCE(t.driver_name, t.name)) AS name
 FROM nascar.temp_race_{{ week_id }} t
 JOIN nascar.data_sources ds
     ON ds.name = 'racing_reference'
@@ -215,12 +215,12 @@ ON DUPLICATE KEY UPDATE deleted_at = NULL
 ---
 
 INSERT IGNORE INTO nascar.drivers (first_name, last_name, suffix)
-SELECT  nascar.get_driver_first_name(rrd.full_name) AS first_name,
-        nascar.get_driver_last_name(rrd.full_name) AS last_name,
-        nascar.get_driver_suffix(rrd.full_name) AS suffix
+SELECT  nascar.get_driver_first_name(dsd.name) AS first_name,
+        nascar.get_driver_last_name(dsd.name) AS last_name,
+        nascar.get_driver_suffix(dsd.name) AS suffix
 FROM nascar.temp_race_{{ week_id }} t
 JOIN nascar.data_sources_drivers dsd
-    ON TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.full_name)
+    ON TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.name)
     AND dsd.deleted_at IS NULL
 JOIN nascar.data_sources ds
     ON ds.id = dsd.data_source_id
@@ -238,12 +238,12 @@ UPDATE nascar.data_sources_drivers dsd
         AND ds.deleted_at IS NULL
     JOIN nascar.temp_race_{{ week_id }} t
         ON dsd.driver_id IS NULL
-        AND TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.full_name)
+        AND TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.name)
         AND dsd.deleted_at IS NULL
     JOIN nascar.drivers d
-        ON d.first_name = nascar.get_driver_first_name(dsd.full_name)
-        AND d.last_name = nascar.get_driver_last_name(dsd.full_name)
-        AND d.suffix = nascar.get_driver_suffix(dsd.full_name)
+        ON d.first_name = nascar.get_driver_first_name(dsd.name)
+        AND d.last_name = nascar.get_driver_last_name(dsd.name)
+        AND d.suffix = nascar.get_driver_suffix(dsd.name)
         AND d.deleted_at IS NULL
     SET dsd.driver_id = d.id
 ;
@@ -253,7 +253,7 @@ UPDATE nascar.data_sources_drivers dsd
 UPDATE nascar.temp_race_{{ week_id }} t
 JOIN nascar.data_sources_drivers dsd
     ON dsd.driver_id IS NOT NULL
-    AND TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.full_name)
+    AND TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.name)
     AND dsd.deleted_at IS NULL
 JOIN nascar.data_sources ds
     ON ds.id = dsd.data_source_id

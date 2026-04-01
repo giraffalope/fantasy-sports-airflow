@@ -3,8 +3,8 @@ DROP TABLE IF EXISTS nascar.stg_cup_frcs_schedule_import_{{ table_suffix }};
 ---
 
 CREATE TABLE nascar.stg_cup_frcs_schedule_import_{{ table_suffix }} (
-    event_number UNSIGNED INT NULL,
-    week_number UNSIGNED INT NULL,
+    event_number INT UNSIGNED NULL,
+    week_number INT UNSIGNED NULL,
     week_url VARCHAR(255) NULL,
     week_date DATE NULL,
     week_track VARCHAR(255) NULL,

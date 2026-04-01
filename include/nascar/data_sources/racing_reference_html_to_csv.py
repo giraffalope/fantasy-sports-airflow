@@ -457,7 +457,7 @@ class RacingReferenceHtmlToCsv:
                     )
                     number = cols[2].get_text().strip()
                     manufacturer = cols[3].get_text().strip()
-                    time = RacingReferenceHtmlToCsv.convert_to_seconds(cols[4].get_text().strip())
+                    lap_time = cols[4].get_text().strip()
                     if len(cols) >= 9:
                         speed = cols[6].get_text().strip()
                         num_laps = cols[7].get_text().strip()
@@ -472,7 +472,7 @@ class RacingReferenceHtmlToCsv:
                             "driver_name": driver_name,
                             "number": number,
                             "manufacturer": manufacturer,
-                            "lap_time": time,
+                            "lap_time": lap_time,
                             "lap_speed": speed,
                             "total_lap": num_laps,
                             "best_lap": best_lap,
@@ -526,9 +526,7 @@ class RacingReferenceHtmlToCsv:
                     )
                     number = cols[2].get_text().strip()
                     manufacturer = cols[3].get_text().strip()
-                    lap_time = RacingReferenceHtmlToCsv.convert_to_seconds(
-                        cols[4].get_text().strip()
-                    )
+                    lap_time = cols[4].get_text().strip()
                     lap_speed = cols[5].get_text().strip()
                     csv_list.append(
                         {
@@ -717,13 +715,3 @@ class RacingReferenceHtmlToCsv:
             path,
             csv_file_path,
         )
-
-    @staticmethod
-    def convert_to_seconds(time_str: str) -> float:
-        if not time_str:
-            return 0.0
-
-        if ":" in time_str:
-            minutes, seconds = time_str.split(":")
-            return int(minutes) * 60 + float(seconds)
-        return float(time_str)

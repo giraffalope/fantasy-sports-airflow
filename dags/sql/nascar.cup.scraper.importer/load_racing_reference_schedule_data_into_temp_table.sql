@@ -3,7 +3,7 @@ DROP TABLE IF EXISTS nascar.stg_cup_racing_reference_schedule_import_{{ table_su
 ---
 
 CREATE TABLE nascar.stg_cup_racing_reference_schedule_import_{{ table_suffix }} (
-    week_number UNSIGNED INT NULL,
+    week_number INT UNSIGNED NULL,
     week_url VARCHAR(255) NULL,
     week_date DATE NULL,
     week_track VARCHAR(255) NULL,

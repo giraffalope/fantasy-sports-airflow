@@ -78,7 +78,7 @@ WHERE dsm.manufacturer_id IS NULL
 
 ---
 
-INSERT INTO nascar.data_sources_drivers (data_source_id, full_name)
+INSERT INTO nascar.data_sources_drivers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(stg.driver_name)
 FROM nascar.stg_frcs_lineup_{{ week_id }} stg
 JOIN nascar.data_sources ds
@@ -90,17 +90,28 @@ ON DUPLICATE KEY UPDATE deleted_at = NULL
 
 ---
 
-INSERT IGNORE INTO nascar.drivers (first_name, last_name, suffix)
-SELECT
-    nascar.get_driver_first_name(dsd.full_name),
-    nascar.get_driver_last_name(dsd.full_name),
-    nascar.get_driver_suffix(dsd.full_name)
-FROM nascar.data_sources_drivers dsd
-JOIN nascar.data_sources ds
-    ON ds.id = dsd.data_source_id
-    AND ds.name = '{{ source_name }}'
-    AND ds.deleted_at IS NULL
-WHERE dsd.driver_id IS NULL
+INSERT INTO nascar.drivers (first_name, last_name, suffix)
+SELECT x.first_name, x.last_name, x.suffix
+FROM (
+    SELECT DISTINCT
+        nascar.get_driver_first_name(dsd.name) AS first_name,
+        nascar.get_driver_last_name(dsd.name) AS last_name,
+        nascar.get_driver_suffix(dsd.name) AS suffix
+    FROM nascar.data_sources_drivers dsd
+    JOIN nascar.data_sources ds
+        ON ds.id = dsd.data_source_id
+        AND ds.name = '{{ source_name }}'
+        AND ds.deleted_at IS NULL
+    WHERE dsd.driver_id IS NULL
+) x
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM nascar.drivers d
+    WHERE d.deleted_at IS NULL
+      AND (d.first_name COLLATE utf8mb4_unicode_ci) <=> (x.first_name COLLATE utf8mb4_unicode_ci)
+      AND (d.last_name COLLATE utf8mb4_unicode_ci) <=> (x.last_name COLLATE utf8mb4_unicode_ci)
+      AND (d.suffix COLLATE utf8mb4_unicode_ci) <=> (x.suffix COLLATE utf8mb4_unicode_ci)
+)
 ;
 
 ---
@@ -111,9 +122,9 @@ JOIN nascar.data_sources ds
     AND ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
 JOIN nascar.drivers d
-    ON d.first_name = nascar.get_driver_first_name(dsd.full_name)
-    AND d.last_name = nascar.get_driver_last_name(dsd.full_name)
-    AND d.suffix = nascar.get_driver_suffix(dsd.full_name)
+    ON (d.first_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_unicode_ci)
+    AND (d.last_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_unicode_ci)
+    AND (d.suffix COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_unicode_ci)
     AND d.deleted_at IS NULL
 SET dsd.driver_id = d.id
 WHERE dsd.driver_id IS NULL
@@ -157,7 +168,7 @@ JOIN nascar.data_sources ds
     AND ds.deleted_at IS NULL
 JOIN nascar.data_sources_drivers dsd
     ON dsd.data_source_id = ds.id
-    AND TRIM(dsd.full_name) = TRIM(stg.driver_name)
+    AND TRIM(dsd.name) = TRIM(stg.driver_name)
     AND dsd.driver_id IS NOT NULL
     AND dsd.deleted_at IS NULL
 JOIN nascar.data_sources_teams dst
@@ -203,7 +214,7 @@ JOIN nascar.data_sources ds
     AND ds.deleted_at IS NULL
 JOIN nascar.data_sources_drivers dsd
     ON dsd.data_source_id = ds.id
-    AND TRIM(dsd.full_name) = TRIM(stg.driver_name)
+    AND TRIM(dsd.name) = TRIM(stg.driver_name)
     AND dsd.driver_id IS NOT NULL
     AND dsd.deleted_at IS NULL
 JOIN nascar.data_sources_teams dst

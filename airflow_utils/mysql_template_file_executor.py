@@ -5,6 +5,54 @@ from airflow.providers.mysql.hooks.mysql import MySqlHook
 from jinja2 import Template
 
 
+def _connection_set_autocommit(conn, enabled: bool) -> None:
+    """Support mysqlclient (callable), PyMySQL (callable), and mysql-connector (property)."""
+    ac = getattr(conn, "autocommit", None)
+    if callable(ac):
+        try:
+            ac(enabled)
+        except TypeError:
+            conn.autocommit = enabled  # type: ignore[misc, assignment]
+    else:
+        try:
+            conn.autocommit = enabled  # type: ignore[misc, assignment]
+        except (AttributeError, TypeError):
+            pass
+
+
+def execute_sql_statements_transactional(hook: MySqlHook, statements: list[str]) -> None:
+    """
+    Run all statements on a single connection: commit if every statement succeeds, otherwise rollback.
+
+    MySQL issues an implicit commit before and after DDL (e.g. ``CREATE TABLE``, ``DROP TABLE``), so
+    a script that mixes DDL with DML cannot be rolled back to its pre-file state as a whole. Any
+    DML that runs after the last DDL in a failed file may still be rolled back; work committed by
+    implicit DDL (including an early ``DELETE`` followed by ``CREATE TABLE``) is not undone.
+    """
+    if not statements:
+        return
+
+    conn = hook.get_conn()
+    try:
+        _connection_set_autocommit(conn, False)
+        cursor = conn.cursor()
+        try:
+            for stmt in statements:
+                cursor.execute(stmt)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+    finally:
+        try:
+            _connection_set_autocommit(conn, True)
+        except Exception:
+            pass
+        conn.close()
+
+
 class MySqlTemplateFileExecutor(MySqlHook):
     def run_templated_sql_file(self, file_path, context=None):
         """
@@ -23,6 +71,4 @@ class MySqlTemplateFileExecutor(MySqlHook):
         # Split on triple dash separator
         statements = [stmt.strip() for stmt in rendered_sql.split("---") if stmt.strip()]
 
-        # Execute each statement
-        for statement in statements:
-            self.run(statement)
+        execute_sql_statements_transactional(self, statements)

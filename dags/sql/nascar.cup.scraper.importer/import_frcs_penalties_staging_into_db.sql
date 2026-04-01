@@ -1,3 +1,9 @@
+DELETE pen FROM nascar.penalties pen
+INNER JOIN nascar.races r ON r.id = pen.race_id
+WHERE r.week_id = {{ week_id }};
+
+---
+
 INSERT INTO nascar.penalties (race_id, car_driver_id, lap, flag, description, penalty)
 SELECT
     r.id AS race_id,
@@ -22,7 +28,7 @@ JOIN nascar.data_sources ds
 LEFT JOIN nascar.data_sources_drivers dsd
     ON dsd.data_source_id = ds.id
     AND dsd.deleted_at IS NULL
-    AND TRIM(dsd.full_name) = TRIM(stg.driver_name)
+    AND TRIM(dsd.name) = TRIM(stg.driver_name)
 LEFT JOIN nascar.cars c
     ON c.number = TRIM(stg.number)
     AND c.deleted_at IS NULL
@@ -33,9 +39,4 @@ LEFT JOIN nascar.cars_drivers cd
 WHERE stg.penalty IS NOT NULL
     AND stg.lap IS NOT NULL
     AND cd.id IS NOT NULL
-ON DUPLICATE KEY UPDATE
-    flag = VALUES(flag),
-    description = VALUES(description),
-    penalty = VALUES(penalty),
-    deleted_at = NULL
 ;

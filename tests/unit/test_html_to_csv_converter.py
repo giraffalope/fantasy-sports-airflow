@@ -5,22 +5,7 @@ from __future__ import annotations
 import csv
 import io
 
-import pytest
-
 from include.nascar.html_to_csv_converter import HtmlToCsvConverter
-
-
-@pytest.mark.parametrize(
-    ("time_str", "expected"),
-    [
-        ("", 0.0),
-        ("30.5", 30.5),
-        ("1:30.5", 90.5),
-        ("0:45", 45.0),
-    ],
-)
-def test_convert_to_seconds(time_str: str, expected: float) -> None:
-    assert HtmlToCsvConverter.convert_to_seconds(time_str) == pytest.approx(expected)
 
 
 def test_convert_schedule_writes_expected_columns(tmp_path) -> None:

@@ -190,6 +190,7 @@ def create_weeks_if_not_exists(
                 WHERE w.season_id = %s
                     AND w.number = %s
                     AND w.track_id = %s
+                    AND w.season_number IS NULL
                     AND w.deleted_at IS NULL
                 GROUP BY w.id, w.track_id
                 LIMIT 1
@@ -205,21 +206,22 @@ def create_weeks_if_not_exists(
             else:
                 # Create the week
                 insert_sql = """
-                    INSERT nascar.weeks (season_id, track_id, number, race_name, scheduled_start)
+                    INSERT nascar.weeks (season_id, track_id, number, season_number, race_name, scheduled_start)
                     VALUES (
-                        %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s
                     )
                     ON DUPLICATE KEY UPDATE
                     season_id = VALUES(season_id),
                     track_id = VALUES(track_id),
                     number = VALUES(number),
+                    season_number = VALUES(season_number),
                     race_name = VALUES(race_name),
                     scheduled_start = VALUES(scheduled_start)
                     ;
                 """
                 hook.run(
                     insert_sql,
-                    parameters=(season_id, track_id, week_number, week_race_name, week_date),
+                    parameters=(season_id, track_id, week_number, None, week_race_name, week_date),
                 )
                 # Find the newly created week's id
                 sql = """
@@ -228,6 +230,7 @@ def create_weeks_if_not_exists(
                     WHERE w.season_id = %s
                         AND w.track_id = %s
                         AND w.number = %s
+                        AND w.season_number IS NULL
                         AND w.race_name = %s
                         AND w.scheduled_start = %s
                         AND w.deleted_at IS NULL

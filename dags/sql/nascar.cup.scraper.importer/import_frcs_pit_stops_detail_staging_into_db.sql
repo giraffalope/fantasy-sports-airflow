@@ -1,3 +1,9 @@
+DELETE ps FROM nascar.pitstops ps
+INNER JOIN nascar.races r ON r.id = ps.race_id
+WHERE r.week_id = {{ week_id }};
+
+---
+
 INSERT INTO nascar.pitstops (
     race_id,
     car_driver_id,
@@ -17,8 +23,20 @@ SELECT
         WHEN UPPER(stg.type) LIKE '%LEFT%' THEN 'TWO_WHEEL_CHANGE_LEFT'
         ELSE 'FOUR_WHEEL_CHANGE'
     END AS type,
-    CAST(stg.stop_duration AS TIME) AS stop_time,
-    CAST(stg.driver_time AS TIME) AS driver_time
+    CASE
+        WHEN TRIM(stg.stop_duration) LIKE '%:%' THEN CAST(TRIM(stg.stop_duration) AS TIME(3))
+        WHEN TRIM(stg.stop_duration) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+            SEC_TO_TIME(CAST(TRIM(stg.stop_duration) AS DECIMAL(12, 3))) AS TIME(3)
+        )
+        ELSE NULL
+    END AS stop_time,
+    CASE
+        WHEN TRIM(stg.driver_time) LIKE '%:%' THEN CAST(TRIM(stg.driver_time) AS TIME(3))
+        WHEN TRIM(stg.driver_time) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+            SEC_TO_TIME(CAST(TRIM(stg.driver_time) AS DECIMAL(12, 3))) AS TIME(3)
+        )
+        ELSE NULL
+    END AS driver_time
 FROM nascar.stg_frcs_pit_stops_detail_{{ week_id }} stg
 JOIN nascar.races r
     ON r.week_id = {{ week_id }}
@@ -29,7 +47,7 @@ JOIN nascar.data_sources ds
 LEFT JOIN nascar.data_sources_drivers dsd
     ON dsd.data_source_id = ds.id
     AND dsd.deleted_at IS NULL
-    AND TRIM(dsd.full_name) = TRIM(stg.driver_name)
+    AND TRIM(dsd.name) = TRIM(stg.driver_name)
 LEFT JOIN nascar.cars c
     ON c.number = TRIM(stg.number)
     AND c.deleted_at IS NULL
@@ -40,9 +58,4 @@ LEFT JOIN nascar.cars_drivers cd
 WHERE stg.leader_lap IS NOT NULL
     AND stg.pitter_lap IS NOT NULL
     AND cd.id IS NOT NULL
-ON DUPLICATE KEY UPDATE
-    type = VALUES(type),
-    stop_time = VALUES(stop_time),
-    driver_time = VALUES(driver_time),
-    deleted_at = NULL
 ;

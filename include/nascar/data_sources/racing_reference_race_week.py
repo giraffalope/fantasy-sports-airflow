@@ -7,6 +7,10 @@ Schedule rows are skipped when ``week_date`` is missing/unparseable or when that
 (start of day UTC) is **not** strictly before the DAG run anchor plus
 ``RACE_WEEK_SCRAPE_HORIZON_DAYS`` — so distant future races are not scraped on
 every asset-triggered run.
+
+**Complete-week skip:** if ``<week_dir>/loop-data.csv`` exists **and has at least one data row**,
+each task skips that week. ``loop-data.csv`` is written by the final DAG task
+(``sync_race_results``), matching FRCS race-week behavior.
 """
 
 from __future__ import annotations
@@ -62,6 +66,31 @@ def _rr_week_line(task: str, year: int, week_number: int, message: str) -> None:
         week_number,
         message,
     )
+
+
+def _rr_week_loop_data_csv_has_data_rows(week_dir: str) -> bool:
+    path = os.path.join(week_dir, "loop-data.csv")
+    if not os.path.isfile(path):
+        return False
+    try:
+        rows = File.read_csv(path, as_dict=False)
+    except Exception as exc:
+        logging.warning(
+            "Racing Reference race-week: loop-data.csv unreadable for skip check %s: %s",
+            path,
+            exc,
+        )
+        return False
+    return len(rows) > 1
+
+
+def _rr_week_skip_if_loop_csv_present(
+    task: str, year: int, week_number: int, week_dir: str
+) -> bool:
+    if not _rr_week_loop_data_csv_has_data_rows(week_dir):
+        return False
+    _rr_week_line(task, year, week_number, "skip (loop-data.csv has data rows)")
+    return True
 
 
 def _parse_iso_datetime_string(s: str) -> datetime | None:
@@ -326,6 +355,9 @@ def cup_series_sync_weeks(**context: Any) -> None:
     for week_number, week_url in iter_week_numbers_with_url(
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
+        base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+            continue
         weeks += 1
         _rr_week_line(task, year, week_number, "ensure race-results.html")
         download_race_results_html_if_missing(src, _RR_CUP.db_name, year, week_number, week_url)
@@ -343,8 +375,10 @@ def cup_series_sync_entrylists(**context: Any) -> None:
     for week_number, _ in iter_week_numbers_with_url(
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
-        weeks += 1
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+            continue
+        weeks += 1
         race_html = os.path.join(base, "race-results.html")
         _rr_week_line(task, year, week_number, "entry list HTML + CSV")
         download_entrylist_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
@@ -378,8 +412,10 @@ def cup_series_sync_practices(**context: Any) -> None:
     for week_number, _ in iter_week_numbers_with_url(
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
-        weeks += 1
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+            continue
+        weeks += 1
         race_html = os.path.join(base, "race-results.html")
         _rr_week_line(task, year, week_number, "practice HTML + CSV")
         download_practices_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
@@ -408,8 +444,10 @@ def cup_series_sync_qualifyings(**context: Any) -> None:
     for week_number, _ in iter_week_numbers_with_url(
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
-        weeks += 1
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+            continue
+        weeks += 1
         race_html = os.path.join(base, "race-results.html")
         _rr_week_line(task, year, week_number, "qualifying HTML + CSV")
         qpath = download_qualifying_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
@@ -430,8 +468,10 @@ def cup_series_sync_prerace_penalties(**context: Any) -> None:
     for week_number, _ in iter_week_numbers_with_url(
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
-        weeks += 1
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+            continue
+        weeks += 1
         race_html = os.path.join(base, "race-results.html")
         pre_csv = os.path.join(base, "pre-race-penalties.csv")
         if not os.path.isfile(race_html):
@@ -464,8 +504,10 @@ def cup_series_sync_caution_flags(**context: Any) -> None:
     for week_number, _ in iter_week_numbers_with_url(
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
-        weeks += 1
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+            continue
+        weeks += 1
         race_html = os.path.join(base, "race-results.html")
         caution_csv = os.path.join(base, "caution-flags.csv")
         if not os.path.isfile(race_html):
@@ -498,8 +540,10 @@ def cup_series_sync_race_results(**context: Any) -> None:
     for week_number, _ in iter_week_numbers_with_url(
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
-        weeks += 1
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+            continue
+        weeks += 1
         race_html = os.path.join(base, "race-results.html")
         race_csv = os.path.join(base, "race-results.csv")
         if not os.path.isfile(race_html):
@@ -538,8 +582,10 @@ def cup_series_sync_penalties_and_lap_leaders(**context: Any) -> None:
     for week_number, _ in iter_week_numbers_with_url(
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
-        weeks += 1
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+            continue
+        weeks += 1
         race_html = os.path.join(base, "race-results.html")
         lap_csv = os.path.join(base, "lap-leaders.csv")
         _rr_week_line(task, year, week_number, "penalties HTML + lap leaders CSV")

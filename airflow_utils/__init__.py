@@ -6,6 +6,7 @@ from __future__ import annotations
 
 __all__ = [
     "MySQLTemplateFileOperator",
+    "MySQLTemplateFileOperatorFromContext",
     "MySqlTemplateFileExecutor",
     "WaitOperator",
 ]
@@ -16,6 +17,10 @@ def __getattr__(name: str):
         from .mysql_template_file_operator import MySQLTemplateFileOperator
 
         return MySQLTemplateFileOperator
+    if name == "MySQLTemplateFileOperatorFromContext":
+        from .mysql_template_file_operator import MySQLTemplateFileOperatorFromContext
+
+        return MySQLTemplateFileOperatorFromContext
     if name == "MySqlTemplateFileExecutor":
         from .mysql_template_file_executor import MySqlTemplateFileExecutor
 

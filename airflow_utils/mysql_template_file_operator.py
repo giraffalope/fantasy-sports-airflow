@@ -1,3 +1,7 @@
+import os
+from collections.abc import Callable
+from typing import Any
+
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 from airflow.sdk import BaseOperator
 
@@ -12,7 +16,9 @@ class MySQLTemplateFileOperator(BaseOperator):
     :param multi: Whether to execute statements as multi=True
     """
 
-    template_fields = ("sql_file_path", "parameters")
+    # sql_file_path is intentionally not templated: Jinja rendering resolves Path objects and
+    # raises FileNotFoundError when parent directories (e.g. …/sql/) are absent in the image.
+    template_fields = ("parameters",)
 
     def __init__(
         self,
@@ -23,6 +29,10 @@ class MySQLTemplateFileOperator(BaseOperator):
         multi=True,
         **kwargs,
     ):
+        # Store as ``str``: Airflow 3 template rendering resolves ``pathlib.Path`` (calling
+        # ``resolve()``), which fails when parent dirs are missing in the worker image even if
+        # the DAG parse host had the tree mounted differently.
+        sql_file_path = os.fspath(sql_file_path)
         super().__init__(**kwargs)
         self.sql_file_path = sql_file_path
         self.mysql_conn_id = mysql_conn_id
@@ -52,3 +62,38 @@ class MySQLTemplateFileOperator(BaseOperator):
         conn.commit()
         cursor.close()
         conn.close()
+
+
+class MySQLTemplateFileOperatorFromContext(MySQLTemplateFileOperator):
+    """
+    Builds ``parameters`` inside ``execute()`` from the real task context dict.
+
+    Airflow only Jinja-templates ``MySQLTemplateFileOperator.parameters`` using a reduced
+    variable set. Asset-triggered runs often omit top-level ``logical_date`` and
+    ``data_interval_start``, so use this class and resolve paths / timestamps in Python
+    (e.g. from ``dag_run.run_id``, ``triggering_asset_events``, etc.).
+    """
+
+    template_fields = ()
+
+    def __init__(
+        self,
+        *,
+        sql_file_path,
+        parameters_factory: Callable[[dict[str, Any]], dict[str, Any]],
+        mysql_conn_id="mysql_default",
+        multi=True,
+        **kwargs,
+    ):
+        super().__init__(
+            sql_file_path=sql_file_path,
+            mysql_conn_id=mysql_conn_id,
+            parameters={},
+            multi=multi,
+            **kwargs,
+        )
+        self.parameters_factory = parameters_factory
+
+    def execute(self, context):
+        self.parameters = self.parameters_factory(context)
+        return super().execute(context)

@@ -12,8 +12,10 @@ Schedule rows are filtered by ``week_date`` vs. the DAG run anchor (same rules a
 Reference in ``racing_reference_race_week``). Storage paths use ``event_number`` (row order
 in ``schedule.csv``), not the official ``week_number`` from the site ``#`` column.
 
-**Complete-week skip:** if ``<week_dir>/loop-data.csv`` exists **and has at least one
-data row** (not header-only), every task skips that event week.
+**Complete-week skip:** if ``<week_dir>/loop-data.csv`` exists **and has at least one data row**
+(not header-only), every task skips that event week. ``loop-data.csv`` is produced by the
+final task in the race-week DAG (``sync_race_results``), so it indicates a full pass already
+finished for that week folder.
 """
 
 from __future__ import annotations

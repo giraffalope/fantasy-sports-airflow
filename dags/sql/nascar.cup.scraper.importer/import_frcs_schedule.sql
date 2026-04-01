@@ -101,7 +101,7 @@ WHERE NOT EXISTS (
     FROM nascar.weeks w
     WHERE w.season_id = s.id
       AND w.track_id = dst.track_id
-      AND w.number = CAST(stg.week_number AS UNSIGNED)
+      AND w.number = CAST(stg.event_number AS UNSIGNED)
       AND w.season_number <=> (
           CASE
               WHEN CAST(stg.week_number AS UNSIGNED) = 0 THEN NULL

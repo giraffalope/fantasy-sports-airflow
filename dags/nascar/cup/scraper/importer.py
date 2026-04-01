@@ -20,19 +20,56 @@ from nascar.cup.scraper.racing_reference.race_week import (
     NASCAR_RACING_REFERENCE_CUP_RACE_WEEK_ASSET,
 )
 
-from airflow_utils import MySQLTemplateFileOperator
+from airflow_utils import MySQLTemplateFileOperatorFromContext
+from airflow_utils.mysql_template_file_executor import execute_sql_statements_transactional
 from include.nascar.data_sources.frcs import FrcsSource
 from include.nascar.data_sources.racing_reference import RacingReferenceSource
 from include.nascar.data_sources.racing_reference_race_week import (
     _cup_series_schedule_year_from_context,
+    race_week_run_anchor_from_context,
 )
 from include.nascar.enums import NascarSeries
 
 DAG_ID = "nascar.cup.scraper.importer"
 
+_SQL_DAG_SUBDIR = "nascar.cup.scraper.importer"
+_SQL_SENTINEL = Path(_SQL_DAG_SUBDIR) / "load_stage_frcs_schedule_csv.sql"
+
 
 def _sql_root() -> Path:
-    return Path(__file__).parents[4] / "sql"
+    """
+    Resolve the SQL root that contains the ``nascar.cup.scraper.importer`` folder.
+
+    Canonical layout: ``dags/sql/nascar.cup.scraper.importer/`` (top of the DAGs folder).
+    Fallbacks: ``…/scraper/sql/`` next to this file, repo-root ``sql/``, ``$AIRFLOW_HOME/sql``,
+    or ``NASCAR_AIRFLOW_SQL_ROOT`` (directory that contains the DAG subfolder).
+    """
+    override = os.environ.get("NASCAR_AIRFLOW_SQL_ROOT", "").strip()
+    if override:
+        root = Path(override)
+        if (root / _SQL_SENTINEL).is_file():
+            return root
+        raise FileNotFoundError(
+            f"NASCAR_AIRFLOW_SQL_ROOT={override!r} does not contain {_SQL_SENTINEL.as_posix()}"
+        )
+
+    dag_file = Path(__file__).resolve()
+    # ``importer.py`` lives at ``dags/nascar/cup/scraper/`` → ``parents[3]`` is ``dags/``.
+    candidates = [
+        dag_file.parents[3] / "sql",
+        dag_file.parent / "sql",
+        dag_file.parents[4] / "sql",
+        Path(os.environ.get("AIRFLOW_HOME", "/opt/airflow")) / "sql",
+    ]
+    for root in candidates:
+        if (root / _SQL_SENTINEL).is_file():
+            return root
+
+    searched = ", ".join(str(r) for r in candidates)
+    raise FileNotFoundError(
+        f"Could not find {_SQL_DAG_SUBDIR} SQL files. Tried: {searched}. "
+        f"Set NASCAR_AIRFLOW_SQL_ROOT to the directory containing {_SQL_DAG_SUBDIR!r}."
+    )
 
 
 def _render_sql(sql_file_path: Path, context: dict[str, object]) -> str:
@@ -43,9 +80,34 @@ def _render_sql(sql_file_path: Path, context: dict[str, object]) -> str:
 def _execute_templated_sql_file(
     hook: MySqlHook, sql_file_path: Path, context: dict[str, object], source_name: str
 ) -> None:
+    """
+    Run the file's ``---``-separated statements on one connection with commit/rollback.
+
+    See :func:`airflow_utils.mysql_template_file_executor.execute_sql_statements_transactional`
+    for MySQL DDL / implicit-commit limitations.
+    """
     rendered_sql = _render_sql(sql_file_path, {**context, "source_name": source_name})
-    for stmt in [s.strip() for s in rendered_sql.split("---") if s.strip()]:
-        hook.run(stmt)
+    statements = [s.strip() for s in rendered_sql.split("---") if s.strip()]
+    execute_sql_statements_transactional(hook, statements)
+
+
+def _nascar_staging_table_exists(hook: MySqlHook, table_name: str) -> bool:
+    """
+    Whether ``nascar.<table_name>`` exists.
+
+    Import tasks must not rely only on ``os.path.isfile`` for the CSV: the load task may run on a
+    different executor with access to the scraper volume while this worker only sees MySQL.
+    """
+    row = hook.get_first(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'nascar' AND table_name = %s
+        LIMIT 1
+        """,
+        parameters=(table_name,),
+    )
+    return row is not None
 
 
 def _target_weeks(hook: MySqlHook, *, series_id: int, year: int) -> list[tuple[int, int]]:
@@ -73,6 +135,40 @@ def _pull_target_weeks(kwargs: dict[str, Any]) -> list[tuple[int, int]]:
 
 def _context_year(kwargs: dict[str, Any]) -> int:
     return _cup_series_schedule_year_from_context(kwargs)
+
+
+def _importer_params_load_frcs_schedule(context: dict[str, Any]) -> dict[str, Any]:
+    year = _cup_series_schedule_year_from_context(context)
+    anchor = race_week_run_anchor_from_context(context)
+    frcs = FrcsSource()
+    return {
+        "schedule_csv_file_path": f"{frcs.storage_path_series_year('cup', year)}/schedule.csv",
+        "table_suffix": anchor.strftime("%Y%m%d%H%M"),
+    }
+
+
+def _importer_params_load_rr_schedule(context: dict[str, Any]) -> dict[str, Any]:
+    year = _cup_series_schedule_year_from_context(context)
+    anchor = race_week_run_anchor_from_context(context)
+    rr = RacingReferenceSource()
+    return {
+        "schedule_csv_file_path": f"{rr.storage_path_series_year('cup', year)}/schedule.csv",
+        "table_suffix": anchor.strftime("%Y%m%d%H%M"),
+    }
+
+
+def _importer_params_import_frcs_schedule(context: dict[str, Any]) -> dict[str, Any]:
+    year = _cup_series_schedule_year_from_context(context)
+    anchor = race_week_run_anchor_from_context(context)
+    frcs = FrcsSource()
+    return {
+        "series_id": NascarSeries.CUP.series_id,
+        "series_name": NascarSeries.CUP.db_name,
+        "source_name": frcs.id,
+        "source_url": frcs.base_url,
+        "season_year": year,
+        "table_suffix": anchor.strftime("%Y%m%d%H%M"),
+    }
 
 
 def load_stage_frcs_entrylist_csvs(**kwargs) -> None:
@@ -205,13 +301,19 @@ def load_stage_frcs_lineup_csvs(**kwargs) -> None:
 
 def import_frcs_lineup(**kwargs) -> None:
     hook = MySqlHook(mysql_conn_id="nascar_conn")
+    year = _context_year(kwargs)
+    series = NascarSeries.CUP
     sql = _sql_root() / "nascar.cup.scraper.importer" / "import_frcs_lineup_staging_into_db.sql"
     source = FrcsSource()
-    for week_id, _ in _pull_target_weeks(kwargs):
+    for week_id, event_number in _pull_target_weeks(kwargs):
+        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "lineup.csv")
+        stg = f"stg_frcs_lineup_{week_id}"
+        if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
+            continue
         _execute_templated_sql_file(
             hook,
             sql,
-            {"week_id": week_id, "series_id": NascarSeries.CUP.series_id, "source_name": source.id},
+            {"week_id": week_id, "series_id": series.series_id, "source_name": source.id},
             source.id,
         )
 
@@ -277,9 +379,15 @@ def load_stage_frcs_penalties_csvs(**kwargs) -> None:
 
 def import_frcs_penalties(**kwargs) -> None:
     hook = MySqlHook(mysql_conn_id="nascar_conn")
+    year = _context_year(kwargs)
+    series = NascarSeries.CUP
     sql = _sql_root() / "nascar.cup.scraper.importer" / "import_frcs_penalties_staging_into_db.sql"
     source = FrcsSource()
-    for week_id, _ in _pull_target_weeks(kwargs):
+    for week_id, event_number in _pull_target_weeks(kwargs):
+        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "penalties.csv")
+        stg = f"stg_frcs_penalties_{week_id}"
+        if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
+            continue
         _execute_templated_sql_file(
             hook, sql, {"week_id": week_id, "source_name": source.id}, source.id
         )
@@ -305,9 +413,17 @@ def load_stage_frcs_pitstops_csvs(**kwargs) -> None:
 
 def import_frcs_pitstops(**kwargs) -> None:
     hook = MySqlHook(mysql_conn_id="nascar_conn")
+    year = _context_year(kwargs)
+    series = NascarSeries.CUP
     sql = _sql_root() / "nascar.cup.scraper.importer" / "import_frcs_pit_stops_detail_staging_into_db.sql"
     source = FrcsSource()
-    for week_id, _ in _pull_target_weeks(kwargs):
+    for week_id, event_number in _pull_target_weeks(kwargs):
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "pit-stops-detail.csv"
+        )
+        stg = f"stg_frcs_pit_stops_detail_{week_id}"
+        if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
+            continue
         _execute_templated_sql_file(
             hook, sql, {"week_id": week_id, "source_name": source.id}, source.id
         )
@@ -331,9 +447,15 @@ def load_stage_frcs_draftkings_csvs(**kwargs) -> None:
 
 def import_frcs_draftkings(**kwargs) -> None:
     hook = MySqlHook(mysql_conn_id="nascar_conn")
+    year = _context_year(kwargs)
+    series = NascarSeries.CUP
     source = FrcsSource()
     sql = _sql_root() / "nascar.cup.scraper.importer" / "import_frcs_draftkings_staging_into_db.sql"
-    for week_id, _ in _pull_target_weeks(kwargs):
+    for week_id, event_number in _pull_target_weeks(kwargs):
+        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "draftkings.csv")
+        stg = f"stg_frcs_draftkings_{week_id}"
+        if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
+            continue
         _execute_templated_sql_file(
             hook,
             sql,
@@ -360,9 +482,15 @@ def load_stage_frcs_fanduel_csvs(**kwargs) -> None:
 
 def import_frcs_fanduel(**kwargs) -> None:
     hook = MySqlHook(mysql_conn_id="nascar_conn")
+    year = _context_year(kwargs)
+    series = NascarSeries.CUP
     source = FrcsSource()
     sql = _sql_root() / "nascar.cup.scraper.importer" / "import_frcs_fanduel_staging_into_db.sql"
-    for week_id, _ in _pull_target_weeks(kwargs):
+    for week_id, event_number in _pull_target_weeks(kwargs):
+        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "fanduel.csv")
+        stg = f"stg_frcs_fanduel_{week_id}"
+        if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
+            continue
         _execute_templated_sql_file(
             hook,
             sql,
@@ -382,54 +510,27 @@ with DAG(
     max_active_runs=1,
     doc_md=__doc__,
 ) as dag:
-    frcs_source = FrcsSource()
-    racing_reference_source = RacingReferenceSource()
-
-    load_stage_frcs_schedule_csv_task = MySQLTemplateFileOperator(
+    load_stage_frcs_schedule_csv_task = MySQLTemplateFileOperatorFromContext(
         task_id="load_stage_frcs_schedule_csv",
-        sql_file_path=Path(__file__).parents[4]
-        / "sql"
-        / "nascar.cup.scraper.importer"
-        / "load_stage_frcs_schedule_csv.sql",
+        sql_file_path=_sql_root() / "nascar.cup.scraper.importer" / "load_stage_frcs_schedule_csv.sql",
         mysql_conn_id="nascar_conn",
-        parameters={
-            "schedule_csv_file_path": (
-                f"{frcs_source.storage_path_series_year('cup', '{{ (data_interval_start or logical_date).year }}')}/schedule.csv"
-            ),
-            "table_suffix": "{{ (data_interval_start or logical_date).strftime('%Y%m%d%H%M') }}",
-        },
+        parameters_factory=_importer_params_load_frcs_schedule,
     )
 
-    load_stage_racing_reference_schedule_csv_task = MySQLTemplateFileOperator(
+    load_stage_racing_reference_schedule_csv_task = MySQLTemplateFileOperatorFromContext(
         task_id="load_stage_racing_reference_schedule_csv",
-        sql_file_path=Path(__file__).parents[4]
-        / "sql"
+        sql_file_path=_sql_root()
         / "nascar.cup.scraper.importer"
         / "load_racing_reference_schedule_data_into_temp_table.sql",
         mysql_conn_id="nascar_conn",
-        parameters={
-            "schedule_csv_file_path": (
-                f"{racing_reference_source.storage_path_series_year('cup', '{{ (data_interval_start or logical_date).year }}')}/schedule.csv"
-            ),
-            "table_suffix": "{{ (data_interval_start or logical_date).strftime('%Y%m%d%H%M') }}",
-        },
+        parameters_factory=_importer_params_load_rr_schedule,
     )
 
-    import_frcs_schedule_task = MySQLTemplateFileOperator(
+    import_frcs_schedule_task = MySQLTemplateFileOperatorFromContext(
         task_id="import_frcs_schedule",
-        sql_file_path=Path(__file__).parents[4]
-        / "sql"
-        / "nascar.cup.scraper.importer"
-        / "import_frcs_schedule.sql",
+        sql_file_path=_sql_root() / "nascar.cup.scraper.importer" / "import_frcs_schedule.sql",
         mysql_conn_id="nascar_conn",
-        parameters={
-            "series_id": NascarSeries.CUP.series_id,
-            "series_name": NascarSeries.CUP.db_name,
-            "source_name": frcs_source.id,
-            "source_url": frcs_source.base_url,
-            "season_year": "{{ (data_interval_start or logical_date).year }}",
-            "table_suffix": "{{ (data_interval_start or logical_date).strftime('%Y%m%d%H%M') }}",
-        },
+        parameters_factory=_importer_params_import_frcs_schedule,
     )
 
     load_stage_frcs_entrylist_csvs_task = PythonOperator(

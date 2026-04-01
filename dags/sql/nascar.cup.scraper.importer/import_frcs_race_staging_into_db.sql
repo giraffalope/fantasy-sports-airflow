@@ -100,7 +100,7 @@ SET
 
 ---
 
-INSERT INTO nascar.data_sources_drivers (data_source_id, full_name)
+INSERT INTO nascar.data_sources_drivers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(COALESCE(t.driver_name, t.name))
 FROM nascar.temp_race_{{ week_id }} t
 JOIN nascar.data_sources ds ON ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
@@ -109,20 +109,34 @@ ON DUPLICATE KEY UPDATE deleted_at = NULL;
 
 ---
 
-INSERT IGNORE INTO nascar.drivers (first_name, last_name, suffix)
-SELECT nascar.get_driver_first_name(dsd.full_name), nascar.get_driver_last_name(dsd.full_name), nascar.get_driver_suffix(dsd.full_name)
-FROM nascar.data_sources_drivers dsd
-JOIN nascar.data_sources ds ON ds.id = dsd.data_source_id AND ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
-WHERE dsd.driver_id IS NULL;
+INSERT INTO nascar.drivers (first_name, last_name, suffix)
+SELECT x.first_name, x.last_name, x.suffix
+FROM (
+    SELECT DISTINCT
+        nascar.get_driver_first_name(dsd.name) AS first_name,
+        nascar.get_driver_last_name(dsd.name) AS last_name,
+        nascar.get_driver_suffix(dsd.name) AS suffix
+    FROM nascar.data_sources_drivers dsd
+    JOIN nascar.data_sources ds ON ds.id = dsd.data_source_id AND ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
+    WHERE dsd.driver_id IS NULL
+) x
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM nascar.drivers d
+    WHERE d.deleted_at IS NULL
+      AND (d.first_name COLLATE utf8mb4_unicode_ci) <=> (x.first_name COLLATE utf8mb4_unicode_ci)
+      AND (d.last_name COLLATE utf8mb4_unicode_ci) <=> (x.last_name COLLATE utf8mb4_unicode_ci)
+      AND (d.suffix COLLATE utf8mb4_unicode_ci) <=> (x.suffix COLLATE utf8mb4_unicode_ci)
+);
 
 ---
 
 UPDATE nascar.data_sources_drivers dsd
 JOIN nascar.data_sources ds ON ds.id = dsd.data_source_id AND ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
 JOIN nascar.drivers d
-    ON d.first_name = nascar.get_driver_first_name(dsd.full_name)
-    AND d.last_name = nascar.get_driver_last_name(dsd.full_name)
-    AND d.suffix = nascar.get_driver_suffix(dsd.full_name)
+    ON (d.first_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_unicode_ci)
+    AND (d.last_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_unicode_ci)
+    AND (d.suffix COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_unicode_ci)
     AND d.deleted_at IS NULL
 SET dsd.driver_id = d.id
 WHERE dsd.driver_id IS NULL;
@@ -131,7 +145,7 @@ WHERE dsd.driver_id IS NULL;
 
 UPDATE nascar.temp_race_{{ week_id }} t
 JOIN nascar.data_sources_drivers dsd
-    ON TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.full_name)
+    ON TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.name)
     AND dsd.driver_id IS NOT NULL
     AND dsd.deleted_at IS NULL
 JOIN nascar.data_sources ds
@@ -229,6 +243,12 @@ SET t.race_id = r.id;
 
 ---
 
+DELETE rr FROM nascar.race_results rr
+INNER JOIN nascar.races r ON r.id = rr.race_id
+WHERE r.week_id = {{ week_id }};
+
+---
+
 INSERT INTO nascar.race_results (
     race_id, car_driver_id, start_position, finish_position, best_position, worst_position,
     average_position, pass_diff, green_flag_passes, green_flag_times_passed, quality_passes,
@@ -236,28 +256,84 @@ INSERT INTO nascar.race_results (
     total_laps_led, total_laps_led_pct, total_laps_completed, driver_rating, car_status
 )
 SELECT
-    t.race_id,
-    t.car_driver_id,
-    COALESCE(t.start, t.starting_position),
-    COALESCE(t.finish, t.position),
-    t.high_pos,
-    t.low_pos,
-    t.avg_pos,
-    t.pass_diff,
-    t.green_flag_passes,
-    t.green_flag_times_passed,
-    t.quality_passes,
-    t.pct_quality_passes,
-    t.fastest_lap,
-    t.top_15_laps,
-    t.pct_top_15_laps,
-    COALESCE(t.laps_led2, t.laps_led1),
-    t.pct_laps_led,
-    t.total_laps,
-    t.driver_rating,
-    t.status
-FROM nascar.temp_race_{{ week_id }} t
-WHERE COALESCE(t.finish, t.position) IS NOT NULL
-  AND TRIM(COALESCE(t.finish, t.position)) != ''
-  AND t.race_id IS NOT NULL
-  AND t.car_driver_id IS NOT NULL;
+    by_finish.race_id,
+    by_finish.car_driver_id,
+    by_finish.start_position,
+    by_finish.finish_position,
+    by_finish.best_position,
+    by_finish.worst_position,
+    by_finish.average_position,
+    by_finish.pass_diff,
+    by_finish.green_flag_passes,
+    by_finish.green_flag_times_passed,
+    by_finish.quality_passes,
+    by_finish.quality_passes_pct,
+    by_finish.total_fastest_laps,
+    by_finish.total_top_15_laps,
+    by_finish.total_top_15_laps_pct,
+    by_finish.total_laps_led,
+    by_finish.total_laps_led_pct,
+    by_finish.total_laps_completed,
+    by_finish.driver_rating,
+    by_finish.car_status
+FROM (
+    SELECT
+        by_driver.race_id,
+        by_driver.car_driver_id,
+        by_driver.start_position,
+        by_driver.finish_position,
+        by_driver.best_position,
+        by_driver.worst_position,
+        by_driver.average_position,
+        by_driver.pass_diff,
+        by_driver.green_flag_passes,
+        by_driver.green_flag_times_passed,
+        by_driver.quality_passes,
+        by_driver.quality_passes_pct,
+        by_driver.total_fastest_laps,
+        by_driver.total_top_15_laps,
+        by_driver.total_top_15_laps_pct,
+        by_driver.total_laps_led,
+        by_driver.total_laps_led_pct,
+        by_driver.total_laps_completed,
+        by_driver.driver_rating,
+        by_driver.car_status,
+        ROW_NUMBER() OVER (
+            PARTITION BY by_driver.race_id, TRIM(COALESCE(by_driver.finish_position, ''))
+            ORDER BY by_driver.car_driver_id
+        ) AS rn_finish
+    FROM (
+        SELECT
+            t.race_id,
+            t.car_driver_id,
+            COALESCE(t.start, t.starting_position) AS start_position,
+            COALESCE(t.finish, t.position) AS finish_position,
+            t.high_pos AS best_position,
+            t.low_pos AS worst_position,
+            t.avg_pos AS average_position,
+            t.pass_diff,
+            t.green_flag_passes,
+            t.green_flag_times_passed,
+            t.quality_passes,
+            t.pct_quality_passes AS quality_passes_pct,
+            t.fastest_lap AS total_fastest_laps,
+            t.top_15_laps AS total_top_15_laps,
+            t.pct_top_15_laps AS total_top_15_laps_pct,
+            COALESCE(t.laps_led2, t.laps_led1) AS total_laps_led,
+            t.pct_laps_led AS total_laps_led_pct,
+            t.total_laps AS total_laps_completed,
+            t.driver_rating,
+            t.status AS car_status,
+            ROW_NUMBER() OVER (
+                PARTITION BY t.race_id, t.car_driver_id
+                ORDER BY CAST(TRIM(COALESCE(t.finish, t.position)) AS UNSIGNED), TRIM(t.number)
+            ) AS rn_driver
+        FROM nascar.temp_race_{{ week_id }} t
+        WHERE COALESCE(t.finish, t.position) IS NOT NULL
+          AND TRIM(COALESCE(t.finish, t.position)) != ''
+          AND t.race_id IS NOT NULL
+          AND t.car_driver_id IS NOT NULL
+    ) by_driver
+    WHERE by_driver.rn_driver = 1
+) by_finish
+WHERE by_finish.rn_finish = 1;
