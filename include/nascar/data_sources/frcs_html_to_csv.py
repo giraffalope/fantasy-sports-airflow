@@ -665,6 +665,14 @@ class FrcsHtmlToCsv:
 
     @staticmethod
     def convert_practices(paths: list[str]) -> None:
+        def _practice_cell(row: dict, key: str) -> str:
+            v = row.get(key)
+            if v is None:
+                return ""
+            return str(v).strip()
+
+        # ``practiceData`` tabulator fields: time5..time30 (multi-lap averages), lap10_speed / lap10_from /
+        # lap10_to (10-lap avg group — distinct from single-best-lap lap_speed).
         headers = [
             "rank",
             "driver_name",
@@ -674,6 +682,14 @@ class FrcsHtmlToCsv:
             "lap_speed",
             "total_lap",
             "best_lap",
+            "5_lap_average_time",
+            "10_lap_average_time",
+            "20_lap_average_time",
+            "25_lap_average_time",
+            "30_lap_average_time",
+            "10_lap_average_speed",
+            "10_lap_start",
+            "10_lap_end",
         ]
         for path in paths:
             with open(path, encoding="utf-8") as f:
@@ -684,14 +700,22 @@ class FrcsHtmlToCsv:
                 for row in data:
                     csv_list.append(
                         (
-                            str(row.get("session_rank", "")).strip(),
-                            str(row.get("full_name", "")).strip(),
-                            str(row.get("car_no", "")).strip(),
-                            str(row.get("make", "")).strip(),
-                            str(row.get("lap_time", "")).strip(),
-                            str(row.get("lap_speed", "")).strip(),
-                            str(row.get("total_lap", "")).strip(),
-                            str(row.get("best_lap", "")).strip(),
+                            _practice_cell(row, "session_rank"),
+                            _practice_cell(row, "full_name"),
+                            _practice_cell(row, "car_no"),
+                            _practice_cell(row, "make"),
+                            _practice_cell(row, "lap_time"),
+                            _practice_cell(row, "lap_speed"),
+                            _practice_cell(row, "total_lap"),
+                            _practice_cell(row, "best_lap"),
+                            _practice_cell(row, "time5"),
+                            _practice_cell(row, "time10"),
+                            _practice_cell(row, "time20"),
+                            _practice_cell(row, "time25"),
+                            _practice_cell(row, "time30"),
+                            _practice_cell(row, "lap10_speed"),
+                            _practice_cell(row, "lap10_from"),
+                            _practice_cell(row, "lap10_to"),
                         )
                     )
             _sort_csv_rows_by_column_numeric(csv_list, headers, "rank", reverse=False)
@@ -748,7 +772,6 @@ class FrcsHtmlToCsv:
             "quality_passes",
             "pct_quality_passes",
             "fastest_lap",
-            "top_15_laps",
             "pct_top_15_laps",
             "laps_led",
             "pct_laps_led",
@@ -801,7 +824,6 @@ class FrcsHtmlToCsv:
             if not cells:
                 continue
             out: dict[str, str] = {h: "" for h in headers}
-            out["top_15_laps"] = ""
             for label, out_key, is_driver in mapping:
                 i = ix(label)
                 if i is None or i >= len(cells):
@@ -871,14 +893,13 @@ class FrcsHtmlToCsv:
         if heading is not None:
             cand = heading.find_next("table", class_=lambda c: c and "cupTable" in str(c))
             table = cand if cand is not None else heading.find_next("table")
-        headers_csv = ["number", "driver_name", "lap", "flag", "infraction", "penalty"]
+        headers_csv = ["driver_name", "lap", "flag", "infraction", "penalty"]
         csv_list: list = []
         if table is not None:
             thead = table.find("thead")
             header_row = thead.find("tr") if thead is not None else None
             header_cells = header_row.find_all("th") if header_row else table.find_all("th")
             header_labels = [h.get_text(strip=True) for h in header_cells]
-            idx_number = _first_idx(header_labels, {"number", "carno", "carnumber", "#", "no"})
             idx_driver = _first_idx(header_labels, {"driver", "drivername", "name"})
             idx_lap = _first_idx(header_labels, {"lap", "laps"})
             idx_flag = _first_idx(header_labels, {"flag"})
@@ -889,7 +910,6 @@ class FrcsHtmlToCsv:
                 cells = tr.find_all("td")
                 if len(cells) < 3:
                     continue
-                number = _val(cells, idx_number)
                 driver_name = _val(cells, idx_driver)
                 lap = _val(cells, idx_lap)
                 flag = _val(cells, idx_flag)
@@ -908,8 +928,8 @@ class FrcsHtmlToCsv:
                 if not flag and len(cells) > 5:
                     flag = cells[5].get_text(strip=True)
 
-                if any((number, driver_name, lap, flag, infraction, penalty)):
-                    csv_list.append((number, driver_name, lap, flag, infraction, penalty))
+                if any((driver_name, lap, flag, infraction, penalty)):
+                    csv_list.append((driver_name, lap, flag, infraction, penalty))
         if os.path.basename(path).lower() == "race-results.html":
             csv_file_path = os.path.join(os.path.dirname(path), "penalties.csv")
         else:

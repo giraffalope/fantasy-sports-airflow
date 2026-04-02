@@ -66,7 +66,7 @@ SELECT
 FROM (
     SELECT
         r.id AS race_id,
-        COALESCE(cd_by_number.id, cd_by_driver.id) AS car_driver_id,
+        cd_by_driver.id AS car_driver_id,
         CAST(stg.lap AS UNSIGNED) AS lap,
         CASE
             WHEN UPPER(stg.flag) LIKE 'GREEN%' THEN 'GREEN'
@@ -80,7 +80,7 @@ FROM (
         ROW_NUMBER() OVER (
             PARTITION BY
                 r.id,
-                COALESCE(cd_by_number.id, cd_by_driver.id),
+                cd_by_driver.id,
                 CAST(stg.lap AS UNSIGNED)
             ORDER BY stg.infraction, stg.penalty
         ) AS rn
@@ -112,28 +112,6 @@ FROM (
         AND dsd_pick.name_trim = TRIM(stg.driver_name)
     LEFT JOIN nascar.data_sources_drivers dsd
         ON dsd.id = dsd_pick.id
-    LEFT JOIN nascar.cars c
-        ON c.number = TRIM(stg.number)
-        AND c.deleted_at IS NULL
-    LEFT JOIN (
-        SELECT car_id, driver_id, MIN(id) AS id
-        FROM nascar.cars_drivers
-        WHERE deleted_at IS NULL
-        GROUP BY car_id, driver_id
-    ) cd_by_number
-        ON cd_by_number.car_id = c.id
-        AND (
-            (dsd.driver_id IS NOT NULL AND cd_by_number.driver_id = dsd.driver_id)
-            OR (
-                dsd.driver_id IS NULL
-                AND cd_by_number.id = (
-                    SELECT MIN(cd2.id)
-                    FROM nascar.cars_drivers cd2
-                    WHERE cd2.car_id = c.id
-                        AND cd2.deleted_at IS NULL
-                )
-            )
-        )
     LEFT JOIN (
         SELECT driver_id, MIN(id) AS id
         FROM nascar.cars_drivers
@@ -143,7 +121,7 @@ FROM (
         ON cd_by_driver.driver_id = dsd.driver_id
     WHERE stg.penalty IS NOT NULL
         AND stg.lap IS NOT NULL
-        AND COALESCE(cd_by_number.id, cd_by_driver.id) IS NOT NULL
+        AND cd_by_driver.id IS NOT NULL
 ) ranked
 WHERE ranked.rn = 1
 ;

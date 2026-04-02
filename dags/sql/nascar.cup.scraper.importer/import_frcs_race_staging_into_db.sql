@@ -77,7 +77,23 @@ SET
     r.quality_passes = l.quality_passes,
     r.pct_quality_passes = l.pct_quality_passes,
     r.fastest_lap = l.fastest_lap,
-    r.top_15_laps = l.top_15_laps,
+    r.top_15_laps = CASE
+        WHEN NULLIF(TRIM(l.total_laps), '') REGEXP '^[0-9]+$'
+            AND NULLIF(
+                REPLACE(REPLACE(TRIM(l.pct_top_15_laps), '%', ''), ',', ''),
+                ''
+            ) REGEXP '^[0-9]+(\\.[0-9]*)?$'
+        THEN CAST(
+            ROUND(
+                CAST(TRIM(l.total_laps) AS DECIMAL(20, 6)) * CAST(
+                    REPLACE(REPLACE(TRIM(l.pct_top_15_laps), '%', ''), ',', '')
+                    AS DECIMAL(20, 6)
+                ) / 100.0,
+                0
+            ) AS CHAR
+        )
+        ELSE NULL
+    END,
     r.pct_top_15_laps = l.pct_top_15_laps,
     r.laps_led2 = l.laps_led,
     r.pct_laps_led = l.pct_laps_led,

@@ -16,6 +16,14 @@ CREATE TABLE nascar.temp_practice_{{ week_id }}_{{ number }} (
     speed VARCHAR(255),
     num_laps VARCHAR(255),
     best_lap VARCHAR(255),
+    `5_lap_average_time` VARCHAR(255),
+    `10_lap_average_time` VARCHAR(255),
+    `20_lap_average_time` VARCHAR(255),
+    `25_lap_average_time` VARCHAR(255),
+    `30_lap_average_time` VARCHAR(255),
+    `10_lap_average_speed` VARCHAR(255),
+    `10_lap_start` VARCHAR(255),
+    `10_lap_end` VARCHAR(255),
     week_id BIGINT UNSIGNED,
     driver_id BIGINT UNSIGNED,
     manufacturer_id BIGINT UNSIGNED,
@@ -28,8 +36,41 @@ CREATE TABLE nascar.temp_practice_{{ week_id }}_{{ number }} (
 ---
 
 INSERT INTO nascar.temp_practice_{{ week_id }}_{{ number }}
-    (rank, driver_name, number, manufacturer, time, speed, num_laps, best_lap)
-SELECT rank, driver_name, number, manufacturer, time, speed, num_laps, best_lap
+    (
+        rank,
+        driver_name,
+        number,
+        manufacturer,
+        time,
+        speed,
+        num_laps,
+        best_lap,
+        `5_lap_average_time`,
+        `10_lap_average_time`,
+        `20_lap_average_time`,
+        `25_lap_average_time`,
+        `30_lap_average_time`,
+        `10_lap_average_speed`,
+        `10_lap_start`,
+        `10_lap_end`
+    )
+SELECT
+    rank,
+    driver_name,
+    number,
+    manufacturer,
+    time,
+    speed,
+    num_laps,
+    best_lap,
+    `5_lap_average_time`,
+    `10_lap_average_time`,
+    `20_lap_average_time`,
+    `25_lap_average_time`,
+    `30_lap_average_time`,
+    `10_lap_average_speed`,
+    `10_lap_start`,
+    `10_lap_end`
 FROM nascar.stg_frcs_practice_{{ week_id }}_{{ number }};
 
 ---
@@ -199,14 +240,37 @@ WHERE p.week_id = {{ week_id }}
 
 ---
 
-INSERT INTO nascar.practice_results (practice_id, car_driver_id, finish_position, best_speed, best_time, total_laps)
+INSERT INTO nascar.practice_results (
+    practice_id,
+    car_driver_id,
+    finish_position,
+    best_speed,
+    best_time,
+    total_laps,
+    `5_lap_average_time`,
+    `10_lap_average_time`,
+    `20_lap_average_time`,
+    `25_lap_average_time`,
+    `30_lap_average_time`,
+    `10_lap_average_speed`,
+    `10_lap_start`,
+    `10_lap_end`
+)
 SELECT
     by_rank.practice_id,
     by_rank.car_driver_id,
     by_rank.finish_position,
     by_rank.speed,
     by_rank.best_time,
-    by_rank.num_laps
+    by_rank.num_laps,
+    by_rank.`5_lap_average_time`,
+    by_rank.`10_lap_average_time`,
+    by_rank.`20_lap_average_time`,
+    by_rank.`25_lap_average_time`,
+    by_rank.`30_lap_average_time`,
+    by_rank.`10_lap_average_speed`,
+    by_rank.`10_lap_start`,
+    by_rank.`10_lap_end`
 FROM (
     SELECT
         by_driver.practice_id,
@@ -215,6 +279,14 @@ FROM (
         by_driver.speed,
         by_driver.best_time,
         by_driver.num_laps,
+        by_driver.`5_lap_average_time`,
+        by_driver.`10_lap_average_time`,
+        by_driver.`20_lap_average_time`,
+        by_driver.`25_lap_average_time`,
+        by_driver.`30_lap_average_time`,
+        by_driver.`10_lap_average_speed`,
+        by_driver.`10_lap_start`,
+        by_driver.`10_lap_end`,
         ROW_NUMBER() OVER (
             PARTITION BY by_driver.practice_id, by_driver.finish_position
             ORDER BY by_driver.car_driver_id
@@ -233,6 +305,61 @@ FROM (
                 ELSE NULL
             END AS best_time,
             t.num_laps,
+            CASE
+                WHEN NULLIF(TRIM(t.`5_lap_average_time`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`5_lap_average_time`) LIKE '%:%' THEN CAST(TRIM(t.`5_lap_average_time`) AS TIME(3))
+                WHEN TRIM(t.`5_lap_average_time`) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+                    SEC_TO_TIME(CAST(TRIM(t.`5_lap_average_time`) AS DECIMAL(12, 3))) AS TIME(3)
+                )
+                ELSE NULL
+            END AS `5_lap_average_time`,
+            CASE
+                WHEN NULLIF(TRIM(t.`10_lap_average_time`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`10_lap_average_time`) LIKE '%:%' THEN CAST(TRIM(t.`10_lap_average_time`) AS TIME(3))
+                WHEN TRIM(t.`10_lap_average_time`) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+                    SEC_TO_TIME(CAST(TRIM(t.`10_lap_average_time`) AS DECIMAL(12, 3))) AS TIME(3)
+                )
+                ELSE NULL
+            END AS `10_lap_average_time`,
+            CASE
+                WHEN NULLIF(TRIM(t.`20_lap_average_time`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`20_lap_average_time`) LIKE '%:%' THEN CAST(TRIM(t.`20_lap_average_time`) AS TIME(3))
+                WHEN TRIM(t.`20_lap_average_time`) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+                    SEC_TO_TIME(CAST(TRIM(t.`20_lap_average_time`) AS DECIMAL(12, 3))) AS TIME(3)
+                )
+                ELSE NULL
+            END AS `20_lap_average_time`,
+            CASE
+                WHEN NULLIF(TRIM(t.`25_lap_average_time`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`25_lap_average_time`) LIKE '%:%' THEN CAST(TRIM(t.`25_lap_average_time`) AS TIME(3))
+                WHEN TRIM(t.`25_lap_average_time`) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+                    SEC_TO_TIME(CAST(TRIM(t.`25_lap_average_time`) AS DECIMAL(12, 3))) AS TIME(3)
+                )
+                ELSE NULL
+            END AS `25_lap_average_time`,
+            CASE
+                WHEN NULLIF(TRIM(t.`30_lap_average_time`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`30_lap_average_time`) LIKE '%:%' THEN CAST(TRIM(t.`30_lap_average_time`) AS TIME(3))
+                WHEN TRIM(t.`30_lap_average_time`) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+                    SEC_TO_TIME(CAST(TRIM(t.`30_lap_average_time`) AS DECIMAL(12, 3))) AS TIME(3)
+                )
+                ELSE NULL
+            END AS `30_lap_average_time`,
+            CASE
+                WHEN NULLIF(TRIM(t.`10_lap_average_speed`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`10_lap_average_speed`) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
+                    TRIM(t.`10_lap_average_speed`) AS DECIMAL(8, 3)
+                )
+                ELSE NULL
+            END AS `10_lap_average_speed`,
+            CASE
+                WHEN NULLIF(TRIM(t.`10_lap_start`), '') REGEXP '^[0-9]+$' THEN CAST(TRIM(t.`10_lap_start`) AS UNSIGNED)
+                ELSE NULL
+            END AS `10_lap_start`,
+            CASE
+                WHEN NULLIF(TRIM(t.`10_lap_end`), '') REGEXP '^[0-9]+$' THEN CAST(TRIM(t.`10_lap_end`) AS UNSIGNED)
+                ELSE NULL
+            END AS `10_lap_end`,
             ROW_NUMBER() OVER (
                 PARTITION BY t.practice_id, t.car_driver_id
                 ORDER BY CAST(TRIM(t.rank) AS UNSIGNED), TRIM(t.number)

@@ -3,7 +3,6 @@ DROP TABLE IF EXISTS nascar.stg_frcs_penalties_{{ week_id }};
 ---
 
 CREATE TABLE nascar.stg_frcs_penalties_{{ week_id }} (
-    number VARCHAR(255) NULL,
     driver_name VARCHAR(255) NULL,
     lap VARCHAR(255) NULL,
     flag VARCHAR(255) NULL,
@@ -20,7 +19,6 @@ ENCLOSED BY '"'
 LINES TERMINATED BY '\n'
 IGNORE 1 LINES
 (
-    @number,
     @driver_name,
     @lap,
     @flag,
@@ -28,7 +26,6 @@ IGNORE 1 LINES
     @penalty
 )
 SET
-    number = NULLIF(TRIM(@number), ''),
     driver_name = NULLIF(TRIM(@driver_name), ''),
     lap = NULLIF(TRIM(@lap), ''),
     flag = NULLIF(TRIM(@flag), ''),

@@ -151,7 +151,7 @@ def test_frcs_convert_practices_uses_normalized_headers(tmp_path) -> None:
         """
         <script>
           const practiceData = [
-            {"session_rank":"1","full_name":"Jane Driver","car_no":"12","make":"Ford","lap_time":"30.5","lap_speed":"175.0","total_lap":"12","best_lap":"7"}
+            {"session_rank":"1","full_name":"Jane Driver","car_no":"12","make":"Ford","lap_time":"30.5","lap_speed":"175.0","total_lap":"12","best_lap":"7","time5":"30.1","time10":"30.2","time20":"30.3","time25":"30.35","time30":"30.4","lap10_speed":"174.5","lap10_from":"3","lap10_to":"12"}
           ];
         </script>
         """,
@@ -170,6 +170,14 @@ def test_frcs_convert_practices_uses_normalized_headers(tmp_path) -> None:
         "lap_speed",
         "total_lap",
         "best_lap",
+        "5_lap_average_time",
+        "10_lap_average_time",
+        "20_lap_average_time",
+        "25_lap_average_time",
+        "30_lap_average_time",
+        "10_lap_average_speed",
+        "10_lap_start",
+        "10_lap_end",
     ]
 
 
@@ -223,11 +231,14 @@ def test_frcs_convert_penalties_race_infractions_table(tmp_path) -> None:
     FrcsHtmlToCsv.convert_penalties(str(html))
     header_line = csv_out.read_text(encoding="utf-8").splitlines()[0]
     cols = next(csv.reader(io.StringIO(header_line)))
-    assert cols == ["number", "driver_name", "lap", "flag", "infraction", "penalty"]
+    assert cols == ["driver_name", "lap", "flag", "infraction", "penalty"]
     body = csv_out.read_text(encoding="utf-8")
     assert "Jane Driver" in body
     assert "Speeding" in body
     assert "Pass Thru" in body
+    data_row = next(csv.reader(io.StringIO(body.splitlines()[1])))
+    assert data_row[0] == "Jane Driver"
+    assert len(data_row) == 5
 
 
 def test_frcs_convert_penalties_production_race_infractions_layout(tmp_path) -> None:

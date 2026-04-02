@@ -10,7 +10,15 @@ CREATE TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }} (
     time VARCHAR(255) NULL,
     speed VARCHAR(255) NULL,
     num_laps VARCHAR(255) NULL,
-    best_lap VARCHAR(255) NULL
+    best_lap VARCHAR(255) NULL,
+    `5_lap_average_time` VARCHAR(255) NULL,
+    `10_lap_average_time` VARCHAR(255) NULL,
+    `20_lap_average_time` VARCHAR(255) NULL,
+    `25_lap_average_time` VARCHAR(255) NULL,
+    `30_lap_average_time` VARCHAR(255) NULL,
+    `10_lap_average_speed` VARCHAR(255) NULL,
+    `10_lap_start` VARCHAR(255) NULL,
+    `10_lap_end` VARCHAR(255) NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ---
@@ -29,7 +37,15 @@ IGNORE 1 LINES
     @time,
     @speed,
     @num_laps,
-    @best_lap
+    @best_lap,
+    @five_lap_avg,
+    @ten_lap_avg,
+    @twenty_lap_avg,
+    @twentyfive_lap_avg,
+    @thirty_lap_avg,
+    @ten_lap_avg_speed,
+    @ten_lap_start,
+    @ten_lap_end
 )
 SET
     rank = NULLIF(TRIM(@rank), ''),
@@ -39,5 +55,13 @@ SET
     time = NULLIF(TRIM(@time), ''),
     speed = NULLIF(TRIM(@speed), ''),
     num_laps = NULLIF(TRIM(@num_laps), ''),
-    best_lap = NULLIF(TRIM(@best_lap), '')
+    best_lap = NULLIF(TRIM(@best_lap), ''),
+    `5_lap_average_time` = NULLIF(TRIM(@five_lap_avg), ''),
+    `10_lap_average_time` = NULLIF(TRIM(@ten_lap_avg), ''),
+    `20_lap_average_time` = NULLIF(TRIM(@twenty_lap_avg), ''),
+    `25_lap_average_time` = NULLIF(TRIM(@twentyfive_lap_avg), ''),
+    `30_lap_average_time` = NULLIF(TRIM(@thirty_lap_avg), ''),
+    `10_lap_average_speed` = NULLIF(TRIM(@ten_lap_avg_speed), ''),
+    `10_lap_start` = NULLIF(TRIM(@ten_lap_start), ''),
+    `10_lap_end` = NULLIF(TRIM(@ten_lap_end), '')
 ;

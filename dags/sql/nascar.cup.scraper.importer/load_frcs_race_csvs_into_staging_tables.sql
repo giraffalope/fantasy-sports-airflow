@@ -104,7 +104,6 @@ IGNORE 1 LINES
     @quality_passes,
     @pct_quality_passes,
     @fastest_lap,
-    @top_15_laps,
     @pct_top_15_laps,
     @laps_led,
     @pct_laps_led,
@@ -125,10 +124,26 @@ SET
     quality_passes = NULLIF(TRIM(@quality_passes), ''),
     pct_quality_passes = NULLIF(TRIM(@pct_quality_passes), ''),
     fastest_lap = NULLIF(TRIM(@fastest_lap), ''),
-    top_15_laps = NULLIF(TRIM(@top_15_laps), ''),
     pct_top_15_laps = NULLIF(TRIM(@pct_top_15_laps), ''),
     laps_led = NULLIF(TRIM(@laps_led), ''),
     pct_laps_led = NULLIF(TRIM(@pct_laps_led), ''),
     total_laps = NULLIF(TRIM(@total_laps), ''),
-    driver_rating = NULLIF(TRIM(@driver_rating), '')
+    driver_rating = NULLIF(TRIM(@driver_rating), ''),
+    top_15_laps = CASE
+        WHEN NULLIF(TRIM(@total_laps), '') REGEXP '^[0-9]+$'
+            AND NULLIF(
+                REPLACE(REPLACE(TRIM(@pct_top_15_laps), '%', ''), ',', ''),
+                ''
+            ) REGEXP '^[0-9]+(\\.[0-9]*)?$'
+        THEN CAST(
+            ROUND(
+                CAST(TRIM(@total_laps) AS DECIMAL(20, 6)) * CAST(
+                    REPLACE(REPLACE(TRIM(@pct_top_15_laps), '%', ''), ',', '')
+                    AS DECIMAL(20, 6)
+                ) / 100.0,
+                0
+            ) AS CHAR
+        )
+        ELSE NULL
+    END
 ;
