@@ -111,6 +111,12 @@ def _nascar_staging_table_exists(hook: MySqlHook, table_name: str) -> bool:
 
 
 def _target_weeks(hook: MySqlHook, *, series_id: int, year: int) -> list[tuple[int, int]]:
+    """
+    All Cup ``weeks`` rows for the season (see ``select_frcs_weeks_needing_csv_import.sql``).
+
+    Post-race CSVs must still be staged after ``race_results`` exist, so the list is not
+    limited to weeks missing finish data.
+    """
     sql = _render_sql(
         _sql_root() / "nascar.cup.scraper.importer" / "select_frcs_weeks_needing_csv_import.sql",
         {"series_id": series_id, "year": year},
