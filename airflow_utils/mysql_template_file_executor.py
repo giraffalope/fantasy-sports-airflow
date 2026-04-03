@@ -1,8 +1,9 @@
 import logging
 import os
 
-from airflow.providers.mysql.hooks.mysql import MySqlHook
 from jinja2 import Template
+
+from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 
 
 def _connection_set_autocommit(conn, enabled: bool) -> None:
@@ -20,7 +21,7 @@ def _connection_set_autocommit(conn, enabled: bool) -> None:
             pass
 
 
-def execute_sql_statements_transactional(hook: MySqlHook, statements: list[str]) -> None:
+def execute_sql_statements_transactional(hook: NascarMySqlHook, statements: list[str]) -> None:
     """
     Run all statements on a single connection: commit if every statement succeeds, otherwise rollback.
 
@@ -53,7 +54,7 @@ def execute_sql_statements_transactional(hook: MySqlHook, statements: list[str])
         conn.close()
 
 
-class MySqlTemplateFileExecutor(MySqlHook):
+class MySqlTemplateFileExecutor(NascarMySqlHook):
     def run_templated_sql_file(self, file_path, context=None):
         """
         Executes a .sql Jinja template file with multiple SQL statements separated by '---'

@@ -9,7 +9,10 @@ import pytest
 from bs4 import BeautifulSoup
 
 from include.nascar.data_sources.frcs import FrcsSource
-from include.nascar.data_sources.frcs_html_to_csv import FrcsHtmlToCsv
+from include.nascar.data_sources.frcs_html_to_csv import (
+    FrcsHtmlToCsv,
+    _parse_js_const_json_array,
+)
 from include.nascar.enums import NascarSeries
 
 
@@ -624,3 +627,66 @@ def test_frcs_convert_race_results_ignores_race_infractions_table(tmp_path) -> N
     assert cols[:4] == ["finish", "start", "number", "driver_name"]
     assert "Actual Driver" in lines[1]
     assert "Someone" not in lines[1]
+
+
+def test_parse_js_const_json_array_let_and_tight_bracket() -> None:
+    html = 'let roundOne=[{"lap_rank":1,"full_name":"A"}];'
+    got = _parse_js_const_json_array(html, "roundOne")
+    assert got == [{"lap_rank": 1, "full_name": "A"}]
+
+
+def test_parse_js_const_json_array_brackets_inside_json_string() -> None:
+    html = r'const roundOne = [{"lap_rank":1,"full_name":"Test [bracket]"}];'
+    got = _parse_js_const_json_array(html, "roundOne")
+    assert got == [{"lap_rank": 1, "full_name": "Test [bracket]"}]
+
+
+def test_parse_js_const_json_array_round_two_null() -> None:
+    html = """
+    const roundTwo = null;
+    const roundOne = [{"lap_rank":2,"full_name":"B","car_no":"3"}];
+    """
+    assert _parse_js_const_json_array(html, "roundTwo") == []
+    r1 = _parse_js_const_json_array(html, "roundOne")
+    assert r1 == [{"lap_rank": 2, "full_name": "B", "car_no": "3"}]
+
+
+def test_frcs_convert_qualifying_prefers_round_two_then_one(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <script>
+        const roundTwo = [{"lap_rank":1,"full_name":"Final","car_no":"1","make":"F","lap_time":"t","lap_speed":"s"}];
+        const roundOne = [{"lap_rank":9,"full_name":"Ignore","car_no":"9","make":"X","lap_time":"","lap_speed":""}];
+        </script>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    csv_path = tmp_path / "qualifying.csv"
+    lines = csv_path.read_text(encoding="utf-8").splitlines()
+    assert "Final" in lines[1]
+    assert "Ignore" not in csv_path.read_text()
+
+
+def test_frcs_convert_qualifying_tabulator_fallback(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <div id="roundOneTable" class="tabulator">
+          <div class="tabulator-row">
+            <div class="tabulator-cell" tabulator-field="lap_rank">2</div>
+            <div class="tabulator-cell" tabulator-field="full_name">Dom Driver</div>
+            <div class="tabulator-cell" tabulator-field="car_no">14</div>
+            <div class="tabulator-cell" tabulator-field="make">Chevy</div>
+            <div class="tabulator-cell" tabulator-field="lap_time">28.1</div>
+            <div class="tabulator-cell" tabulator-field="lap_speed">190</div>
+          </div>
+        </div>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "Dom Driver" in text
+    assert "14" in text

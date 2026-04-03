@@ -44,6 +44,18 @@ def _sort_rr_rows_by_header_column(
     rows.extend(tuples)
 
 
+def _write_rr_csv_or_remove(csv_file_path: str, csv_list: list, header) -> None:
+    """Write CSV with header + rows, or remove the path when there are no data rows."""
+    File.silent_remove(csv_file_path)
+    if not csv_list:
+        logging.info(
+            "Racing Reference: removed empty CSV (no data rows) %s",
+            csv_file_path,
+        )
+        return
+    File.write_csv(csv_file_path, csv_list, header)
+
+
 class RacingReferenceHtmlToCsv:
     """Parsers for Racing Reference result/schedule tables (used by load SQL)."""
 
@@ -57,6 +69,9 @@ class RacingReferenceHtmlToCsv:
 
     def save_to_csv(self, filename: str, header: list[str] | None = None) -> None:
         try:
+            if not self.data:
+                File.silent_remove(filename)
+                return
             with open(filename, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f, lineterminator="\n")
                 if header:
@@ -100,9 +115,9 @@ class RacingReferenceHtmlToCsv:
                 "week_race_name": raceweek_title.strip(),
             }
             csv_list.append(csv_row.values())
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, csv_row.keys())
-        logging.info("Racing Reference: schedule %d rows -> %s", len(csv_list), csv_file_path)
+        _write_rr_csv_or_remove(csv_file_path, csv_list, csv_row.keys())
+        if csv_list:
+            logging.info("Racing Reference: schedule %d rows -> %s", len(csv_list), csv_file_path)
 
     @staticmethod
     def _race_results_row_cells(tr) -> list:
@@ -222,9 +237,9 @@ class RacingReferenceHtmlToCsv:
                     continue
                 csv_list.append(fields.values())
         _sort_rr_rows_by_header_column(csv_list, headers, "position", reverse=False)
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, headers)
-        logging.info("Racing Reference: race results %d rows -> %s", len(csv_list), csv_file_path)
+        _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+        if csv_list:
+            logging.info("Racing Reference: race results %d rows -> %s", len(csv_list), csv_file_path)
 
     @staticmethod
     def convert_prerace_penalties(html_file_path: str, csv_file_path: str) -> None:
@@ -256,13 +271,13 @@ class RacingReferenceHtmlToCsv:
                 number = cols[1].get_text().strip()
                 reason = cols[2].get_text().strip()
                 csv_list.append({"name": name, "number": number, "reason": reason}.values())
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, headers)
-        logging.info(
-            "Racing Reference: pre-race penalties %d rows -> %s",
-            len(csv_list),
-            csv_file_path,
-        )
+        _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+        if csv_list:
+            logging.info(
+                "Racing Reference: pre-race penalties %d rows -> %s",
+                len(csv_list),
+                csv_file_path,
+            )
 
     @staticmethod
     def convert_caution_flags(html_file_path: str, csv_file_path: str) -> None:
@@ -311,13 +326,13 @@ class RacingReferenceHtmlToCsv:
                         "free_pass_cars": free_pass_cars,
                     }.values()
                 )
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, headers)
-        logging.info(
-            "Racing Reference: caution flags %d rows -> %s",
-            len(csv_list),
-            csv_file_path,
-        )
+        _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+        if csv_list:
+            logging.info(
+                "Racing Reference: caution flags %d rows -> %s",
+                len(csv_list),
+                csv_file_path,
+            )
 
     @staticmethod
     def convert_lap_leaders(html_file_path: str, csv_file_path: str) -> None:
@@ -357,13 +372,13 @@ class RacingReferenceHtmlToCsv:
                         "number_of_laps": number_of_laps,
                     }.values()
                 )
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, headers)
-        logging.info(
-            "Racing Reference: lap leaders %d rows -> %s",
-            len(csv_list),
-            csv_file_path,
-        )
+        _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+        if csv_list:
+            logging.info(
+                "Racing Reference: lap leaders %d rows -> %s",
+                len(csv_list),
+                csv_file_path,
+            )
 
     @staticmethod
     def convert_entrylist(html_file_path: str, csv_file_path: str) -> None:
@@ -406,9 +421,9 @@ class RacingReferenceHtmlToCsv:
                             "sponsor": sponsor,
                         }.values()
                     )
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, headers)
-        logging.info("Racing Reference: entry list %d rows -> %s", len(csv_list), csv_file_path)
+        _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+        if csv_list:
+            logging.info("Racing Reference: entry list %d rows -> %s", len(csv_list), csv_file_path)
 
     @staticmethod
     def convert_practices(paths: list[str]) -> None:
@@ -480,14 +495,14 @@ class RacingReferenceHtmlToCsv:
                     )
             _sort_rr_rows_by_header_column(csv_list, headers, "rank", reverse=False)
             csv_file_path = path.replace(".html", ".csv")
-            File.silent_remove(csv_file_path)
-            File.write_csv(csv_file_path, csv_list, headers)
-            logging.info(
-                "Racing Reference: practice %d rows %s -> %s",
-                len(csv_list),
-                path,
-                csv_file_path,
-            )
+            _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+            if csv_list:
+                logging.info(
+                    "Racing Reference: practice %d rows %s -> %s",
+                    len(csv_list),
+                    path,
+                    csv_file_path,
+                )
 
     @staticmethod
     def convert_qualifying(path: str | None) -> None:
@@ -540,14 +555,14 @@ class RacingReferenceHtmlToCsv:
                     )
         _sort_rr_rows_by_header_column(csv_list, headers, "rank", reverse=False)
         csv_file_path = path.replace(".html", ".csv")
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, headers)
-        logging.info(
-            "Racing Reference: qualifying %d rows %s -> %s",
-            len(csv_list),
-            path,
-            csv_file_path,
-        )
+        _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+        if csv_list:
+            logging.info(
+                "Racing Reference: qualifying %d rows %s -> %s",
+                len(csv_list),
+                path,
+                csv_file_path,
+            )
 
     @staticmethod
     def convert_loop_data(path: str | None) -> None:
@@ -646,14 +661,14 @@ class RacingReferenceHtmlToCsv:
                     )
         _sort_rr_rows_by_header_column(csv_list, headers, "finish", reverse=False)
         csv_file_path = path.replace(".html", ".csv")
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, headers)
-        logging.info(
-            "Racing Reference: loop data %d rows %s -> %s",
-            len(csv_list),
-            path,
-            csv_file_path,
-        )
+        _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+        if csv_list:
+            logging.info(
+                "Racing Reference: loop data %d rows %s -> %s",
+                len(csv_list),
+                path,
+                csv_file_path,
+            )
 
     @staticmethod
     def convert_penalties(path: str | None) -> None:
@@ -707,11 +722,11 @@ class RacingReferenceHtmlToCsv:
                         }.values()
                     )
         csv_file_path = path.replace(".html", ".csv")
-        File.silent_remove(csv_file_path)
-        File.write_csv(csv_file_path, csv_list, headers)
-        logging.info(
-            "Racing Reference: penalties %d rows %s -> %s",
-            len(csv_list),
-            path,
-            csv_file_path,
-        )
+        _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
+        if csv_list:
+            logging.info(
+                "Racing Reference: penalties %d rows %s -> %s",
+                len(csv_list),
+                path,
+                csv_file_path,
+            )

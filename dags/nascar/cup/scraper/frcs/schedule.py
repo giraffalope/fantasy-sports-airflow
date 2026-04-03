@@ -20,17 +20,17 @@ Downstream DAGs should depend on the emitted **Asset** after each successful run
 
 from __future__ import annotations
 
-import random
 from datetime import datetime
 
-from airflow.providers.standard.operators.python import PythonOperator
-from airflow.sdk import DAG, Asset
+from airflow.sdk import Asset
 
-from airflow_utils.wait_operator import WaitOperator
-from include.nascar.data_sources.frcs import (
-    cup_series_convert_year_schedule_html_to_csv,
-    cup_series_download_year_schedule_html,
+from nascar.cup.scraper.backfill_assets import (
+    BACKFILL_END_DATE,
+    BACKFILL_FRCS_CUP_SCHEDULE_ASSET,
+    BACKFILL_START_DATE,
+    BACKFILL_YEARLY_SCHEDULE,
 )
+from nascar.cup.scraper.dag_factories import register_frcs_schedule_dag
 
 DAG_ID = "nascar.cup.scraper.frcs.schedule"
 
@@ -39,32 +39,28 @@ NASCAR_FRCS_CUP_SCHEDULE_ASSET = Asset(
     name=DAG_ID,
 )
 
-with DAG(
+_BACKFILL_DOC = (
+    "Yearly historical Cup FRCS schedule scrape (2010–2025): Dec 31 00:00 UTC, "
+    "``catchup=True``. Uses backfill-only assets so prod DAGs are not triggered.\n\n"
+    "**Source:** FRCS.pro Cup schedule HTML → CSV."
+)
+
+register_frcs_schedule_dag(
     dag_id=DAG_ID,
-    start_date=datetime(2025, 7, 11),
     schedule="0 * * * *",
+    start_date=datetime(2025, 7, 11),
+    end_date=None,
     catchup=False,
-    max_active_runs=1,
+    outlet_asset=NASCAR_FRCS_CUP_SCHEDULE_ASSET,
     doc_md=__doc__,
-) as dag:
-    wait_random_time_task = WaitOperator(
-        task_id="wait_random_time",
-        seconds=random.randint(0, 5),
-    )
+)
 
-    download_year_schedule_html_task = PythonOperator(
-        task_id="download_year_schedule_html",
-        python_callable=cup_series_download_year_schedule_html,
-    )
-
-    convert_year_schedule_html_to_csv_task = PythonOperator(
-        task_id="convert_year_schedule_html_to_csv",
-        python_callable=cup_series_convert_year_schedule_html_to_csv,
-        outlets=[NASCAR_FRCS_CUP_SCHEDULE_ASSET],
-    )
-
-    (
-        wait_random_time_task
-        >> download_year_schedule_html_task
-        >> convert_year_schedule_html_to_csv_task
-    )
+register_frcs_schedule_dag(
+    dag_id=f"backfill.{DAG_ID}",
+    schedule=BACKFILL_YEARLY_SCHEDULE,
+    start_date=BACKFILL_START_DATE,
+    end_date=BACKFILL_END_DATE,
+    catchup=True,
+    outlet_asset=BACKFILL_FRCS_CUP_SCHEDULE_ASSET,
+    doc_md=_BACKFILL_DOC,
+)

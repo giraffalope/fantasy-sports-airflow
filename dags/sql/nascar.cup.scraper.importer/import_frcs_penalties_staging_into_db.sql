@@ -6,7 +6,7 @@ WHERE r.week_id = {{ week_id }};
 
 INSERT INTO nascar.data_sources_drivers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(stg.driver_name)
-FROM nascar.stg_frcs_penalties_{{ week_id }} stg
+FROM nascar.stg_frcs_penalties_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.data_sources ds
     ON ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
@@ -33,9 +33,9 @@ WHERE NOT EXISTS (
     SELECT 1
     FROM nascar.drivers d
     WHERE d.deleted_at IS NULL
-        AND (d.first_name COLLATE utf8mb4_unicode_ci) <=> (x.first_name COLLATE utf8mb4_unicode_ci)
-        AND (d.last_name COLLATE utf8mb4_unicode_ci) <=> (x.last_name COLLATE utf8mb4_unicode_ci)
-        AND (d.suffix COLLATE utf8mb4_unicode_ci) <=> (x.suffix COLLATE utf8mb4_unicode_ci)
+        AND (d.first_name COLLATE utf8mb4_uca1400_ai_ci) <=> (x.first_name COLLATE utf8mb4_uca1400_ai_ci)
+        AND (d.last_name COLLATE utf8mb4_uca1400_ai_ci) <=> (x.last_name COLLATE utf8mb4_uca1400_ai_ci)
+        AND (d.suffix COLLATE utf8mb4_uca1400_ai_ci) <=> (x.suffix COLLATE utf8mb4_uca1400_ai_ci)
 );
 
 ---
@@ -46,9 +46,9 @@ JOIN nascar.data_sources ds
     AND ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
 JOIN nascar.drivers d
-    ON (d.first_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_unicode_ci)
-    AND (d.last_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_unicode_ci)
-    AND (d.suffix COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_unicode_ci)
+    ON (d.first_name COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    AND (d.last_name COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    AND (d.suffix COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
     AND d.deleted_at IS NULL
 SET dsd.driver_id = d.id
 WHERE dsd.driver_id IS NULL;
@@ -84,7 +84,7 @@ FROM (
                 CAST(stg.lap AS UNSIGNED)
             ORDER BY stg.infraction, stg.penalty
         ) AS rn
-    FROM nascar.stg_frcs_penalties_{{ week_id }} stg
+    FROM nascar.stg_frcs_penalties_{{ week_id }}_{{ table_suffix }} stg
     JOIN nascar.races r
         ON r.week_id = {{ week_id }}
         AND r.deleted_at IS NULL

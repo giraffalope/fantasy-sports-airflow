@@ -5,7 +5,7 @@ Per-week Racing Reference Cup HTML → CSV sync, driven by ``schedule.csv``.
 updates — in practice, each time ``nascar.cup.scraper.racing_reference.schedule`` finishes
 successfully (that DAG runs hourly). A short random wait task runs first, then tasks
 download missing HTML (only when files are absent) and emit CSVs alongside the main
-``nascar_scraper`` layout under ``…/cup/<year>/<week>/`` (including prerace penalties,
+Cup pipeline layout under ``…/cup/<year>/<week>/`` (including prerace penalties,
 caution flags, and lap leaders parsed from ``race-results.html``). The last task is
 ``sync_race_results`` (race results CSV plus loop-data HTML/CSV).
 
@@ -14,25 +14,19 @@ Downstream DAGs can depend on a future asset emitted from the last task if neede
 
 from __future__ import annotations
 
-import random
 from datetime import datetime
 
-from airflow.providers.standard.operators.python import PythonOperator
-from airflow.sdk import DAG, Asset
+from airflow.sdk import Asset
+
+from nascar.cup.scraper.backfill_assets import (
+    BACKFILL_END_DATE,
+    BACKFILL_RACING_REFERENCE_CUP_RACE_WEEK_ASSET,
+    BACKFILL_RACING_REFERENCE_CUP_SCHEDULE_ASSET,
+    BACKFILL_START_DATE,
+)
+from nascar.cup.scraper.dag_factories import register_racing_reference_race_week_dag
 from nascar.cup.scraper.racing_reference.schedule import (
     NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET,
-)
-
-from airflow_utils.wait_operator import WaitOperator
-from include.nascar.data_sources.racing_reference_race_week import (
-    cup_series_sync_caution_flags,
-    cup_series_sync_entrylists,
-    cup_series_sync_penalties_and_lap_leaders,
-    cup_series_sync_practices,
-    cup_series_sync_prerace_penalties,
-    cup_series_sync_qualifyings,
-    cup_series_sync_race_results,
-    cup_series_sync_weeks,
 )
 
 DAG_ID = "nascar.cup.scraper.racing_reference.race_week"
@@ -42,68 +36,28 @@ NASCAR_RACING_REFERENCE_CUP_RACE_WEEK_ASSET = Asset(
     name=DAG_ID,
 )
 
-with DAG(
+_BACKFILL_DOC = (
+    "Historical Cup Racing Reference per-week HTML → CSV (2010–2025), triggered when "
+    "the backfill RR schedule asset updates. Uses backfill-only assets.\n\n"
+    + (__doc__ or "")
+)
+
+register_racing_reference_race_week_dag(
     dag_id=DAG_ID,
-    start_date=datetime(2025, 7, 11),
     schedule=[NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET],
+    start_date=datetime(2025, 7, 11),
+    end_date=None,
     catchup=False,
-    max_active_runs=1,
+    outlet_asset=NASCAR_RACING_REFERENCE_CUP_RACE_WEEK_ASSET,
     doc_md=__doc__,
-) as dag:
-    wait_random_time_task = WaitOperator(
-        task_id="wait_random_time",
-        seconds=random.randint(0, 5),
-    )
+)
 
-    sync_weeks_task = PythonOperator(
-        task_id="sync_weeks",
-        python_callable=cup_series_sync_weeks,
-    )
-
-    sync_entrylists_task = PythonOperator(
-        task_id="sync_entrylists",
-        python_callable=cup_series_sync_entrylists,
-    )
-
-    sync_practices_task = PythonOperator(
-        task_id="sync_practices",
-        python_callable=cup_series_sync_practices,
-    )
-
-    sync_qualifyings_task = PythonOperator(
-        task_id="sync_qualifyings",
-        python_callable=cup_series_sync_qualifyings,
-    )
-
-    sync_prerace_penalties_task = PythonOperator(
-        task_id="sync_prerace_penalties",
-        python_callable=cup_series_sync_prerace_penalties,
-    )
-
-    sync_caution_flags_task = PythonOperator(
-        task_id="sync_caution_flags",
-        python_callable=cup_series_sync_caution_flags,
-    )
-
-    sync_penalties_and_lap_leaders_task = PythonOperator(
-        task_id="sync_penalties_and_lap_leaders",
-        python_callable=cup_series_sync_penalties_and_lap_leaders,
-    )
-
-    sync_race_results_task = PythonOperator(
-        task_id="sync_race_results",
-        python_callable=cup_series_sync_race_results,
-        outlets=[NASCAR_RACING_REFERENCE_CUP_RACE_WEEK_ASSET],
-    )
-
-    (
-        wait_random_time_task
-        >> sync_weeks_task
-        >> sync_entrylists_task
-        >> sync_practices_task
-        >> sync_qualifyings_task
-        >> sync_prerace_penalties_task
-        >> sync_caution_flags_task
-        >> sync_penalties_and_lap_leaders_task
-        >> sync_race_results_task
-    )
+register_racing_reference_race_week_dag(
+    dag_id=f"backfill.{DAG_ID}",
+    schedule=[BACKFILL_RACING_REFERENCE_CUP_SCHEDULE_ASSET],
+    start_date=BACKFILL_START_DATE,
+    end_date=BACKFILL_END_DATE,
+    catchup=True,
+    outlet_asset=BACKFILL_RACING_REFERENCE_CUP_RACE_WEEK_ASSET,
+    doc_md=_BACKFILL_DOC,
+)

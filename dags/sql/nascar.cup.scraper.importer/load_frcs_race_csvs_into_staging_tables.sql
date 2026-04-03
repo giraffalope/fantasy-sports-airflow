@@ -1,8 +1,8 @@
-DROP TABLE IF EXISTS nascar.stg_frcs_race_results_{{ week_id }};
+DROP TABLE IF EXISTS nascar.stg_frcs_race_results_{{ week_id }}_{{ table_suffix }};
 
 ---
 
-CREATE TABLE nascar.stg_frcs_race_results_{{ week_id }} (
+CREATE TABLE nascar.stg_frcs_race_results_{{ week_id }}_{{ table_suffix }} (
     position VARCHAR(255) NULL,
     starting_position VARCHAR(255) NULL,
     number VARCHAR(255) NULL,
@@ -15,12 +15,12 @@ CREATE TABLE nascar.stg_frcs_race_results_{{ week_id }} (
     laps_led VARCHAR(255) NULL,
     points VARCHAR(255) NULL,
     playoff_points VARCHAR(255) NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 
 ---
 
 LOAD DATA LOCAL INFILE '{{ race_results_csv_file_path }}'
-INTO TABLE nascar.stg_frcs_race_results_{{ week_id }}
+INTO TABLE nascar.stg_frcs_race_results_{{ week_id }}_{{ table_suffix }}
 FIELDS TERMINATED BY ','
 ENCLOSED BY '"'
 LINES TERMINATED BY '\n'
@@ -56,11 +56,11 @@ SET
 
 ---
 
-DROP TABLE IF EXISTS nascar.stg_frcs_race_loop_data_{{ week_id }};
+DROP TABLE IF EXISTS nascar.stg_frcs_race_loop_data_{{ week_id }}_{{ table_suffix }};
 
 ---
 
-CREATE TABLE nascar.stg_frcs_race_loop_data_{{ week_id }} (
+CREATE TABLE nascar.stg_frcs_race_loop_data_{{ week_id }}_{{ table_suffix }} (
     driver_name VARCHAR(255) NULL,
     start VARCHAR(255) NULL,
     mid_race VARCHAR(255) NULL,
@@ -80,12 +80,12 @@ CREATE TABLE nascar.stg_frcs_race_loop_data_{{ week_id }} (
     pct_laps_led VARCHAR(255) NULL,
     total_laps VARCHAR(255) NULL,
     driver_rating VARCHAR(255) NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 
 ---
 
 LOAD DATA LOCAL INFILE '{{ race_loop_data_csv_file_path }}'
-INTO TABLE nascar.stg_frcs_race_loop_data_{{ week_id }}
+INTO TABLE nascar.stg_frcs_race_loop_data_{{ week_id }}_{{ table_suffix }}
 FIELDS TERMINATED BY ','
 ENCLOSED BY '"'
 LINES TERMINATED BY '\n'

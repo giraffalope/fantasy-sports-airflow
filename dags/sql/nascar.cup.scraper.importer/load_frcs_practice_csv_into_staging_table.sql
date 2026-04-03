@@ -1,8 +1,8 @@
-DROP TABLE IF EXISTS nascar.stg_frcs_practice_{{ week_id }}_{{ number }};
+DROP TABLE IF EXISTS nascar.stg_frcs_practice_{{ week_id }}_{{ number }}_{{ table_suffix }};
 
 ---
 
-CREATE TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }} (
+CREATE TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }}_{{ table_suffix }} (
     rank VARCHAR(255) NULL,
     driver_name VARCHAR(255) NULL,
     number VARCHAR(255) NULL,
@@ -19,12 +19,12 @@ CREATE TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }} (
     `10_lap_average_speed` VARCHAR(255) NULL,
     `10_lap_start` VARCHAR(255) NULL,
     `10_lap_end` VARCHAR(255) NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 
 ---
 
 LOAD DATA LOCAL INFILE '{{ practice_csv_file_path }}'
-INTO TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }}
+INTO TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }}_{{ table_suffix }}
 FIELDS TERMINATED BY ','
 ENCLOSED BY '"'
 LINES TERMINATED BY '\n'

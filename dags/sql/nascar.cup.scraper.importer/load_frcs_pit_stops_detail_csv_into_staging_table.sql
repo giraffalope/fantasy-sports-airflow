@@ -1,8 +1,8 @@
-DROP TABLE IF EXISTS nascar.stg_frcs_pit_stops_detail_{{ week_id }};
+DROP TABLE IF EXISTS nascar.stg_frcs_pit_stops_detail_{{ week_id }}_{{ table_suffix }};
 
 ---
 
-CREATE TABLE nascar.stg_frcs_pit_stops_detail_{{ week_id }} (
+CREATE TABLE nascar.stg_frcs_pit_stops_detail_{{ week_id }}_{{ table_suffix }} (
     number VARCHAR(255) NULL,
     driver_name VARCHAR(255) NULL,
     leader_lap VARCHAR(255) NULL,
@@ -11,12 +11,12 @@ CREATE TABLE nascar.stg_frcs_pit_stops_detail_{{ week_id }} (
     stop_duration VARCHAR(255) NULL,
     driver_time VARCHAR(255) NULL,
     total_duration VARCHAR(255) NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 
 ---
 
 LOAD DATA LOCAL INFILE '{{ pit_stops_detail_csv_file_path }}'
-INTO TABLE nascar.stg_frcs_pit_stops_detail_{{ week_id }}
+INTO TABLE nascar.stg_frcs_pit_stops_detail_{{ week_id }}_{{ table_suffix }}
 FIELDS TERMINATED BY ','
 ENCLOSED BY '"'
 LINES TERMINATED BY '\n'

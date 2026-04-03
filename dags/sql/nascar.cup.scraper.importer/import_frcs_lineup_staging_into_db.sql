@@ -1,6 +1,6 @@
 INSERT INTO nascar.data_sources_teams (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(stg.team)
-FROM nascar.stg_frcs_lineup_{{ week_id }} stg
+FROM nascar.stg_frcs_lineup_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.data_sources ds
     ON ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
@@ -40,7 +40,7 @@ WHERE dst.team_id IS NULL
 
 INSERT INTO nascar.data_sources_manufacturers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(stg.manufacturer)
-FROM nascar.stg_frcs_lineup_{{ week_id }} stg
+FROM nascar.stg_frcs_lineup_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.data_sources ds
     ON ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
@@ -80,7 +80,7 @@ WHERE dsm.manufacturer_id IS NULL
 
 INSERT INTO nascar.data_sources_drivers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(stg.driver_name)
-FROM nascar.stg_frcs_lineup_{{ week_id }} stg
+FROM nascar.stg_frcs_lineup_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.data_sources ds
     ON ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
@@ -108,9 +108,9 @@ WHERE NOT EXISTS (
     SELECT 1
     FROM nascar.drivers d
     WHERE d.deleted_at IS NULL
-      AND (d.first_name COLLATE utf8mb4_unicode_ci) <=> (x.first_name COLLATE utf8mb4_unicode_ci)
-      AND (d.last_name COLLATE utf8mb4_unicode_ci) <=> (x.last_name COLLATE utf8mb4_unicode_ci)
-      AND (d.suffix COLLATE utf8mb4_unicode_ci) <=> (x.suffix COLLATE utf8mb4_unicode_ci)
+      AND (d.first_name COLLATE utf8mb4_uca1400_ai_ci) <=> (x.first_name COLLATE utf8mb4_uca1400_ai_ci)
+      AND (d.last_name COLLATE utf8mb4_uca1400_ai_ci) <=> (x.last_name COLLATE utf8mb4_uca1400_ai_ci)
+      AND (d.suffix COLLATE utf8mb4_uca1400_ai_ci) <=> (x.suffix COLLATE utf8mb4_uca1400_ai_ci)
 )
 ;
 
@@ -122,9 +122,9 @@ JOIN nascar.data_sources ds
     AND ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
 JOIN nascar.drivers d
-    ON (d.first_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_unicode_ci)
-    AND (d.last_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_unicode_ci)
-    AND (d.suffix COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_unicode_ci)
+    ON (d.first_name COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    AND (d.last_name COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    AND (d.suffix COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
     AND d.deleted_at IS NULL
 SET dsd.driver_id = d.id
 WHERE dsd.driver_id IS NULL
@@ -138,7 +138,7 @@ SELECT DISTINCT
     dst.team_id,
     dsm.manufacturer_id,
     TRIM(stg.number)
-FROM nascar.stg_frcs_lineup_{{ week_id }} stg
+FROM nascar.stg_frcs_lineup_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.data_sources ds
     ON ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
@@ -162,7 +162,7 @@ INSERT INTO nascar.cars_drivers (car_id, driver_id)
 SELECT DISTINCT
     c.id AS car_id,
     dsd.driver_id AS driver_id
-FROM nascar.stg_frcs_lineup_{{ week_id }} stg
+FROM nascar.stg_frcs_lineup_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.data_sources ds
     ON ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
@@ -234,7 +234,7 @@ FROM (
             PARTITION BY r.id, cd.id
             ORDER BY CAST(TRIM(stg.start) AS UNSIGNED), stg.number, stg.driver_name
         ) AS rn_driver
-    FROM nascar.stg_frcs_lineup_{{ week_id }} stg
+    FROM nascar.stg_frcs_lineup_{{ week_id }}_{{ table_suffix }} stg
     JOIN nascar.data_sources ds
         ON ds.name = '{{ source_name }}'
         AND ds.deleted_at IS NULL

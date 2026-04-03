@@ -9,7 +9,7 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO nascar.data_sources_drivers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(stg.driver_name)
-FROM nascar.stg_frcs_fanduel_{{ week_id }} stg
+FROM nascar.stg_frcs_fanduel_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.data_sources ds
     ON ds.name = '{{ source_name }}'
     AND ds.deleted_at IS NULL
@@ -32,7 +32,7 @@ SELECT
     CAST(stg.rank AS UNSIGNED) AS dfs_driver_id,
     cd.id AS car_driver_id,
     CAST(stg.salary AS UNSIGNED) AS salary
-FROM nascar.stg_frcs_fanduel_{{ week_id }} stg
+FROM nascar.stg_frcs_fanduel_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.races r
     ON r.week_id = {{ week_id }}
     AND r.deleted_at IS NULL

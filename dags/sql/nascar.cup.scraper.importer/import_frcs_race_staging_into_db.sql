@@ -1,4 +1,4 @@
-DROP TABLE IF EXISTS nascar.temp_race_{{ week_id }};
+DROP TABLE IF EXISTS nascar.temp_race_{{ week_id }}_{{ table_suffix }};
 
 ---
 
@@ -7,7 +7,7 @@ WHERE week_id = {{ week_id }};
 
 ---
 
-CREATE TABLE nascar.temp_race_{{ week_id }} (
+CREATE TABLE nascar.temp_race_{{ week_id }}_{{ table_suffix }} (
     position VARCHAR(255),
     starting_position VARCHAR(255),
     number VARCHAR(255),
@@ -46,22 +46,22 @@ CREATE TABLE nascar.temp_race_{{ week_id }} (
     car_id BIGINT UNSIGNED,
     car_driver_id BIGINT UNSIGNED,
     race_id BIGINT UNSIGNED
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 
 ---
 
-INSERT INTO nascar.temp_race_{{ week_id }}
+INSERT INTO nascar.temp_race_{{ week_id }}_{{ table_suffix }}
 (
     position, starting_position, number, name, sponsor, owner, car, laps, status, laps_led1, points, playoff_points
 )
 SELECT
     position, starting_position, number, name, sponsor, owner, car, laps, status, laps_led, points, playoff_points
-FROM nascar.stg_frcs_race_results_{{ week_id }};
+FROM nascar.stg_frcs_race_results_{{ week_id }}_{{ table_suffix }};
 
 ---
 
-UPDATE nascar.temp_race_{{ week_id }} r
-JOIN nascar.stg_frcs_race_loop_data_{{ week_id }} l
+UPDATE nascar.temp_race_{{ week_id }}_{{ table_suffix }} r
+JOIN nascar.stg_frcs_race_loop_data_{{ week_id }}_{{ table_suffix }} l
     ON TRIM(r.name) = TRIM(l.driver_name)
 SET
     r.driver_name = l.driver_name,
@@ -102,13 +102,13 @@ SET
 
 ---
 
-UPDATE nascar.temp_race_{{ week_id }}
+UPDATE nascar.temp_race_{{ week_id }}_{{ table_suffix }}
 SET week_id = {{ week_id }};
 
 ---
 
-UPDATE nascar.temp_race_{{ week_id }} t
-JOIN nascar.temp_entrylist_{{ week_id }} e
+UPDATE nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
+JOIN nascar.temp_entrylist_{{ week_id }}_{{ table_suffix }} e
     ON TRIM(t.number) = TRIM(e.number)
 SET
     t.team_id = e.team_id,
@@ -118,7 +118,7 @@ SET
 
 INSERT INTO nascar.data_sources_drivers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(COALESCE(t.driver_name, t.name))
-FROM nascar.temp_race_{{ week_id }} t
+FROM nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 JOIN nascar.data_sources ds ON ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
 WHERE TRIM(COALESCE(t.driver_name, t.name)) IS NOT NULL AND TRIM(COALESCE(t.driver_name, t.name)) != ''
 ON DUPLICATE KEY UPDATE deleted_at = NULL;
@@ -140,9 +140,9 @@ WHERE NOT EXISTS (
     SELECT 1
     FROM nascar.drivers d
     WHERE d.deleted_at IS NULL
-      AND (d.first_name COLLATE utf8mb4_unicode_ci) <=> (x.first_name COLLATE utf8mb4_unicode_ci)
-      AND (d.last_name COLLATE utf8mb4_unicode_ci) <=> (x.last_name COLLATE utf8mb4_unicode_ci)
-      AND (d.suffix COLLATE utf8mb4_unicode_ci) <=> (x.suffix COLLATE utf8mb4_unicode_ci)
+      AND (d.first_name COLLATE utf8mb4_uca1400_ai_ci) <=> (x.first_name COLLATE utf8mb4_uca1400_ai_ci)
+      AND (d.last_name COLLATE utf8mb4_uca1400_ai_ci) <=> (x.last_name COLLATE utf8mb4_uca1400_ai_ci)
+      AND (d.suffix COLLATE utf8mb4_uca1400_ai_ci) <=> (x.suffix COLLATE utf8mb4_uca1400_ai_ci)
 );
 
 ---
@@ -150,16 +150,16 @@ WHERE NOT EXISTS (
 UPDATE nascar.data_sources_drivers dsd
 JOIN nascar.data_sources ds ON ds.id = dsd.data_source_id AND ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
 JOIN nascar.drivers d
-    ON (d.first_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_unicode_ci)
-    AND (d.last_name COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_unicode_ci)
-    AND (d.suffix COLLATE utf8mb4_unicode_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_unicode_ci)
+    ON (d.first_name COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    AND (d.last_name COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    AND (d.suffix COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
     AND d.deleted_at IS NULL
 SET dsd.driver_id = d.id
 WHERE dsd.driver_id IS NULL;
 
 ---
 
-UPDATE nascar.temp_race_{{ week_id }} t
+UPDATE nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 JOIN nascar.data_sources_drivers dsd
     ON TRIM(COALESCE(t.driver_name, t.name)) = TRIM(dsd.name)
     AND dsd.driver_id IS NOT NULL
@@ -174,7 +174,7 @@ SET t.driver_id = dsd.driver_id;
 
 INSERT INTO nascar.data_sources_manufacturers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(t.car)
-FROM nascar.temp_race_{{ week_id }} t
+FROM nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 JOIN nascar.data_sources ds ON ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
 WHERE TRIM(t.car) IS NOT NULL AND TRIM(t.car) != ''
 ON DUPLICATE KEY UPDATE deleted_at = NULL;
@@ -198,7 +198,7 @@ WHERE dsm.manufacturer_id IS NULL;
 
 ---
 
-UPDATE nascar.temp_race_{{ week_id }} t
+UPDATE nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 JOIN nascar.data_sources_manufacturers dsm
     ON TRIM(t.car) = TRIM(dsm.name)
     AND dsm.manufacturer_id IS NOT NULL
@@ -213,13 +213,13 @@ SET t.manufacturer_id = dsm.manufacturer_id;
 
 INSERT INTO nascar.cars (team_id, manufacturer_id, number)
 SELECT DISTINCT t.team_id, t.manufacturer_id, TRIM(t.number)
-FROM nascar.temp_race_{{ week_id }} t
+FROM nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 WHERE t.team_id IS NOT NULL AND t.manufacturer_id IS NOT NULL AND TRIM(t.number) IS NOT NULL AND TRIM(t.number) != ''
 ON DUPLICATE KEY UPDATE deleted_at = NULL;
 
 ---
 
-UPDATE nascar.temp_race_{{ week_id }} t
+UPDATE nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 LEFT JOIN nascar.cars c
     ON c.team_id = t.team_id
     AND c.manufacturer_id = t.manufacturer_id
@@ -231,13 +231,13 @@ SET t.car_id = c.id;
 
 INSERT INTO nascar.cars_drivers (car_id, driver_id)
 SELECT DISTINCT t.car_id, t.driver_id
-FROM nascar.temp_race_{{ week_id }} t
+FROM nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 WHERE t.car_id IS NOT NULL AND t.driver_id IS NOT NULL
 ON DUPLICATE KEY UPDATE deleted_at = NULL;
 
 ---
 
-UPDATE nascar.temp_race_{{ week_id }} t
+UPDATE nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 LEFT JOIN nascar.cars_drivers cd
     ON cd.car_id = t.car_id
     AND cd.driver_id = t.driver_id
@@ -251,7 +251,7 @@ VALUES ({{ week_id }});
 
 ---
 
-UPDATE nascar.temp_race_{{ week_id }} t
+UPDATE nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
 JOIN nascar.races r
     ON r.week_id = t.week_id
     AND r.deleted_at IS NULL
@@ -344,7 +344,7 @@ FROM (
                 PARTITION BY t.race_id, t.car_driver_id
                 ORDER BY CAST(TRIM(COALESCE(t.finish, t.position)) AS UNSIGNED), TRIM(t.number)
             ) AS rn_driver
-        FROM nascar.temp_race_{{ week_id }} t
+        FROM nascar.temp_race_{{ week_id }}_{{ table_suffix }} t
         WHERE COALESCE(t.finish, t.position) IS NOT NULL
           AND TRIM(COALESCE(t.finish, t.position)) != ''
           AND t.race_id IS NOT NULL

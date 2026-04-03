@@ -10,7 +10,7 @@ CREATE TABLE nascar.stg_cup_frcs_schedule_import_{{ table_suffix }} (
     week_track VARCHAR(255) NULL,
     week_track_url VARCHAR(255) NULL,
     week_race_name VARCHAR(255) NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 
 ---
 

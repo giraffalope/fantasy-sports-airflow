@@ -32,26 +32,55 @@ def _strip_html(fragment: str) -> str:
 
 
 def _parse_js_const_json_array(html: str, const_name: str) -> list[dict] | None:
-    needle = f"const {const_name} = "
-    start = html.find(needle)
-    if start == -1:
-        return None
-    bracket = html.find("[", start + len(needle))
-    if bracket == -1:
-        return None
-    depth = 0
-    for i in range(bracket, len(html)):
-        c = html[i]
-        if c == "[":
-            depth += 1
-        elif c == "]":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(html[bracket : i + 1])
-                except json.JSONDecodeError:
-                    logging.warning("Could not JSON-decode %s from FRCS page", const_name)
-                    return None
+    """Parse ``const``/``let``/``var`` *name* = … from an FRCS inline script blob.
+
+    Uses :class:`json.JSONDecoder` ``raw_decode`` so brackets inside JSON strings do not
+    break extraction, and ``const roundTwo = null`` does not steal the next ``[`` from
+    ``roundOne``. JavaScript ``null`` is treated like an empty array for round-style data.
+    """
+    pattern = re.compile(
+        rf"(?:const|let|var)\s+{re.escape(const_name)}\s*=\s*",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    decoder = json.JSONDecoder()
+    for m in pattern.finditer(html):
+        pos = m.end()
+        while pos < len(html) and html[pos] in " \t\n\r":
+            pos += 1
+        if pos >= len(html):
+            continue
+        try:
+            obj, _end = decoder.raw_decode(html, pos)
+        except json.JSONDecodeError:
+            continue
+        if obj is None:
+            return []
+        if isinstance(obj, list):
+            return obj
+    return None
+
+
+def _frcs_qualifying_rows_from_tabulator_div(soup: BeautifulSoup) -> list[dict[str, str]] | None:
+    """Fallback when embedded ``roundOne``/``roundTwo`` JSON is missing (e.g. saved DOM)."""
+    for div_id in ("roundTwoTable", "roundOneTable"):
+        root = soup.find(id=div_id)
+        if root is None:
+            continue
+        rows_out: list[dict[str, str]] = []
+        for row in root.select("div.tabulator-row"):
+            classes = row.get("class") or []
+            if "tabulator-calcs-holder" in classes:
+                continue
+            row_dict: dict[str, str] = {}
+            for cell in row.select("div.tabulator-cell"):
+                field = cell.get("tabulator-field") or cell.get("data-field")
+                if not field:
+                    continue
+                row_dict[str(field)] = _frcs_cell_text(cell)
+            if row_dict.get("lap_rank") or row_dict.get("full_name"):
+                rows_out.append(row_dict)
+        if rows_out:
+            return rows_out
     return None
 
 
@@ -732,6 +761,13 @@ class FrcsHtmlToCsv:
         r2 = _parse_js_const_json_array(html, "roundTwo")
         r1 = _parse_js_const_json_array(html, "roundOne")
         data = r2 if r2 else r1
+        if not data:
+            soup = BeautifulSoup(html, "html.parser")
+            dom_rows = _frcs_qualifying_rows_from_tabulator_div(soup)
+            if dom_rows:
+                data = dom_rows
+        if not data:
+            logging.warning("FRCS qualifying: no roundOne/roundTwo JSON or tabulator rows in %s", path)
         headers = ["rank", "driver_name", "number", "manufacturer", "lap_time", "lap_speed"]
         csv_list: list = []
         if data:

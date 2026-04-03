@@ -8,27 +8,18 @@ Layout matches other scrapers: ``…/frcs.pro/cup/<year>/<week>/``.
 
 from __future__ import annotations
 
-import random
 from datetime import datetime
 
-from airflow.providers.standard.operators.python import PythonOperator
-from airflow.sdk import DAG, Asset
-from nascar.cup.scraper.frcs.schedule import NASCAR_FRCS_CUP_SCHEDULE_ASSET
+from airflow.sdk import Asset
 
-from airflow_utils.wait_operator import WaitOperator
-from include.nascar.data_sources.frcs_race_week import (
-    cup_series_sync_draftkings,
-    cup_series_sync_entrylists,
-    cup_series_sync_fanduel,
-    cup_series_sync_lineups,
-    cup_series_sync_penalties,
-    cup_series_sync_pit_stall_selections,
-    cup_series_sync_pit_stops,
-    cup_series_sync_practices,
-    cup_series_sync_qualifyings,
-    cup_series_sync_race_results,
-    cup_series_sync_weeks,
+from nascar.cup.scraper.backfill_assets import (
+    BACKFILL_END_DATE,
+    BACKFILL_FRCS_CUP_RACE_WEEK_ASSET,
+    BACKFILL_FRCS_CUP_SCHEDULE_ASSET,
+    BACKFILL_START_DATE,
 )
+from nascar.cup.scraper.dag_factories import register_frcs_race_week_dag
+from nascar.cup.scraper.frcs.schedule import NASCAR_FRCS_CUP_SCHEDULE_ASSET
 
 DAG_ID = "nascar.cup.scraper.frcs.race_week"
 
@@ -37,86 +28,28 @@ NASCAR_FRCS_CUP_RACE_WEEK_ASSET = Asset(
     name=DAG_ID,
 )
 
-with DAG(
+_BACKFILL_DOC = (
+    "Historical Cup FRCS per-week HTML → CSV (2010–2025), triggered when the "
+    "backfill FRCS schedule asset updates. Uses backfill-only assets.\n\n"
+    + (__doc__ or "")
+)
+
+register_frcs_race_week_dag(
     dag_id=DAG_ID,
-    start_date=datetime(2025, 7, 11),
     schedule=[NASCAR_FRCS_CUP_SCHEDULE_ASSET],
+    start_date=datetime(2025, 7, 11),
+    end_date=None,
     catchup=False,
-    max_active_runs=1,
+    outlet_asset=NASCAR_FRCS_CUP_RACE_WEEK_ASSET,
     doc_md=__doc__,
-) as dag:
-    wait_random_time_task = WaitOperator(
-        task_id="wait_random_time",
-        seconds=random.randint(0, 5),
-    )
+)
 
-    sync_weeks_task = PythonOperator(
-        task_id="sync_weeks",
-        python_callable=cup_series_sync_weeks,
-    )
-
-    sync_entrylists_task = PythonOperator(
-        task_id="sync_entrylists",
-        python_callable=cup_series_sync_entrylists,
-    )
-
-    sync_practices_task = PythonOperator(
-        task_id="sync_practices",
-        python_callable=cup_series_sync_practices,
-    )
-
-    sync_qualifyings_task = PythonOperator(
-        task_id="sync_qualifyings",
-        python_callable=cup_series_sync_qualifyings,
-    )
-
-    sync_lineups_task = PythonOperator(
-        task_id="sync_lineups",
-        python_callable=cup_series_sync_lineups,
-    )
-
-    sync_pit_stops_task = PythonOperator(
-        task_id="sync_pit_stops",
-        python_callable=cup_series_sync_pit_stops,
-    )
-
-    sync_draftkings_task = PythonOperator(
-        task_id="sync_draftkings",
-        python_callable=cup_series_sync_draftkings,
-    )
-
-    sync_fanduel_task = PythonOperator(
-        task_id="sync_fanduel",
-        python_callable=cup_series_sync_fanduel,
-    )
-
-    sync_pit_stall_selections_task = PythonOperator(
-        task_id="sync_pit_stall_selections",
-        python_callable=cup_series_sync_pit_stall_selections,
-    )
-
-    sync_penalties_task = PythonOperator(
-        task_id="sync_penalties",
-        python_callable=cup_series_sync_penalties,
-    )
-
-    sync_race_results_task = PythonOperator(
-        task_id="sync_race_results",
-        python_callable=cup_series_sync_race_results,
-        outlets=[NASCAR_FRCS_CUP_RACE_WEEK_ASSET],
-    )
-
-    (
-        wait_random_time_task
-        >> sync_weeks_task
-        >> sync_entrylists_task
-        >> sync_practices_task
-        >> sync_qualifyings_task
-        >> sync_lineups_task
-        >> sync_pit_stall_selections_task
-        >> sync_pit_stops_task
-        >> sync_penalties_task
-        >> sync_draftkings_task
-        >> sync_fanduel_task
-        >> sync_race_results_task
-    )
+register_frcs_race_week_dag(
+    dag_id=f"backfill.{DAG_ID}",
+    schedule=[BACKFILL_FRCS_CUP_SCHEDULE_ASSET],
+    start_date=BACKFILL_START_DATE,
+    end_date=BACKFILL_END_DATE,
+    catchup=True,
+    outlet_asset=BACKFILL_FRCS_CUP_RACE_WEEK_ASSET,
+    doc_md=_BACKFILL_DOC,
+)

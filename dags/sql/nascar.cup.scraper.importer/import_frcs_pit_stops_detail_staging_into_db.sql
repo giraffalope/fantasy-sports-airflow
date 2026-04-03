@@ -37,7 +37,7 @@ SELECT
         )
         ELSE NULL
     END AS driver_time
-FROM nascar.stg_frcs_pit_stops_detail_{{ week_id }} stg
+FROM nascar.stg_frcs_pit_stops_detail_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.races r
     ON r.week_id = {{ week_id }}
     AND r.deleted_at IS NULL

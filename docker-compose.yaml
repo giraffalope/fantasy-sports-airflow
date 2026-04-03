@@ -84,8 +84,9 @@ x-airflow-common:
     PYTHONPATH: /opt/airflow
     # Provider compat layer still imports deprecated permissions; safe to ignore until upstream moves.
     PYTHONWARNINGS: 'ignore::airflow.exceptions.RemovedInAirflow4Warning'
-    AIRFLOW_CONN_MARIADB_CONN: mariadb://username:password@mariadb:3306/nascar
-    AIRFLOW_CONN_NASCAR_CONN: mariadb://username:password@mariadb:3306/nascar
+    # Charset + collation → connection extra; NascarMySqlHook passes them to the driver (mysqlclient / connector).
+    AIRFLOW_CONN_MARIADB_CONN: "mariadb://username:password@mariadb:3306/nascar?charset=utf8mb4&collation=utf8mb4_uca1400_ai_ci"
+    AIRFLOW_CONN_NASCAR_CONN: "mariadb://username:password@mariadb:3306/nascar?charset=utf8mb4&collation=utf8mb4_uca1400_ai_ci"
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs

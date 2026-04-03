@@ -5,6 +5,8 @@ from typing import Any
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 from airflow.sdk import BaseOperator
 
+from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+
 
 class MySQLTemplateFileOperator(BaseOperator):
     """
@@ -47,7 +49,11 @@ class MySQLTemplateFileOperator(BaseOperator):
         # Render with Airflow context + user params
         rendered_sql = self.render_template(sql_template, {**context, **self.parameters})
 
-        hook = MySqlHook(mysql_conn_id=self.mysql_conn_id)
+        hook = (
+            NascarMySqlHook(mysql_conn_id=self.mysql_conn_id)
+            if self.mysql_conn_id == "nascar_conn"
+            else MySqlHook(mysql_conn_id=self.mysql_conn_id)
+        )
 
         conn = hook.get_conn()
         cursor = conn.cursor()
