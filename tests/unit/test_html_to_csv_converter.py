@@ -63,8 +63,7 @@ def test_convert_race_results_no_results_table_no_crash(tmp_path) -> None:
     csv_path = tmp_path / "race.csv"
     html.write_text("<html><body><p>no table</p></body></html>", encoding="utf-8")
     HtmlToCsvConverter.convert_race_results(str(html), str(csv_path))
-    text = csv_path.read_text(encoding="utf-8")
-    assert "position" in text
+    assert not csv_path.is_file()
 
 
 def test_convert_race_results_plain_td_without_col_class(tmp_path) -> None:
@@ -148,8 +147,7 @@ def test_convert_prerace_penalties_no_other_results_cell_no_crash(tmp_path) -> N
     csv_path = tmp_path / "pre.csv"
     html.write_text("<html><body><p>minimal</p></body></html>", encoding="utf-8")
     HtmlToCsvConverter.convert_prerace_penalties(str(html), str(csv_path))
-    text = csv_path.read_text(encoding="utf-8")
-    assert "name" in text
+    assert not csv_path.is_file()
 
 
 def test_convert_prerace_penalties_tb_without_newhead_no_crash(tmp_path) -> None:
@@ -166,7 +164,7 @@ def test_convert_prerace_penalties_tb_without_newhead_no_crash(tmp_path) -> None
         encoding="utf-8",
     )
     HtmlToCsvConverter.convert_prerace_penalties(str(html), str(csv_path))
-    assert csv_path.is_file()
+    assert not csv_path.is_file()
 
 
 def test_convert_caution_flags_no_other_results_no_crash(tmp_path) -> None:
@@ -174,7 +172,7 @@ def test_convert_caution_flags_no_other_results_no_crash(tmp_path) -> None:
     csv_path = tmp_path / "caution.csv"
     html.write_text("<html><body></body></html>", encoding="utf-8")
     HtmlToCsvConverter.convert_caution_flags(str(html), str(csv_path))
-    assert "condition" in csv_path.read_text(encoding="utf-8")
+    assert not csv_path.is_file()
 
 
 def test_convert_caution_flags_row_without_img_uses_first_cell_text(tmp_path) -> None:
@@ -314,6 +312,36 @@ def test_convert_practices_nine_columns_omits_behind_leader(tmp_path) -> None:
     assert "Leader" in body
 
 
+def test_convert_practices_chasecol_driver_column_nine_cells(tmp_path) -> None:
+    """Playoff practice grids use ``td.chasecol`` for the driver (same as qualifying)."""
+    html = tmp_path / "practice-01.html"
+    html.write_text(
+        """
+        <table class="pracResultsTbl">
+          <tr><td class="newhead">Practice 1 results for this race:</td></tr>
+          <tr class="odd">
+            <td class="col">3</td>
+            <td class="chasecol"> &nbsp; <a href="/driver/Ryan_Blaney/">Ryan Blaney</a></td>
+            <td class="col">12</td>
+            <td class="col">Ford</td>
+            <td class="col">32.188</td>
+            <td class="col">0.252</td>
+            <td class="col">167.764</td>
+            <td class="col">32</td>
+            <td class="col">2</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_practices([str(html)])
+    body = (tmp_path / "practice-01.csv").read_text(encoding="utf-8")
+    assert "Ryan Blaney" in body
+    assert "167.764" in body
+    assert '"12"' in body or ",12," in body
+    assert "0.252" not in body
+
+
 def test_convert_practices_eight_columns(tmp_path) -> None:
     html = tmp_path / "practice-01.html"
     html.write_text(
@@ -380,3 +408,74 @@ def test_convert_qualifying_uses_normalized_headers(tmp_path) -> None:
         "lap_time",
         "lap_speed",
     ]
+
+
+def test_convert_qualifying_pads_short_rows_with_empty_strings(tmp_path) -> None:
+    """Rows with fewer than 6 ``td.col`` cells get empty strings for missing columns."""
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <table class="qualResultTbl">
+          <tr><td class="newhead">Qualifying results for this race:</td></tr>
+          <tr class="odd">
+            <td class="col">incomplete</td>
+          </tr>
+          <tr class="even">
+            <td class="col">1</td>
+            <td class="col"><a>Leader</a></td>
+            <td class="col">2</td>
+            <td class="col">Ford</td>
+            <td class="col">48.025</td>
+            <td class="col">187.402</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_qualifying(str(html))
+    body = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "incomplete" in body
+    assert "Leader" in body
+    assert body.count("187.402") == 1
+    lines = [ln for ln in body.strip().splitlines() if ln.strip()]
+    assert len(lines) == 3
+
+
+def test_rr_convert_entrylist_missing_eltbl_no_crash(tmp_path) -> None:
+    from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
+
+    html = tmp_path / "entrylist.html"
+    csv_path = tmp_path / "entrylist.csv"
+    html.write_text("<html><body><p>no entry table</p></body></html>", encoding="utf-8")
+    RacingReferenceHtmlToCsv.convert_entrylist(str(html), str(csv_path))
+    assert not csv_path.is_file()
+
+
+def test_rr_convert_entrylist_compound_eltbl_and_tb_classes(tmp_path) -> None:
+    from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
+
+    html = tmp_path / "entrylist.html"
+    csv_path = tmp_path / "entrylist.csv"
+    html.write_text(
+        """
+        <table class="wrap eLTbl">
+          <table class="tb other">
+            <tr><td class="newhead">Entry list for this race:</td></tr>
+            <tr class="odd">
+              <td class="col">x</td>
+              <td class="col">11</td>
+              <td class="col"><a>Jane Racer</a></td>
+              <td class="col">Owner O</td>
+              <td class="col">Ford</td>
+              <td class="col">Chief C</td>
+              <td class="col">Sponsor S</td>
+            </tr>
+          </table>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    RacingReferenceHtmlToCsv.convert_entrylist(str(html), str(csv_path))
+    body = csv_path.read_text(encoding="utf-8")
+    assert "Jane Racer" in body
+    assert "11" in body

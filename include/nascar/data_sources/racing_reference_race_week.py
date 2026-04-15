@@ -6,11 +6,12 @@ Each callable matches one DAG task: download missing artifacts, then convert whe
 Schedule rows are skipped when ``week_date`` is missing/unparseable or when that date
 (start of day UTC) is **not** strictly before the DAG run anchor plus
 ``RACE_WEEK_SCRAPE_HORIZON_DAYS`` — so distant future races are not scraped on
-every asset-triggered run.
+every hourly/catchup run.
 
 **Complete-week skip:** if ``<week_dir>/loop-data.csv`` exists **and has at least one data row**,
 each task skips that week. ``loop-data.csv`` is written by the final DAG task
-(``sync_race_results``), matching FRCS race-week behavior.
+(``sync_race_results``), matching FRCS race-week behavior. DAGs whose ``dag_id`` starts with
+``backfill.`` bypass this skip so existing HTML can be re-converted to CSV.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from include.nascar.data_sources.race_week_context import is_backfill_race_week_dag
 from include.nascar.data_sources.racing_reference import (
     RacingReferenceSource,
     _resolve_racing_reference_source,
@@ -85,8 +87,14 @@ def _rr_week_loop_data_csv_has_data_rows(week_dir: str) -> bool:
 
 
 def _rr_week_skip_if_loop_csv_present(
-    task: str, year: int, week_number: int, week_dir: str
+    task: str,
+    year: int,
+    week_number: int,
+    week_dir: str,
+    context: dict[str, Any] | None = None,
 ) -> bool:
+    if context is not None and is_backfill_race_week_dag(context):
+        return False
     if not _rr_week_loop_data_csv_has_data_rows(week_dir):
         return False
     _rr_week_line(task, year, week_number, "skip (loop-data.csv has data rows)")
@@ -143,10 +151,20 @@ def _datetime_from_airflow_run_id(run_id: str | None) -> datetime | None:
     return None
 
 
-def _as_utc_datetime(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
+def _as_utc_datetime(dt: date | datetime) -> datetime:
+    """
+    Normalize to timezone-aware UTC for comparisons.
+
+    Naive :class:`datetime` values are treated as UTC wall time. Calendar
+    :class:`date` values map to midnight UTC. Re-applied after arithmetic so
+    ``run_anchor + timedelta`` cannot leave a naive cutoff that would raise
+    when compared to UTC-aware week starts.
+    """
+    if isinstance(dt, datetime):
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    return datetime(dt.year, dt.month, dt.day, tzinfo=UTC)
 
 
 def parse_schedule_week_date(raw: str | None) -> date | None:
@@ -171,8 +189,8 @@ def week_date_within_race_week_scrape_horizon(week_date: date, run_anchor: datet
     ``run_anchor`` (normalized to UTC) plus ``RACE_WEEK_SCRAPE_HORIZON_DAYS``.
     """
     run_utc = _as_utc_datetime(run_anchor)
-    cutoff = run_utc + timedelta(days=RACE_WEEK_SCRAPE_HORIZON_DAYS)
-    week_start = datetime(week_date.year, week_date.month, week_date.day, tzinfo=UTC)
+    cutoff = _as_utc_datetime(run_utc + timedelta(days=RACE_WEEK_SCRAPE_HORIZON_DAYS))
+    week_start = _as_utc_datetime(week_date)
     return week_start < cutoff
 
 
@@ -250,9 +268,10 @@ def _cup_series_schedule_year_from_context(context: dict[str, Any]) -> int:
     """
     Calendar year for ``…/cup/<year>/`` paths.
 
-    Cron DAGs expose ``data_interval_start`` / ``logical_date``. Asset-triggered DAGs
-    omit those; derive the season year from ``triggering_asset_events`` (producer
-    ``source_run_id`` / ``timestamp``) or from ``dag_run`` fallbacks.
+    Cron DAGs expose ``data_interval_start`` / ``logical_date`` (primary path when
+    race-week runs on a timetable aligned with schedule). Fallbacks cover manual runs
+    and legacy asset triggers: ``triggering_asset_events``, ``dag_run.run_id``
+    (``scheduled__`` / ``asset_triggered__``), etc.
     """
     dis = context.get("data_interval_start")
     if dis is not None:
@@ -356,7 +375,7 @@ def cup_series_sync_weeks(**context: Any) -> None:
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
-        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base, context):
             continue
         weeks += 1
         _rr_week_line(task, year, week_number, "ensure race-results.html")
@@ -376,7 +395,7 @@ def cup_series_sync_entrylists(**context: Any) -> None:
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
-        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -413,7 +432,7 @@ def cup_series_sync_practices(**context: Any) -> None:
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
-        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -445,7 +464,7 @@ def cup_series_sync_qualifyings(**context: Any) -> None:
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
-        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -469,7 +488,7 @@ def cup_series_sync_prerace_penalties(**context: Any) -> None:
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
-        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -505,7 +524,7 @@ def cup_series_sync_caution_flags(**context: Any) -> None:
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
-        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -541,7 +560,7 @@ def cup_series_sync_race_results(**context: Any) -> None:
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
-        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -583,7 +602,7 @@ def cup_series_sync_penalties_and_lap_leaders(**context: Any) -> None:
         src, _RR_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_RR_CUP.db_name, year, week_number)
-        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base):
+        if _rr_week_skip_if_loop_csv_present(task, year, week_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")

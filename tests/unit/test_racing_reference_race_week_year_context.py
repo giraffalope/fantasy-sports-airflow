@@ -93,6 +93,16 @@ def test_week_date_within_horizon_past_and_near_future() -> None:
     assert week_date_within_race_week_scrape_horizon(date(2025, 7, 28), run)
 
 
+def test_week_date_within_horizon_naive_run_anchor_no_compare_error() -> None:
+    """Airflow may supply naive logical_date; horizon must not mix naive/aware."""
+    run_naive = datetime(2010, 12, 31, 0, 0, 0)
+    assert week_date_within_race_week_scrape_horizon(date(2010, 6, 1), run_naive)
+    assert week_date_within_race_week_scrape_horizon(
+        date(2010, 6, 1),
+        datetime(2010, 12, 31, 0, 0, 0, tzinfo=UTC),
+    )
+
+
 def test_week_date_within_horizon_excludes_far_future() -> None:
     run = datetime(2025, 7, 15, 12, 0, tzinfo=UTC)
     cutoff_day = (run + timedelta(days=RACE_WEEK_SCRAPE_HORIZON_DAYS)).date()

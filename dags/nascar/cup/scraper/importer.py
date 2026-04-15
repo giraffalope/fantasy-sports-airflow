@@ -1,11 +1,31 @@
 """
 Top-level Cup scraper importer DAG.
 
+**Schedule:** hourly (see ``CUP_SCRAPER_PROD_HOURLY_CRON`` in
+``nascar.cup.scraper.backfill_assets``), aligned with race-week DAGs. The first
+tasks wait for ``sync_race_results`` on both FRCS and Racing Reference Cup
+race-week DAGs for the same logical date (``ExternalTaskSensor``; default lookup
+uses the sensor task's ``logical_date``, which matches when schedules are
+identical—Airflow 3.1).
+
+The yearly ``backfill.nascar.cup.scraper.importer`` DAG is bound as
+``backfill_dag`` in this module (same graph, waits on ``backfill.*`` race-week
+DAGs).
+
+Qualifying CSV load prefers **FRCS** ``qualifying.csv`` under the week folder;
+if that file is missing, the same importer path uses **Racing Reference**
+``qualifying.csv`` when present. If neither exists, no qualifying rows are
+staged or imported for that week.
+
+Practice CSVs ``practice-<n>.csv`` follow the same preference per session
+number. Racing Reference practice exports omit FRCS-only columns (multi-lap
+averages and 10-lap window fields); those staging columns are left **NULL**
+when loading RR files.
+
 Week-scoped staging/temp tables include ``table_suffix`` (run anchor, same
 ``strftime('%Y%m%d%H%M')`` as schedule staging) so each DAG run only touches its own
-tables. The final task
-``cleanup_importer_staging_and_temp_tables`` drops only tables whose names end with that
-suffix (plus the schedule import tables for this run).
+tables. The final task ``cleanup_importer_staging_and_temp_tables`` drops staging and
+temp tables for this run whose names end with that suffix.
 """
 
 from __future__ import annotations
@@ -18,22 +38,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 from airflow.providers.standard.operators.python import PythonOperator
-from airflow.sdk import Asset, DAG
+from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
+from airflow.sdk import DAG
 from jinja2 import Template
 from nascar.cup.scraper.backfill_assets import (
     BACKFILL_END_DATE,
     BACKFILL_START_DATE,
     BACKFILL_YEARLY_SCHEDULE,
+    CUP_SCRAPER_PROD_HOURLY_CRON,
 )
-from nascar.cup.scraper.frcs.race_week import NASCAR_FRCS_CUP_RACE_WEEK_ASSET
-from nascar.cup.scraper.racing_reference.race_week import (
-    NASCAR_RACING_REFERENCE_CUP_RACE_WEEK_ASSET,
+from nascar.cup.scraper.dag_factories import (
+    CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
+    CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
 )
 
 from airflow_utils import MySQLTemplateFileOperatorFromContext
 from airflow_utils.mysql_template_file_executor import execute_sql_statements_transactional
+from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 from include.nascar.data_sources.frcs import FrcsSource
 from include.nascar.data_sources.racing_reference import RacingReferenceSource
 from include.nascar.data_sources.racing_reference_race_week import (
@@ -53,7 +75,6 @@ _LOG = logging.getLogger(__name__)
 _TABLE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _IMPORTER_STAGING_PREFIXES = (
     "stg_cup_frcs_schedule_import_",
-    "stg_cup_racing_reference_schedule_import_",
     "stg_frcs_",
     "temp_entrylist_",
     "temp_practice_",
@@ -154,14 +175,14 @@ def _target_weeks(hook: NascarMySqlHook, *, series_id: int, year: int) -> list[t
 
 def _push_target_weeks(kwargs: dict[str, Any], weeks: list[tuple[int, int]]) -> None:
     kwargs["ti"].xcom_push(
-        key="frcs_target_weeks",
+        key="importer_target_weeks",
         value=[{"week_id": w, "event_number": e} for w, e in weeks],
     )
 
 
 def _pull_target_weeks(kwargs: dict[str, Any]) -> list[tuple[int, int]]:
     rows = kwargs["ti"].xcom_pull(
-        task_ids="load_stage_frcs_entrylist_csvs", key="frcs_target_weeks"
+        task_ids="load_stage_entrylist_csvs", key="importer_target_weeks"
     ) or []
     return [(int(r["week_id"]), int(r["event_number"])) for r in rows]
 
@@ -175,22 +196,104 @@ def _importer_table_suffix(context: dict[str, Any]) -> str:
     return race_week_run_anchor_from_context(context).strftime("%Y%m%d%H%M")
 
 
+def _cup_practice_session_numbers(series: NascarSeries, year: int, event_number: int) -> list[int]:
+    """Sorted practice session indices that have a CSV under FRCS and/or Racing Reference."""
+    frcs = FrcsSource()
+    rr = RacingReferenceSource()
+    nums: set[int] = set()
+    for base in (
+        frcs.storage_path_week(series.db_name, year, event_number),
+        rr.storage_path_week(series.db_name, year, event_number),
+    ):
+        for path in glob.glob(os.path.join(base, "practice-*.csv")):
+            match = re.search(r"practice-(\d+)\.csv$", path)
+            if match:
+                nums.add(int(match.group(1)))
+    return sorted(nums)
+
+
+def _cup_practice_csv_for_session(
+    series: NascarSeries, year: int, event_number: int, session_num: int
+) -> tuple[str | None, str]:
+    """
+    Return ``(path, 'frcs'|'racing_reference')`` for ``practice-<session>.csv``, or ``(None, '')``.
+
+    Prefer FRCS; Racing Reference rows map only the eight shared columns (see
+    ``load_frcs_practice_csv_into_staging_table.sql`` when
+    ``practice_csv_source == 'racing_reference'``).
+    """
+    frcs = FrcsSource()
+    rr = RacingReferenceSource()
+    fname = f"practice-{session_num}.csv"
+    frcs_p = os.path.join(frcs.storage_path_week(series.db_name, year, event_number), fname)
+    if os.path.isfile(frcs_p):
+        return frcs_p, "frcs"
+    rr_p = os.path.join(rr.storage_path_week(series.db_name, year, event_number), fname)
+    if os.path.isfile(rr_p):
+        _LOG.info(
+            "Cup importer: %s from Racing Reference (FRCS missing) year=%s event=%s",
+            fname,
+            year,
+            event_number,
+        )
+        return rr_p, "racing_reference"
+    return None, ""
+
+
+def _cup_practice_data_source_id(
+    series: NascarSeries, year: int, event_number: int, session_num: int
+) -> str:
+    """``data_sources.name`` for the CSV used for this practice session (FRCS vs Racing Reference)."""
+    _, src = _cup_practice_csv_for_session(series, year, event_number, session_num)
+    if src == "racing_reference":
+        return RacingReferenceSource().id
+    return FrcsSource().id
+
+
+def _cup_qualifying_csv_path(
+    series: NascarSeries, year: int, event_number: int
+) -> tuple[str | None, str]:
+    """
+    Return ``(path, 'frcs'|'racing_reference'|'')`` for ``qualifying.csv``.
+
+    Prefer FRCS; fall back to Racing Reference (same six-column layout as
+    ``load_frcs_qualifying_csv_into_staging_table.sql``).
+    """
+    frcs = FrcsSource()
+    rr = RacingReferenceSource()
+    frcs_csv = os.path.join(frcs.storage_path_week(series.db_name, year, event_number), "qualifying.csv")
+    if os.path.isfile(frcs_csv):
+        return frcs_csv, "frcs"
+    rr_csv = os.path.join(rr.storage_path_week(series.db_name, year, event_number), "qualifying.csv")
+    if os.path.isfile(rr_csv):
+        _LOG.info(
+            "Cup importer: qualifying.csv from Racing Reference (FRCS missing) year=%s event=%s",
+            year,
+            event_number,
+        )
+        return rr_csv, "racing_reference"
+    _LOG.info(
+        "Cup importer: no qualifying.csv for FRCS or Racing Reference year=%s event=%s",
+        year,
+        event_number,
+    )
+    return None, ""
+
+
+def _cup_qualifying_data_source_id(series: NascarSeries, year: int, event_number: int) -> str:
+    """``data_sources.name`` for the qualifying CSV origin (FRCS vs Racing Reference)."""
+    _, src = _cup_qualifying_csv_path(series, year, event_number)
+    if src == "racing_reference":
+        return RacingReferenceSource().id
+    return FrcsSource().id
+
+
 def _importer_params_load_frcs_schedule(context: dict[str, Any]) -> dict[str, Any]:
     year = _cup_series_schedule_year_from_context(context)
     anchor = race_week_run_anchor_from_context(context)
     frcs = FrcsSource()
     return {
         "schedule_csv_file_path": f"{frcs.storage_path_series_year('cup', year)}/schedule.csv",
-        "table_suffix": anchor.strftime("%Y%m%d%H%M"),
-    }
-
-
-def _importer_params_load_rr_schedule(context: dict[str, Any]) -> dict[str, Any]:
-    year = _cup_series_schedule_year_from_context(context)
-    anchor = race_week_run_anchor_from_context(context)
-    rr = RacingReferenceSource()
-    return {
-        "schedule_csv_file_path": f"{rr.storage_path_series_year('cup', year)}/schedule.csv",
         "table_suffix": anchor.strftime("%Y%m%d%H%M"),
     }
 
@@ -259,22 +362,23 @@ def load_stage_frcs_practices_csvs(**kwargs) -> None:
         _sql_root() / "nascar.cup.scraper.importer" / "load_frcs_practice_csv_into_staging_table.sql"
     )
     for week_id, event_number in _pull_target_weeks(kwargs):
-        for csv in sorted(
-            glob.glob(os.path.join(source.storage_path_week(series.db_name, year, event_number), "practice-*.csv"))
-        ):
-            match = re.search(r"practice-(\d+)\.csv$", csv)
-            if match:
-                _execute_templated_sql_file(
-                    hook,
-                    stage_sql,
-                    {
-                        "week_id": week_id,
-                        "number": int(match.group(1)),
-                        "practice_csv_file_path": csv,
-                        "table_suffix": suffix,
-                    },
-                    source.id,
-                )
+        for n in _cup_practice_session_numbers(series, year, event_number):
+            csv_path, src = _cup_practice_csv_for_session(series, year, event_number, n)
+            if not csv_path:
+                continue
+            practice_csv_source = "racing_reference" if src == "racing_reference" else "frcs"
+            _execute_templated_sql_file(
+                hook,
+                stage_sql,
+                {
+                    "week_id": week_id,
+                    "number": n,
+                    "practice_csv_file_path": csv_path,
+                    "table_suffix": suffix,
+                    "practice_csv_source": practice_csv_source,
+                },
+                _cup_practice_data_source_id(series, year, event_number, n),
+            )
 
 
 def import_frcs_practices(**kwargs) -> None:
@@ -282,25 +386,23 @@ def import_frcs_practices(**kwargs) -> None:
     suffix = _importer_table_suffix(kwargs)
     year = _context_year(kwargs)
     series = NascarSeries.CUP
-    source = FrcsSource()
     sql = _sql_root() / "nascar.cup.scraper.importer" / "import_frcs_practice_staging_into_db.sql"
     for week_id, event_number in _pull_target_weeks(kwargs):
-        for csv in sorted(
-            glob.glob(os.path.join(source.storage_path_week(series.db_name, year, event_number), "practice-*.csv"))
-        ):
-            match = re.search(r"practice-(\d+)\.csv$", csv)
-            if match:
-                _execute_templated_sql_file(
-                    hook,
-                    sql,
-                    {
-                        "week_id": week_id,
-                        "series_id": series.series_id,
-                        "number": int(match.group(1)),
-                        "table_suffix": suffix,
-                    },
-                    source.id,
-                )
+        for n in _cup_practice_session_numbers(series, year, event_number):
+            stg = f"stg_frcs_practice_{week_id}_{n}_{suffix}"
+            if not _nascar_staging_table_exists(hook, stg):
+                continue
+            _execute_templated_sql_file(
+                hook,
+                sql,
+                {
+                    "week_id": week_id,
+                    "series_id": series.series_id,
+                    "number": n,
+                    "table_suffix": suffix,
+                },
+                _cup_practice_data_source_id(series, year, event_number, n),
+            )
 
 
 def load_stage_frcs_qualifyings_csvs(**kwargs) -> None:
@@ -308,18 +410,17 @@ def load_stage_frcs_qualifyings_csvs(**kwargs) -> None:
     suffix = _importer_table_suffix(kwargs)
     year = _context_year(kwargs)
     series = NascarSeries.CUP
-    source = FrcsSource()
     stage_sql = (
         _sql_root() / "nascar.cup.scraper.importer" / "load_frcs_qualifying_csv_into_staging_table.sql"
     )
     for week_id, event_number in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "qualifying.csv")
-        if os.path.isfile(csv):
+        csv, _src = _cup_qualifying_csv_path(series, year, event_number)
+        if csv:
             _execute_templated_sql_file(
                 hook,
                 stage_sql,
                 {"week_id": week_id, "qualifying_csv_file_path": csv, "table_suffix": suffix},
-                source.id,
+                _cup_qualifying_data_source_id(series, year, event_number),
             )
 
 
@@ -328,17 +429,17 @@ def import_frcs_qualifyings(**kwargs) -> None:
     suffix = _importer_table_suffix(kwargs)
     year = _context_year(kwargs)
     series = NascarSeries.CUP
-    source = FrcsSource()
     sql = _sql_root() / "nascar.cup.scraper.importer" / "import_frcs_qualifying_staging_into_db.sql"
     for week_id, event_number in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "qualifying.csv")
-        if os.path.isfile(csv):
-            _execute_templated_sql_file(
-                hook,
-                sql,
-                {"week_id": week_id, "series_id": series.series_id, "table_suffix": suffix},
-                source.id,
-            )
+        stg = f"stg_frcs_qualifying_{week_id}_{suffix}"
+        if not _nascar_staging_table_exists(hook, stg):
+            continue
+        _execute_templated_sql_file(
+            hook,
+            sql,
+            {"week_id": week_id, "series_id": series.series_id, "table_suffix": suffix},
+            _cup_qualifying_data_source_id(series, year, event_number),
+        )
 
 
 def load_stage_frcs_lineup_csvs(**kwargs) -> None:
@@ -617,7 +718,6 @@ def cleanup_importer_staging_and_temp_tables(**kwargs: Any) -> None:
     like_patterns = (
         "stg_frcs_%",
         "stg_cup_frcs_schedule_import_%",
-        "stg_cup_racing_reference_schedule_import_%",
         "temp_entrylist_%",
         "temp_practice_%",
         "temp_qualifying_%",
@@ -676,12 +776,14 @@ def cleanup_importer_staging_and_temp_tables(**kwargs: Any) -> None:
 def _register_cup_importer_dag(
     *,
     dag_id: str,
-    schedule: str | list[Asset],
+    schedule: str,
     start_date: datetime,
     end_date: datetime | None,
     catchup: bool,
     doc_md: str,
-) -> None:
+    wait_frcs_race_week_dag_id: str,
+    wait_rr_race_week_dag_id: str,
+) -> DAG:
     with DAG(
         dag_id=dag_id,
         start_date=start_date,
@@ -691,124 +793,145 @@ def _register_cup_importer_dag(
         max_active_runs=1,
         doc_md=doc_md,
     ) as dag:
-        _build_cup_importer_task_graph(dag)
+        _build_cup_importer_task_graph(
+            dag,
+            wait_frcs_race_week_dag_id=wait_frcs_race_week_dag_id,
+            wait_rr_race_week_dag_id=wait_rr_race_week_dag_id,
+        )
+    return dag
 
 
-def _build_cup_importer_task_graph(dag: DAG) -> None:
-    load_stage_frcs_schedule_csv_task = MySQLTemplateFileOperatorFromContext(
+def _build_cup_importer_task_graph(
+    dag: DAG,
+    *,
+    wait_frcs_race_week_dag_id: str,
+    wait_rr_race_week_dag_id: str,
+) -> None:
+    wait_frcs_race_week_task = ExternalTaskSensor(
         dag=dag,
-        task_id="load_stage_frcs_schedule_csv",
+        task_id="wait_frcs_race_week_sync_race_results",
+        external_dag_id=wait_frcs_race_week_dag_id,
+        external_task_id="sync_race_results",
+        mode="reschedule",
+        poke_interval=CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
+        timeout=CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
+        check_existence=True,
+    )
+    wait_rr_race_week_task = ExternalTaskSensor(
+        dag=dag,
+        task_id="wait_racing_reference_race_week_sync_race_results",
+        external_dag_id=wait_rr_race_week_dag_id,
+        external_task_id="sync_race_results",
+        mode="reschedule",
+        poke_interval=CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
+        timeout=CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
+        check_existence=True,
+    )
+
+    load_stage_schedule_csv_task = MySQLTemplateFileOperatorFromContext(
+        dag=dag,
+        task_id="load_stage_schedule_csv",
         sql_file_path=_sql_root() / "nascar.cup.scraper.importer" / "load_stage_frcs_schedule_csv.sql",
         mysql_conn_id="nascar_conn",
         parameters_factory=_importer_params_load_frcs_schedule,
     )
 
-    load_stage_racing_reference_schedule_csv_task = MySQLTemplateFileOperatorFromContext(
+    import_schedule_task = MySQLTemplateFileOperatorFromContext(
         dag=dag,
-        task_id="load_stage_racing_reference_schedule_csv",
-        sql_file_path=_sql_root()
-        / "nascar.cup.scraper.importer"
-        / "load_racing_reference_schedule_data_into_temp_table.sql",
-        mysql_conn_id="nascar_conn",
-        parameters_factory=_importer_params_load_rr_schedule,
-    )
-
-    import_frcs_schedule_task = MySQLTemplateFileOperatorFromContext(
-        dag=dag,
-        task_id="import_frcs_schedule",
+        task_id="import_schedule",
         sql_file_path=_sql_root() / "nascar.cup.scraper.importer" / "import_frcs_schedule.sql",
         mysql_conn_id="nascar_conn",
         parameters_factory=_importer_params_import_frcs_schedule,
     )
 
-    load_stage_frcs_entrylist_csvs_task = PythonOperator(
+    load_stage_entrylist_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_entrylist_csvs",
+        task_id="load_stage_entrylist_csvs",
         python_callable=load_stage_frcs_entrylist_csvs,
     )
-    import_frcs_entrylist_task = PythonOperator(
+    import_entrylist_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_entrylist",
+        task_id="import_entrylist",
         python_callable=import_frcs_entrylist,
     )
-    load_stage_frcs_practices_csvs_task = PythonOperator(
+    load_stage_practices_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_practices_csvs",
+        task_id="load_stage_practices_csvs",
         python_callable=load_stage_frcs_practices_csvs,
     )
-    import_frcs_practices_task = PythonOperator(
+    import_practices_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_practices",
+        task_id="import_practices",
         python_callable=import_frcs_practices,
     )
-    load_stage_frcs_qualifyings_csvs_task = PythonOperator(
+    load_stage_qualifyings_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_qualifyings_csvs",
+        task_id="load_stage_qualifyings_csvs",
         python_callable=load_stage_frcs_qualifyings_csvs,
     )
-    import_frcs_qualifyings_task = PythonOperator(
+    import_qualifyings_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_qualifyings",
+        task_id="import_qualifyings",
         python_callable=import_frcs_qualifyings,
     )
-    load_stage_frcs_lineup_csvs_task = PythonOperator(
+    load_stage_lineup_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_lineup_csvs",
+        task_id="load_stage_lineup_csvs",
         python_callable=load_stage_frcs_lineup_csvs,
     )
-    import_frcs_lineup_task = PythonOperator(
+    import_lineup_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_lineup",
+        task_id="import_lineup",
         python_callable=import_frcs_lineup,
     )
-    load_stage_frcs_races_csvs_task = PythonOperator(
+    load_stage_races_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_races_csvs",
+        task_id="load_stage_races_csvs",
         python_callable=load_stage_frcs_races_csvs,
     )
-    import_frcs_races_task = PythonOperator(
+    import_races_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_races",
+        task_id="import_races",
         python_callable=import_frcs_races,
     )
-    load_stage_frcs_penalties_csvs_task = PythonOperator(
+    load_stage_penalties_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_penalties_csvs",
+        task_id="load_stage_penalties_csvs",
         python_callable=load_stage_frcs_penalties_csvs,
     )
-    import_frcs_penalties_task = PythonOperator(
+    import_penalties_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_penalties",
+        task_id="import_penalties",
         python_callable=import_frcs_penalties,
     )
-    load_stage_frcs_pitstops_csvs_task = PythonOperator(
+    load_stage_pitstops_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_pitstops_csvs",
+        task_id="load_stage_pitstops_csvs",
         python_callable=load_stage_frcs_pitstops_csvs,
     )
-    import_frcs_pitstops_task = PythonOperator(
+    import_pitstops_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_pitstops",
+        task_id="import_pitstops",
         python_callable=import_frcs_pitstops,
     )
-    load_stage_frcs_draftkings_csvs_task = PythonOperator(
+    load_stage_draftkings_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_draftkings_csvs",
+        task_id="load_stage_draftkings_csvs",
         python_callable=load_stage_frcs_draftkings_csvs,
     )
-    import_frcs_draftkings_task = PythonOperator(
+    import_draftkings_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_draftkings",
+        task_id="import_draftkings",
         python_callable=import_frcs_draftkings,
     )
-    load_stage_frcs_fanduel_csvs_task = PythonOperator(
+    load_stage_fanduel_csvs_task = PythonOperator(
         dag=dag,
-        task_id="load_stage_frcs_fanduel_csvs",
+        task_id="load_stage_fanduel_csvs",
         python_callable=load_stage_frcs_fanduel_csvs,
     )
-    import_frcs_fanduel_task = PythonOperator(
+    import_fanduel_task = PythonOperator(
         dag=dag,
-        task_id="import_frcs_fanduel",
+        task_id="import_fanduel",
         python_callable=import_frcs_fanduel,
     )
 
@@ -818,45 +941,46 @@ def _build_cup_importer_task_graph(dag: DAG) -> None:
         python_callable=cleanup_importer_staging_and_temp_tables,
     )
 
+    wait_frcs_race_week_task >> load_stage_schedule_csv_task
+    wait_rr_race_week_task >> load_stage_schedule_csv_task
+
     (
-        load_stage_frcs_schedule_csv_task
-        >> import_frcs_schedule_task
-        >> load_stage_frcs_entrylist_csvs_task
-        >> import_frcs_entrylist_task
-        >> load_stage_frcs_practices_csvs_task
-        >> import_frcs_practices_task
-        >> load_stage_frcs_qualifyings_csvs_task
-        >> import_frcs_qualifyings_task
-        >> load_stage_frcs_lineup_csvs_task
-        >> import_frcs_lineup_task
-        >> load_stage_frcs_races_csvs_task
-        >> import_frcs_races_task
-        >> load_stage_frcs_penalties_csvs_task
-        >> import_frcs_penalties_task
-        >> load_stage_frcs_pitstops_csvs_task
-        >> import_frcs_pitstops_task
-        >> load_stage_frcs_draftkings_csvs_task
-        >> import_frcs_draftkings_task
-        >> load_stage_frcs_fanduel_csvs_task
-        >> import_frcs_fanduel_task
-        >> load_stage_racing_reference_schedule_csv_task
+        load_stage_schedule_csv_task
+        >> import_schedule_task
+        >> load_stage_entrylist_csvs_task
+        >> import_entrylist_task
+        >> load_stage_practices_csvs_task
+        >> import_practices_task
+        >> load_stage_qualifyings_csvs_task
+        >> import_qualifyings_task
+        >> load_stage_lineup_csvs_task
+        >> import_lineup_task
+        >> load_stage_races_csvs_task
+        >> import_races_task
+        >> load_stage_penalties_csvs_task
+        >> import_penalties_task
+        >> load_stage_pitstops_csvs_task
+        >> import_pitstops_task
+        >> load_stage_draftkings_csvs_task
+        >> import_draftkings_task
+        >> load_stage_fanduel_csvs_task
+        >> import_fanduel_task
         >> cleanup_importer_staging_task
     )
 
 
-_register_cup_importer_dag(
+dag = _register_cup_importer_dag(
     dag_id=DAG_ID,
-    schedule=[
-        NASCAR_RACING_REFERENCE_CUP_RACE_WEEK_ASSET,
-        NASCAR_FRCS_CUP_RACE_WEEK_ASSET,
-    ],
+    schedule=CUP_SCRAPER_PROD_HOURLY_CRON,
     start_date=datetime(2025, 7, 11),
     end_date=None,
     catchup=False,
     doc_md=__doc__ or "",
+    wait_frcs_race_week_dag_id="nascar.cup.scraper.frcs.race_week",
+    wait_rr_race_week_dag_id="nascar.cup.scraper.racing_reference.race_week",
 )
 
-_register_cup_importer_dag(
+backfill_dag = _register_cup_importer_dag(
     dag_id=f"backfill.{DAG_ID}",
     schedule=BACKFILL_YEARLY_SCHEDULE,
     start_date=BACKFILL_START_DATE,
@@ -864,9 +988,10 @@ _register_cup_importer_dag(
     catchup=True,
     doc_md=(
         "Yearly backfill of the Cup importer (2010–2025), same cron as other "
-        "``backfill.*`` Cup DAGs (Dec 31). Run after backfill schedule and "
-        "race-week DAGs have populated CSVs for that ``data_interval_start.year``, "
-        "or clear failed tasks and re-run. Uses the same load/import tasks as "
-        "``nascar.cup.scraper.importer``."
+        "``backfill.*`` Cup DAGs (Dec 31). ``wait_*`` tasks require both backfill "
+        "race-week DAGs' ``sync_race_results`` for the same logical date. Uses the "
+        "same load/import tasks as ``nascar.cup.scraper.importer``."
     ),
+    wait_frcs_race_week_dag_id="backfill.nascar.cup.scraper.frcs.race_week",
+    wait_rr_race_week_dag_id="backfill.nascar.cup.scraper.racing_reference.race_week",
 )

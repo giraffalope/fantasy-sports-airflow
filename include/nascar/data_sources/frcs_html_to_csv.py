@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from html import unescape
-from typing import Literal
+from typing import Any, Literal
 
 from bs4 import BeautifulSoup, Tag
 
@@ -18,6 +18,28 @@ _FRCS_SCHEDULE_TRACK_COL = "track"
 _FRCS_SCHEDULE_DATE_COL = "date"
 # Tabulator column for the schedule table header shown as ``#`` (race index in season).
 _FRCS_SCHEDULE_NUMBER_COL = "number"
+# ``td`` cells may be ``class="col"`` or ``class="col odd"`` (Racing Reference / saved FRCS HTML).
+_FRCS_TD_COL_CLASS = re.compile(r"(^|\s)col(\s|$)")
+
+# Try-order for embedded qualifying JSON (naming varies by era / bundle).
+_FRCS_QUALIFYING_JSON_CONST_NAMES: tuple[str, ...] = (
+    "roundTwo",
+    "roundOne",
+    "qualifyingData",
+    "round_two",
+    "round_one",
+    "qualifying_data",
+    "round2",
+    "round1",
+)
+
+
+def _frcs_class_has(class_attr: str | list[str] | None, token: str) -> bool:
+    if not class_attr:
+        return False
+    if isinstance(class_attr, str):
+        return token in class_attr.split()
+    return token in class_attr
 
 
 def _frcs_schedule_cell_sort_or_text(td: Tag) -> str:
@@ -60,28 +82,268 @@ def _parse_js_const_json_array(html: str, const_name: str) -> list[dict] | None:
     return None
 
 
+def _frcs_tabulator_qual_rows_from_root(
+    root: Tag, *, require_time_or_rank: bool = False
+) -> list[dict[str, str]]:
+    rows_out: list[dict[str, str]] = []
+    for row in root.select("div.tabulator-row"):
+        classes = row.get("class") or []
+        if "tabulator-calcs-holder" in classes:
+            continue
+        row_dict: dict[str, str] = {}
+        for cell in row.select("div.tabulator-cell"):
+            field = cell.get("tabulator-field") or cell.get("data-field")
+            if not field:
+                continue
+            row_dict[str(field)] = _frcs_cell_text(cell)
+        has_driverish = any(
+            row_dict.get(k)
+            for k in (
+                "lap_rank",
+                "full_name",
+                "rank",
+                "pos",
+                "position",
+                "driver_name",
+                "driver",
+                "name",
+            )
+        )
+        if not has_driverish:
+            continue
+        if require_time_or_rank:
+            has_time_or_speed = any(
+                row_dict.get(k) for k in ("lap_time", "time", "lap_speed", "speed", "best_lap", "best_speed")
+            )
+            has_rankish = any(row_dict.get(k) for k in ("lap_rank", "rank", "pos", "position"))
+            if not (has_time_or_speed or has_rankish):
+                continue
+        rows_out.append(row_dict)
+    return rows_out
+
+
 def _frcs_qualifying_rows_from_tabulator_div(soup: BeautifulSoup) -> list[dict[str, str]] | None:
     """Fallback when embedded ``roundOne``/``roundTwo`` JSON is missing (e.g. saved DOM)."""
     for div_id in ("roundTwoTable", "roundOneTable"):
         root = soup.find(id=div_id)
         if root is None:
             continue
-        rows_out: list[dict[str, str]] = []
-        for row in root.select("div.tabulator-row"):
-            classes = row.get("class") or []
-            if "tabulator-calcs-holder" in classes:
-                continue
-            row_dict: dict[str, str] = {}
-            for cell in row.select("div.tabulator-cell"):
-                field = cell.get("tabulator-field") or cell.get("data-field")
-                if not field:
-                    continue
-                row_dict[str(field)] = _frcs_cell_text(cell)
-            if row_dict.get("lap_rank") or row_dict.get("full_name"):
-                rows_out.append(row_dict)
+        rows_out = _frcs_tabulator_qual_rows_from_root(root)
         if rows_out:
             return rows_out
     return None
+
+
+def _frcs_qualifying_rows_from_generic_tabulator(soup: BeautifulSoup) -> list[dict[str, str]] | None:
+    """Scan any ``div.tabulator`` with qualifying-like cells (ids other than round one/two tables)."""
+    best: list[dict[str, str]] | None = None
+    best_n = 0
+    for root in soup.find_all("div", class_=lambda c: _frcs_class_has(c, "tabulator")):
+        if not root.select_one("div.tabulator-row"):
+            continue
+        rid = root.get("id")
+        if rid in ("roundTwoTable", "roundOneTable"):
+            continue
+        rows_out = _frcs_tabulator_qual_rows_from_root(root, require_time_or_rank=True)
+        if len(rows_out) > best_n:
+            best_n = len(rows_out)
+            best = rows_out
+    return best if best_n else None
+
+
+def _frcs_qualifying_row_to_tuple(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    """Map FRCS / RR-style qualifying row keys onto the six CSV columns."""
+
+    def first(*keys: str) -> str:
+        for k in keys:
+            v = row.get(k)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        return ""
+
+    rank = first("lap_rank", "rank", "pos", "position", "rk", "qual_rank")
+    driver_raw = first("full_name", "driver_name", "driver", "name")
+    driver = _strip_html(driver_raw) if driver_raw else driver_raw
+    num = first("car_no", "number", "car_number", "no")
+    make = first("make", "manufacturer", "manuf")
+    lt = first("lap_time", "time", "best_lap")
+    ls = first("lap_speed", "speed", "best_speed")
+    return (rank, driver, num, make, lt, ls)
+
+
+def _frcs_qual_dict_from_col_td_sequence(cols: list[Tag]) -> dict[str, str] | None:
+    """Map a 5–8 column RR-style qualifying row (``td`` list) to internal keys."""
+    if len(cols) < 5 or len(cols) > 14:
+        return None
+    rank = cols[0].get_text(strip=True)
+    if not rank:
+        return None
+    driver_name = ""
+    if len(cols) > 1:
+        a1 = cols[1].find("a")
+        driver_name = a1.get_text(strip=True) if a1 is not None else cols[1].get_text(strip=True)
+    if not driver_name.strip():
+        return None
+    number = cols[2].get_text(strip=True) if len(cols) > 2 else ""
+    manufacturer = cols[3].get_text(strip=True) if len(cols) > 3 else ""
+    lap_time = cols[4].get_text(strip=True) if len(cols) > 4 else ""
+    lap_speed = cols[5].get_text(strip=True) if len(cols) > 5 else ""
+    return {
+        "lap_rank": rank,
+        "full_name": driver_name,
+        "car_no": number,
+        "make": manufacturer,
+        "lap_time": lap_time,
+        "lap_speed": lap_speed,
+    }
+
+
+def _frcs_qual_result_tbl_data_rows(table: Tag) -> list[dict[str, str]]:
+    rows_out: list[dict[str, str]] = []
+    for tr in table.find_all("tr", class_=["odd", "even"]):
+        cols = tr.find_all("td", class_=_FRCS_TD_COL_CLASS)
+        if not cols:
+            continue
+        rowd = _frcs_qual_dict_from_col_td_sequence(cols)
+        if rowd:
+            rows_out.append(rowd)
+    return rows_out
+
+
+def _frcs_qualifying_rows_from_rr_like_tables(soup: BeautifulSoup) -> list[dict[str, str]] | None:
+    """Odd/even rows with ``col`` ``td`` cells but no ``qualResultTbl`` class (legacy FRCS saves)."""
+    best: list[dict[str, str]] | None = None
+    best_n = 0
+    for table in soup.find_all("table"):
+        if _frcs_class_has(table.get("class"), "qualResultTbl"):
+            continue
+        rows_out: list[dict[str, str]] = []
+        for tr in table.find_all("tr"):
+            if tr.find("th"):
+                continue
+            cols = tr.find_all("td", class_=_FRCS_TD_COL_CLASS)
+            if len(cols) < 5:
+                continue
+            cl = tr.get("class") or []
+            if isinstance(cl, str):
+                cl = cl.split()
+            is_oe = "odd" in cl or "even" in cl
+            rowd = _frcs_qual_dict_from_col_td_sequence(cols)
+            if rowd is None:
+                continue
+            if is_oe or cols[1].find("a") is not None:
+                rows_out.append(rowd)
+        if len(rows_out) > best_n:
+            best_n = len(rows_out)
+            best = rows_out
+    return best if best_n >= 1 else None
+
+
+def _frcs_qualifying_rows_from_thead_table(soup: BeautifulSoup) -> list[dict[str, str]] | None:
+    """Bootstrap / static pages: ``thead`` with Driver + Time or Speed columns."""
+    best: list[dict[str, str]] | None = None
+    best_n = 0
+    for table in soup.find_all("table"):
+        thead = table.find("thead")
+        if thead is None:
+            continue
+        hr = thead.find("tr")
+        if hr is None:
+            continue
+        ths = hr.find_all("th")
+        if len(ths) < 4:
+            continue
+        labels = [re.sub(r"\s+", " ", th.get_text(strip=True)).lower() for th in ths]
+
+        def col_idx(*needles: str) -> int | None:
+            for i, lab in enumerate(labels):
+                for n in needles:
+                    if n in lab:
+                        return i
+            return None
+
+        i_drv = col_idx("driver", "name")
+        if i_drv is None:
+            continue
+        i_time = col_idx("time", "sec", "lap")
+        i_spd = col_idx("speed", "mph")
+        if i_time is None and i_spd is None:
+            continue
+        i_rk = col_idx("pos", "rk", "qual")
+        i_no: int | None = None
+        for i, lab in enumerate(labels):
+            s = lab.strip()
+            if s in {"#", "no.", "no", "car #", "car no", "number"}:
+                i_no = i
+                break
+        i_mk = col_idx("car", "mfr", "make", "manuf")
+
+        idxs = [i_drv] + [x for x in (i_time, i_spd, i_rk, i_no, i_mk) if x is not None]
+        need_max = max(idxs)
+        tbody = table.find("tbody") or table
+        rows_out: list[dict[str, str]] = []
+        for tr in tbody.find_all("tr"):
+            if tr.find("th"):
+                continue
+            tds = tr.find_all("td")
+            if len(tds) <= need_max:
+                continue
+
+            def cell(i: int | None) -> str:
+                if i is None or i >= len(tds):
+                    return ""
+                return tds[i].get_text(strip=True)
+
+            rank = cell(i_rk) if i_rk is not None else ""
+            dc = tds[i_drv]
+            a = dc.find("a")
+            driver_name = a.get_text(strip=True) if a else dc.get_text(strip=True)
+            if not driver_name.strip():
+                continue
+            num = cell(i_no) if i_no is not None else ""
+            make = cell(i_mk) if i_mk is not None else ""
+            lt = cell(i_time) if i_time is not None else ""
+            ls = cell(i_spd) if i_spd is not None else ""
+            rows_out.append(
+                {
+                    "lap_rank": rank,
+                    "full_name": driver_name,
+                    "car_no": num,
+                    "make": make,
+                    "lap_time": lt,
+                    "lap_speed": ls,
+                }
+            )
+        if len(rows_out) > best_n:
+            best_n = len(rows_out)
+            best = rows_out
+    return best if best_n >= 1 else None
+
+
+def _frcs_qualifying_rows_from_qual_result_tbl(soup: BeautifulSoup) -> list[dict[str, str]] | None:
+    """Legacy ``table.qualResultTbl`` layout (Racing Reference; sometimes saved as FRCS ``qualifying.html``)."""
+    tables = soup.find_all("table", class_=lambda c: _frcs_class_has(c, "qualResultTbl"))
+    if not tables:
+        return None
+    for strict in (True, False):
+        for table in tables:
+            newhead = table.find("td", class_=lambda c: _frcs_class_has(c, "newhead"))
+            h = newhead.get_text().strip().lower() if newhead else ""
+            if "qualifying" not in h:
+                continue
+            if strict and "results" not in h:
+                continue
+            rows = _frcs_qual_result_tbl_data_rows(table)
+            if rows:
+                return rows
+    best: list[dict[str, str]] | None = None
+    best_n = 0
+    for table in tables:
+        rows = _frcs_qual_result_tbl_data_rows(table)
+        if len(rows) > best_n:
+            best_n = len(rows)
+            best = rows
+    return best if best_n else None
 
 
 def _frcs_table_column_labels(table: Tag) -> list[str]:
@@ -758,32 +1020,59 @@ class FrcsHtmlToCsv:
             return
         with open(path, encoding="utf-8") as f:
             html = f.read()
-        r2 = _parse_js_const_json_array(html, "roundTwo")
-        r1 = _parse_js_const_json_array(html, "roundOne")
-        data = r2 if r2 else r1
+        data: list[Any] | None = None
+        for const_name in _FRCS_QUALIFYING_JSON_CONST_NAMES:
+            arr = _parse_js_const_json_array(html, const_name)
+            if arr:
+                data = arr
+                break
+        soup: BeautifulSoup | None = None
         if not data:
             soup = BeautifulSoup(html, "html.parser")
             dom_rows = _frcs_qualifying_rows_from_tabulator_div(soup)
             if dom_rows:
                 data = dom_rows
         if not data:
-            logging.warning("FRCS qualifying: no roundOne/roundTwo JSON or tabulator rows in %s", path)
+            if soup is None:
+                soup = BeautifulSoup(html, "html.parser")
+            gen_rows = _frcs_qualifying_rows_from_generic_tabulator(soup)
+            if gen_rows:
+                data = gen_rows
+        if not data:
+            if soup is None:
+                soup = BeautifulSoup(html, "html.parser")
+            tbl_rows = _frcs_qualifying_rows_from_qual_result_tbl(soup)
+            if tbl_rows:
+                data = tbl_rows
+        if not data:
+            if soup is None:
+                soup = BeautifulSoup(html, "html.parser")
+            rr_like = _frcs_qualifying_rows_from_rr_like_tables(soup)
+            if rr_like:
+                data = rr_like
+        if not data:
+            if soup is None:
+                soup = BeautifulSoup(html, "html.parser")
+            thead_rows = _frcs_qualifying_rows_from_thead_table(soup)
+            if thead_rows:
+                data = thead_rows
         headers = ["rank", "driver_name", "number", "manufacturer", "lap_time", "lap_speed"]
         csv_list: list = []
         if data:
             for row in data:
-                csv_list.append(
-                    (
-                        str(row.get("lap_rank", "")).strip(),
-                        str(row.get("full_name", "")).strip(),
-                        str(row.get("car_no", "")).strip(),
-                        str(row.get("make", "")).strip(),
-                        str(row.get("lap_time", "")).strip(),
-                        str(row.get("lap_speed", "")).strip(),
-                    )
-                )
-        _sort_csv_rows_by_column_numeric(csv_list, headers, "rank", reverse=False)
+                if isinstance(row, dict):
+                    csv_list.append(_frcs_qualifying_row_to_tuple(row))
         csv_file_path = path.replace(".html", ".csv")
+        if not csv_list:
+            logging.warning(
+                "FRCS qualifying: no extractable qualifying rows in %s; trying Racing Reference parser",
+                path,
+            )
+            from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
+
+            RacingReferenceHtmlToCsv.convert_qualifying(path)
+            return
+        _sort_csv_rows_by_column_numeric(csv_list, headers, "rank", reverse=False)
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, csv_list, headers)
 

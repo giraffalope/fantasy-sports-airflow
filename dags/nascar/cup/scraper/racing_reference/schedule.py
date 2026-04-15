@@ -4,20 +4,9 @@ Hourly Racing Reference Cup schedule scrape (HTML → CSV).
 Uses Racing Reference task helpers in ``include.nascar.data_sources.racing_reference``
 (same ``storage_path_series_year`` layout as the Cup pipeline).
 
-Downstream DAGs should depend on the emitted **Asset** so they run after each
-successful hourly conversion::
-
-    from airflow.sdk import DAG
-    from nascar.cup.scraper.racing_reference.schedule import (
-        NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET,
-    )
-
-    with DAG(
-        dag_id=\"my_downstream_dag\",
-        schedule=[NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET],
-        ...
-    ):
-        ...
+The Cup Racing Reference race-week DAG uses the same hourly cron plus an
+``ExternalTaskSensor`` on ``convert_year_schedule_html_to_csv`` here (see
+``nascar.cup.scraper.racing_reference.race_week``). ``outlets`` remain for optional lineage.
 """
 
 from __future__ import annotations
@@ -25,12 +14,12 @@ from __future__ import annotations
 from datetime import datetime
 
 from airflow.sdk import Asset
-
 from nascar.cup.scraper.backfill_assets import (
     BACKFILL_END_DATE,
     BACKFILL_RACING_REFERENCE_CUP_SCHEDULE_ASSET,
     BACKFILL_START_DATE,
     BACKFILL_YEARLY_SCHEDULE,
+    CUP_SCRAPER_PROD_HOURLY_CRON,
 )
 from nascar.cup.scraper.dag_factories import register_racing_reference_schedule_dag
 
@@ -48,9 +37,9 @@ _BACKFILL_DOC = (
     "**Source:** Racing Reference Cup schedule HTML → CSV."
 )
 
-register_racing_reference_schedule_dag(
+dag = register_racing_reference_schedule_dag(
     dag_id=DAG_ID,
-    schedule="0 * * * *",
+    schedule=CUP_SCRAPER_PROD_HOURLY_CRON,
     start_date=datetime(2025, 7, 11),
     end_date=None,
     catchup=False,
@@ -58,7 +47,7 @@ register_racing_reference_schedule_dag(
     doc_md=__doc__,
 )
 
-register_racing_reference_schedule_dag(
+backfill_dag = register_racing_reference_schedule_dag(
     dag_id=f"backfill.{DAG_ID}",
     schedule=BACKFILL_YEARLY_SCHEDULE,
     start_date=BACKFILL_START_DATE,

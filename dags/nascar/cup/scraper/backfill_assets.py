@@ -15,6 +15,9 @@ BACKFILL_START_DATE = datetime(2010, 12, 31)
 BACKFILL_END_DATE = datetime(2025, 12, 31)
 BACKFILL_YEARLY_SCHEDULE = "0 0 31 12 *"
 
+# Prod Cup scraper DAGs that must align on logical_date (hourly tick, top of hour UTC).
+CUP_SCRAPER_PROD_HOURLY_CRON = "0 * * * *"
+
 BACKFILL_FRCS_CUP_SCHEDULE_ASSET = Asset(
     uri="nascar://backfill/frcs/cup/schedule.csv",
     name="backfill.nascar.cup.scraper.frcs.schedule",

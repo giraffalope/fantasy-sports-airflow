@@ -23,6 +23,43 @@ CREATE TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }}_{{ table_suffix
 
 ---
 
+{# FRCS CSV: 16 value columns. Racing Reference: 8 (no multi-lap averages / 10-lap window). #}
+{% if practice_csv_source == 'racing_reference' %}
+LOAD DATA LOCAL INFILE '{{ practice_csv_file_path }}'
+INTO TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }}_{{ table_suffix }}
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 LINES
+(
+    @rank,
+    @driver_name,
+    @number,
+    @manufacturer,
+    @time,
+    @speed,
+    @num_laps,
+    @best_lap
+)
+SET
+    rank = NULLIF(TRIM(@rank), ''),
+    driver_name = NULLIF(TRIM(@driver_name), ''),
+    number = NULLIF(TRIM(@number), ''),
+    manufacturer = NULLIF(TRIM(@manufacturer), ''),
+    time = NULLIF(TRIM(@time), ''),
+    speed = NULLIF(TRIM(@speed), ''),
+    num_laps = NULLIF(TRIM(@num_laps), ''),
+    best_lap = NULLIF(TRIM(@best_lap), ''),
+    `5_lap_average_time` = NULL,
+    `10_lap_average_time` = NULL,
+    `20_lap_average_time` = NULL,
+    `25_lap_average_time` = NULL,
+    `30_lap_average_time` = NULL,
+    `10_lap_average_speed` = NULL,
+    `10_lap_start` = NULL,
+    `10_lap_end` = NULL
+;
+{% else %}
 LOAD DATA LOCAL INFILE '{{ practice_csv_file_path }}'
 INTO TABLE nascar.stg_frcs_practice_{{ week_id }}_{{ number }}_{{ table_suffix }}
 FIELDS TERMINATED BY ','
@@ -65,3 +102,4 @@ SET
     `10_lap_start` = NULLIF(TRIM(@ten_lap_start), ''),
     `10_lap_end` = NULLIF(TRIM(@ten_lap_end), '')
 ;
+{% endif %}

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import nascar.cup.scraper.racing_reference.race_week as race_week_dag
-import nascar.cup.scraper.racing_reference.schedule as schedule_dag
+from nascar.cup.scraper.backfill_assets import (
+    BACKFILL_YEARLY_SCHEDULE,
+    CUP_SCRAPER_PROD_HOURLY_CRON,
+)
 
 from include.nascar.data_sources.racing_reference_race_week import (
     cup_series_sync_caution_flags,
@@ -22,13 +25,30 @@ def test_dag_metadata() -> None:
     assert dag.dag_id == "nascar.cup.scraper.racing_reference.race_week"
     assert dag.catchup is False
     assert dag.max_active_runs == 1
-    assert schedule_dag.NASCAR_RACING_REFERENCE_CUP_SCHEDULE_ASSET in dag.schedule
+    assert dag.schedule == CUP_SCRAPER_PROD_HOURLY_CRON
+
+
+def test_backfill_dag_metadata() -> None:
+    dag = race_week_dag.backfill_dag
+    assert dag.dag_id == "backfill.nascar.cup.scraper.racing_reference.race_week"
+    assert dag.catchup is True
+    assert dag.schedule == BACKFILL_YEARLY_SCHEDULE
+
+
+def test_wait_upstream_schedule_sensor_targets_schedule_dag() -> None:
+    prod = race_week_dag.dag.get_task("wait_upstream_schedule_convert")
+    assert prod.external_dag_id == "nascar.cup.scraper.racing_reference.schedule"
+    assert prod.external_task_id == "convert_year_schedule_html_to_csv"
+    backfill = race_week_dag.backfill_dag.get_task("wait_upstream_schedule_convert")
+    assert backfill.external_dag_id == "backfill.nascar.cup.scraper.racing_reference.schedule"
+    assert backfill.external_task_id == "convert_year_schedule_html_to_csv"
 
 
 def test_task_ids_and_count() -> None:
     dag = race_week_dag.dag
     assert set(dag.task_dict.keys()) == {
         "wait_random_time",
+        "wait_upstream_schedule_convert",
         "sync_weeks",
         "sync_entrylists",
         "sync_practices",
@@ -38,13 +58,14 @@ def test_task_ids_and_count() -> None:
         "sync_race_results",
         "sync_penalties_and_lap_leaders",
     }
-    assert len(dag.tasks) == 9
+    assert len(dag.tasks) == 10
 
 
 def test_linear_dependencies() -> None:
     dag = race_week_dag.dag
     order = [
         "wait_random_time",
+        "wait_upstream_schedule_convert",
         "sync_weeks",
         "sync_entrylists",
         "sync_practices",

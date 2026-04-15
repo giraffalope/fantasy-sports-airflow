@@ -3,10 +3,9 @@ Cup race-week HTML sync from ``schedule.csv`` ([FRCS.pro](https://frcs.pro/)).
 
 Each callable matches one DAG task: download missing artifacts, then convert where applicable.
 
-Throttling: each task sleeps 0–5s at start (same spread as the DAG ``WaitOperator``,
-but evaluated at run time), and successive weeks inside one task pause 2–5s so
-multi-week runs do not rapid-fire FRCS. Downloads also use 2–5s jitter before each
-HTTP fetch (see ``include.nascar.data_sources.frcs``).
+Throttling: the Cup race-week DAG uses a ``WaitOperator`` for a coarse random delay before
+these tasks run. Each HTTP fetch uses 2–5s jitter immediately before download (see
+``include.nascar.data_sources.frcs`` ``_sleep_download_jitter``).
 
 Schedule rows are filtered by ``week_date`` vs. the DAG run anchor (same rules as Racing
 Reference in ``racing_reference_race_week``). Storage paths use ``event_number`` (row order
@@ -15,7 +14,8 @@ in ``schedule.csv``), not the official ``week_number`` from the site ``#`` colum
 **Complete-week skip:** if ``<week_dir>/loop-data.csv`` exists **and has at least one data row**
 (not header-only), every task skips that event week. ``loop-data.csv`` is produced by the
 final task in the race-week DAG (``sync_race_results``), so it indicates a full pass already
-finished for that week folder.
+finished for that week folder. DAGs whose ``dag_id`` starts with ``backfill.`` bypass this skip
+so existing HTML can be re-converted to CSV.
 """
 
 from __future__ import annotations
@@ -23,8 +23,6 @@ from __future__ import annotations
 import glob
 import logging
 import os
-import random
-import time
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
@@ -44,6 +42,7 @@ from include.nascar.data_sources.frcs import (
     download_qualifying_html_if_missing,
     download_race_results_html_if_missing,
 )
+from include.nascar.data_sources.race_week_context import is_backfill_race_week_dag
 from include.nascar.data_sources.racing_reference_race_week import (
     _cup_series_schedule_year_from_context,
     parse_schedule_week_date,
@@ -101,8 +100,14 @@ def _frcs_week_loop_data_csv_has_data_rows(week_dir: str) -> bool:
 
 
 def _frcs_week_skip_if_loop_csv_present(
-    task: str, year: int, event_number: int, week_dir: str
+    task: str,
+    year: int,
+    event_number: int,
+    week_dir: str,
+    context: dict[str, Any] | None = None,
 ) -> bool:
+    if context is not None and is_backfill_race_week_dag(context):
+        return False
     if not _frcs_week_loop_data_csv_has_data_rows(week_dir):
         return False
     _frcs_week_line(task, year, event_number, "skip (loop-data.csv has data rows)")
@@ -127,27 +132,6 @@ def _frcs_remove_csv_if_no_data_rows(
         return
     File.silent_remove(csv_path)
     _frcs_week_line(task, year, event_number, f"removed empty CSV {csv_path}")
-
-
-def _sleep_frcs_task_start_jitter() -> None:
-    """Match ``WaitOperator(seconds=random.randint(0, 5))`` at task run time."""
-    time.sleep(random.randint(0, 5))
-
-
-def _iter_week_numbers_with_url_throttled(
-    source: FrcsSource,
-    series_name: str,
-    year: int,
-    *,
-    run_anchor: datetime | None = None,
-) -> Iterator[tuple[int, str]]:
-    """Yield schedule rows with a random pause between weeks (2–5s)."""
-    first = True
-    for item in iter_week_numbers_with_url(source, series_name, year, run_anchor=run_anchor):
-        if not first:
-            time.sleep(random.randint(2, 5))
-        first = False
-        yield item
 
 
 def _schedule_csv_path(source: FrcsSource, series_name: str, year: int) -> str:
@@ -187,18 +171,17 @@ def iter_week_numbers_with_url(
 
 
 def cup_series_sync_weeks(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     task = cup_series_sync_weeks.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, week_url in _iter_week_numbers_with_url_throttled(
+    for event_number, week_url in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         _frcs_week_line(task, year, event_number, "ensure race-results.html")
@@ -209,7 +192,6 @@ def cup_series_sync_weeks(**context: Any) -> None:
 
 
 def cup_series_sync_entrylists(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -217,11 +199,11 @@ def cup_series_sync_entrylists(**context: Any) -> None:
     task = cup_series_sync_entrylists.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -244,7 +226,6 @@ def cup_series_sync_entrylists(**context: Any) -> None:
 
 
 def cup_series_sync_practices(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -252,11 +233,11 @@ def cup_series_sync_practices(**context: Any) -> None:
     task = cup_series_sync_practices.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -283,7 +264,6 @@ def cup_series_sync_practices(**context: Any) -> None:
 
 
 def cup_series_sync_qualifyings(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -291,11 +271,11 @@ def cup_series_sync_qualifyings(**context: Any) -> None:
     task = cup_series_sync_qualifyings.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -314,7 +294,6 @@ def cup_series_sync_qualifyings(**context: Any) -> None:
 
 
 def cup_series_sync_lineups(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -322,11 +301,11 @@ def cup_series_sync_lineups(**context: Any) -> None:
     task = cup_series_sync_lineups.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -345,7 +324,6 @@ def cup_series_sync_lineups(**context: Any) -> None:
 
 
 def cup_series_sync_pit_stops(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -353,11 +331,11 @@ def cup_series_sync_pit_stops(**context: Any) -> None:
     task = cup_series_sync_pit_stops.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -380,7 +358,6 @@ def cup_series_sync_pit_stops(**context: Any) -> None:
 
 
 def cup_series_sync_draftkings(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -388,11 +365,11 @@ def cup_series_sync_draftkings(**context: Any) -> None:
     task = cup_series_sync_draftkings.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -411,7 +388,6 @@ def cup_series_sync_draftkings(**context: Any) -> None:
 
 
 def cup_series_sync_fanduel(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -419,11 +395,11 @@ def cup_series_sync_fanduel(**context: Any) -> None:
     task = cup_series_sync_fanduel.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -442,18 +418,17 @@ def cup_series_sync_fanduel(**context: Any) -> None:
 
 
 def cup_series_sync_pit_stall_selections(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
     task = cup_series_sync_pit_stall_selections.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -476,7 +451,6 @@ def cup_series_sync_pit_stall_selections(**context: Any) -> None:
 
 
 def cup_series_sync_race_results(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -484,11 +458,11 @@ def cup_series_sync_race_results(**context: Any) -> None:
     task = cup_series_sync_race_results.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
@@ -520,7 +494,6 @@ def cup_series_sync_race_results(**context: Any) -> None:
 
 
 def cup_series_sync_penalties(**context: Any) -> None:
-    _sleep_frcs_task_start_jitter()
     src = _resolve_frcs_source(None)
     year = _cup_series_schedule_year_from_context(context)
     run_anchor = race_week_run_anchor_from_context(context)
@@ -528,11 +501,11 @@ def cup_series_sync_penalties(**context: Any) -> None:
     task = cup_series_sync_penalties.__name__
     _frcs_task_begin(task, year, run_anchor)
     weeks = 0
-    for event_number, _ in _iter_week_numbers_with_url_throttled(
+    for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
-        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base):
+        if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")

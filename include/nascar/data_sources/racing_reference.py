@@ -171,6 +171,7 @@ def download_year_schedule_html(
     dest = os.path.join(base, "schedule.html")
     logging.info("Racing Reference: downloading schedule %s -> %s", url, dest)
     scraper = Scraper(base)
+    _sleep_download_jitter()
     scraper.download(
         url=url,
         filename="schedule.html",

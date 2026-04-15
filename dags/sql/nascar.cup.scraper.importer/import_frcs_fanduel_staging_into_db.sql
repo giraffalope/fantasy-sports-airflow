@@ -31,7 +31,7 @@ SELECT
     r.id AS race_id,
     CAST(stg.rank AS UNSIGNED) AS dfs_driver_id,
     cd.id AS car_driver_id,
-    CAST(stg.salary AS UNSIGNED) AS salary
+    CAST(TRIM(stg.salary) AS UNSIGNED) AS salary
 FROM nascar.stg_frcs_fanduel_{{ week_id }}_{{ table_suffix }} stg
 JOIN nascar.races r
     ON r.week_id = {{ week_id }}
@@ -53,6 +53,6 @@ LEFT JOIN nascar.cars_drivers cd
     ON cd.car_id = c.id
     AND (cd.driver_id = dsd.driver_id OR dsd.driver_id IS NULL)
     AND cd.deleted_at IS NULL
-WHERE stg.salary IS NOT NULL
-    AND cd.id IS NOT NULL
+WHERE cd.id IS NOT NULL
+    AND CAST(TRIM(COALESCE(stg.salary, '')) AS UNSIGNED) > 0
 ;

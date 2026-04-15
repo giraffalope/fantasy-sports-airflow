@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import io
+import shutil
+from pathlib import Path
 
 import pytest
 from bs4 import BeautifulSoup
@@ -690,3 +692,206 @@ def test_frcs_convert_qualifying_tabulator_fallback(tmp_path) -> None:
     text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
     assert "Dom Driver" in text
     assert "14" in text
+
+
+def test_frcs_convert_qualifying_qualifying_data_const(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <script>
+          const qualifyingData = [
+            {"rank":"3","driver":"Pat Pilot","number":"7","manufacturer":"Toyota","time":"31.0","speed":"170"}
+          ];
+        </script>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    body = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "Pat Pilot" in body
+    assert "7" in body
+
+
+def test_frcs_convert_qualifying_tabulator_synonym_fields(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <div id="roundOneTable" class="tabulator">
+          <div class="tabulator-row">
+            <div class="tabulator-cell" tabulator-field="rank">5</div>
+            <div class="tabulator-cell" tabulator-field="driver">Syn Driver</div>
+            <div class="tabulator-cell" tabulator-field="number">99</div>
+            <div class="tabulator-cell" tabulator-field="manufacturer">Ford</div>
+            <div class="tabulator-cell" tabulator-field="time">30.0</div>
+            <div class="tabulator-cell" tabulator-field="speed">175</div>
+          </div>
+        </div>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "Syn Driver" in text
+    assert "99" in text
+
+
+def test_frcs_convert_qualifying_qual_result_tbl_fixture(tmp_path) -> None:
+    fixture = (
+        Path(__file__).resolve().parent.parent / "fixtures" / "frcs" / "qualifying_qualresult.html"
+    )
+    dest = tmp_path / "qualifying.html"
+    shutil.copy(fixture, dest)
+    FrcsHtmlToCsv.convert_qualifying(str(dest))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "Alex Bowman" in text
+    assert "Jane Driver" in text
+    assert "48" in text
+
+
+def test_frcs_convert_qualifying_compound_td_col_class(tmp_path) -> None:
+    """Saved pages may use ``class=\"col odd\"`` instead of plain ``col``."""
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <table class="resultsTbl">
+          <tr class="odd">
+            <td class="col odd">1</td>
+            <td class="col odd"><a>Jamie McMurray</a></td>
+            <td class="col odd">1</td>
+            <td class="col odd">Chevy</td>
+            <td class="col odd">50.1</td>
+            <td class="col odd">190</td>
+          </tr>
+          <tr class="even">
+            <td class="col even">2</td>
+            <td class="col even"><a>Other Driver</a></td>
+            <td class="col even">99</td>
+            <td class="col even">Ford</td>
+            <td class="col even">50.2</td>
+            <td class="col even">189</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "Jamie McMurray" in text
+    assert "Other Driver" in text
+
+
+def test_frcs_convert_qualifying_thead_table_fallback(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <table>
+          <thead><tr>
+            <th>POS</th><th>DRIVER</th><th>NO</th><th>TIME</th><th>MPH</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>1</td><td><a>Alpha</a></td><td>1</td><td>29.9</td><td>181</td></tr>
+            <tr><td>2</td><td><a>Beta</a></td><td>2</td><td>30.0</td><td>180</td></tr>
+          </tbody>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "Alpha" in text
+    assert "Beta" in text
+
+
+def test_frcs_convert_qualifying_snake_case_json_const(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <script>
+        const qualifying_data = [
+          {"lap_rank":1,"full_name":"Snake Case","car_no":"3","make":"Dodge","lap_time":"t","lap_speed":"s"}
+        ];
+        </script>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    assert "Snake Case" in (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+
+
+def test_frcs_convert_qualifying_qual_result_tbl_heading_qualifying_only(tmp_path) -> None:
+    """``qualResultTbl`` with ``qualifying`` but not ``results`` in the heading still parses."""
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <table class="qualResultTbl stats">
+          <tr><td class="newhead">Cup Series Qualifying</td></tr>
+          <tr class="odd">
+            <td class="col">1</td>
+            <td class="col"><a>Pat Pilot</a></td>
+            <td class="col">7</td>
+            <td class="col">Toyota</td>
+            <td class="col">31.0</td>
+            <td class="col">170</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "Pat Pilot" in text
+    assert "7" in text
+
+
+def test_frcs_convert_qualifying_generic_tabulator_div(tmp_path) -> None:
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <div id="qualGrid" class="tabulator tabulator-default">
+          <div class="tabulator-row">
+            <div class="tabulator-cell" tabulator-field="lap_rank">3</div>
+            <div class="tabulator-cell" tabulator-field="full_name">Grid Driver</div>
+            <div class="tabulator-cell" tabulator-field="car_no">22</div>
+            <div class="tabulator-cell" tabulator-field="make">Chevy</div>
+            <div class="tabulator-cell" tabulator-field="lap_time">29.5</div>
+            <div class="tabulator-cell" tabulator-field="lap_speed">180</div>
+          </div>
+        </div>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "Grid Driver" in text
+    assert "22" in text
+
+
+def test_frcs_convert_qualifying_rr_parser_fallback(tmp_path, monkeypatch) -> None:
+    """When FRCS DOM helpers are empty, ``convert_qualifying`` delegates to Racing Reference."""
+    import include.nascar.data_sources.frcs_html_to_csv as frcs_mod
+
+    monkeypatch.setattr(frcs_mod, "_frcs_qualifying_rows_from_tabulator_div", lambda s: None)
+    monkeypatch.setattr(frcs_mod, "_frcs_qualifying_rows_from_generic_tabulator", lambda s: None)
+    monkeypatch.setattr(frcs_mod, "_frcs_qualifying_rows_from_qual_result_tbl", lambda s: None)
+
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <table class="qualResultTbl">
+          <tr><td class="newhead">Qualifying results for this race:</td></tr>
+          <tr class="odd">
+            <td class="col">1</td>
+            <td class="col"><a>RR Fallback</a></td>
+            <td class="col">3</td>
+            <td class="col">Ford</td>
+            <td class="col">28.0</td>
+            <td class="col">190</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_qualifying(str(html))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "RR Fallback" in text
+    assert "3" in text

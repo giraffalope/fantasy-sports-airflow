@@ -126,6 +126,47 @@ def test_iter_practice_session_urls_empty_without_select(source: RacingReference
     assert source.iter_practice_session_urls(soup) == []
 
 
+def test_racing_reference_convert_qualifying_empty_html_no_nameerror(tmp_path) -> None:
+    """Regression: ``csv_list`` must exist when no ``qualResultTbl`` matches."""
+    from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
+
+    html = tmp_path / "qualifying.html"
+    html.write_text("<html><body><p>no table</p></body></html>", encoding="utf-8")
+    RacingReferenceHtmlToCsv.convert_qualifying(str(html))
+    assert not (tmp_path / "qualifying.csv").exists()
+
+
+def test_racing_reference_convert_qualifying_chasecol_driver_column(tmp_path) -> None:
+    """Playoff grids use ``td.chasecol`` for the driver; names must not be dropped."""
+    from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
+
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <html><body>
+        <table class="qualResultTbl">
+          <tr><td class="newhead" colspan="6">Qualifying Results</td></tr>
+          <tr class="odd">
+            <td align="CENTER" class="col">1</td>
+            <td class="chasecol"> &nbsp; <a href="/driver/Martin_Truex_Jr/">Martin Truex Jr</a></td>
+            <td align="CENTER" class="col">19</td>
+            <td align="CENTER" class="col">Toyota</td>
+            <td align="CENTER" class="col">32.256 &nbsp; </td>
+            <td align="CENTER" class="col">167.411 &nbsp; </td>
+          </tr>
+        </table>
+        </body></html>
+        """,
+        encoding="utf-8",
+    )
+    RacingReferenceHtmlToCsv.convert_qualifying(str(html))
+    csv_path = tmp_path / "qualifying.csv"
+    assert csv_path.is_file()
+    text = csv_path.read_text(encoding="utf-8")
+    assert "Martin Truex Jr" in text
+    assert "32.256" in text
+
+
 def test_racing_reference_converters_delegates_to_racing_reference_parser(
     tmp_path, source: RacingReferenceSource
 ) -> None:

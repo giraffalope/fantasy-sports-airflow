@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import nascar.cup.scraper.frcs.schedule as schedule_dag
+from nascar.cup.scraper.backfill_assets import (
+    BACKFILL_YEARLY_SCHEDULE,
+    CUP_SCRAPER_PROD_HOURLY_CRON,
+)
 
 from include.nascar.data_sources.frcs import (
     cup_series_convert_year_schedule_html_to_csv,
@@ -13,9 +17,16 @@ from include.nascar.data_sources.frcs import (
 def test_dag_metadata() -> None:
     dag = schedule_dag.dag
     assert dag.dag_id == "nascar.cup.scraper.frcs.schedule"
-    assert str(dag.schedule) == "0 * * * *"
+    assert str(dag.schedule) == CUP_SCRAPER_PROD_HOURLY_CRON
     assert dag.catchup is False
     assert dag.max_active_runs == 1
+
+
+def test_backfill_dag_metadata() -> None:
+    dag = schedule_dag.backfill_dag
+    assert dag.dag_id == "backfill.nascar.cup.scraper.frcs.schedule"
+    assert str(dag.schedule) == BACKFILL_YEARLY_SCHEDULE
+    assert dag.catchup is True
 
 
 def test_task_ids_and_count() -> None:

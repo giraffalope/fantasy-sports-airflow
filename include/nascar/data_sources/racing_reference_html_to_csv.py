@@ -16,6 +16,28 @@ from include.utils.file import File
 _RR_TD_COL_CLASS = re.compile(r"(^|\s)col(\s|$)")
 
 
+def _rr_td_col_or_chasecol(class_attr: str | list[str] | None) -> bool:
+    """Result-table data ``td``: ``col`` or ``chasecol`` (playoff / chase driver column)."""
+    return _rr_class_has(class_attr, "col") or _rr_class_has(class_attr, "chasecol")
+
+
+def _rr_class_has(class_attr: str | list[str] | None, token: str) -> bool:
+    if not class_attr:
+        return False
+    if isinstance(class_attr, str):
+        return token in class_attr.split()
+    return token in class_attr
+
+
+def _rr_find_entrylist_outer(soup: BeautifulSoup):
+    outer = soup.find("table", class_="eLTbl")
+    if outer is None:
+        outer = soup.select_one("table.eLTbl")
+    if outer is None:
+        outer = soup.find("table", class_=lambda c: _rr_class_has(c, "eLTbl"))
+    return outer
+
+
 def _sort_rr_rows_by_header_column(
     rows: list,
     headers: list[str],
@@ -384,14 +406,26 @@ class RacingReferenceHtmlToCsv:
     def convert_entrylist(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
-        tables = soup.find("table", {"class": "eLTbl"}).find_all("table", {"class": "tb"})
+        headers = ["number", "driver_name", "owner", "manufacturer", "crew_chief", "sponsor"]
+        outer = _rr_find_entrylist_outer(soup)
+        if outer is None:
+            logging.warning(
+                "Racing Reference: entry list missing table.eLTbl (skipping rows) %s",
+                html_file_path,
+            )
+            _write_rr_csv_or_remove(csv_file_path, [], headers)
+            return
+        tables = outer.find_all("table", class_="tb")
+        if not tables:
+            tables = outer.find_all("table", class_=lambda c: _rr_class_has(c, "tb"))
         tableIndex = None
         index = 0
         csv_list: list = []
-        headers = ["number", "driver_name", "owner", "manufacturer", "crew_chief", "sponsor"]
         for table in tables:
-            table_heading = table.find("td", {"class": "newhead"}).get_text().strip()
-            if table_heading == "Entry list for this race:":
+            nh = table.find("td", class_="newhead")
+            raw = nh.get_text().strip() if nh else ""
+            lower = raw.lower()
+            if raw == "Entry list for this race:" or "entry list" in lower:
                 tableIndex = index
                 break
             index += 1
@@ -456,7 +490,7 @@ class RacingReferenceHtmlToCsv:
                 table = tables[tableIndex]
                 rows = table.find_all("tr", class_=["odd", "even"])
                 for row in rows:
-                    cols = row.find_all("td", {"class": "col"})
+                    cols = row.find_all("td", class_=_rr_td_col_or_chasecol)
                     if not cols:
                         continue
                     # Cup practice table (``pracResultsTbl``), 9 data cells:
@@ -511,48 +545,74 @@ class RacingReferenceHtmlToCsv:
             return
         with open(path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
-        tables = soup.find_all("table", {"class": "qualResultTbl"})
-        tableIndex = None
-        index = 0
-        csv_list: list = []
+        tables = soup.find_all("table", class_=lambda c: _rr_class_has(c, "qualResultTbl"))
+        tableIndex: int | None = None
         headers = ["rank", "driver_name", "number", "manufacturer", "lap_time", "lap_speed"]
-        for table in tables:
-            table_heading = table.find("td", {"class": "newhead"}).get_text().strip().lower()
-            logging.debug(
-                "Racing Reference: qualifying table_heading=%r path=%s",
-                table_heading,
-                path,
-            )
-            if "qualifying" in table_heading and "results" in table_heading:
+        csv_list: list = []
+        for strict in (True, False):
+            index = 0
+            for table in tables:
+                newhead = table.find("td", class_=lambda c: _rr_class_has(c, "newhead"))
+                table_heading = newhead.get_text().strip().lower() if newhead else ""
+                logging.debug(
+                    "Racing Reference: qualifying table_heading=%r path=%s",
+                    table_heading,
+                    path,
+                )
+                if "qualifying" not in table_heading:
+                    index += 1
+                    continue
+                if strict and "results" not in table_heading:
+                    index += 1
+                    continue
                 tableIndex = index
                 break
-            index += 1
+            if tableIndex is not None:
+                break
+        if tableIndex is None and tables:
+            best_i: int | None = None
+            best_c = -1
+            for i, table in enumerate(tables):
+                c = sum(
+                    1
+                    for tr in table.find_all("tr", class_=["odd", "even"])
+                    if tr.find_all("td", class_=_rr_td_col_or_chasecol)
+                )
+                if c > best_c:
+                    best_c = c
+                    best_i = i
+            if best_c > 0 and best_i is not None:
+                tableIndex = best_i
         if tableIndex is not None:
             table = tables[tableIndex]
             rows = table.find_all("tr", class_=["odd", "even"])
             for row in rows:
-                cols = row.find_all("td", {"class": "col"})
-                if cols:
-                    rank = cols[0].get_text().strip()
+                cols = row.find_all("td", class_=_rr_td_col_or_chasecol)
+                if not cols:
+                    continue
+                rank = cols[0].get_text().strip()
+                if len(cols) > 1:
+                    c1 = cols[1]
+                    a1 = c1.find("a")
                     driver_name = (
-                        cols[1].find("a").get_text().strip()
-                        if cols[1].find("a") is not None
-                        else ""
+                        a1.get_text().strip() if a1 is not None else c1.get_text().strip()
                     )
-                    number = cols[2].get_text().strip()
-                    manufacturer = cols[3].get_text().strip()
-                    lap_time = cols[4].get_text().strip()
-                    lap_speed = cols[5].get_text().strip()
-                    csv_list.append(
-                        {
-                            "rank": rank,
-                            "driver_name": driver_name,
-                            "number": number,
-                            "manufacturer": manufacturer,
-                            "lap_time": lap_time,
-                            "lap_speed": lap_speed,
-                        }.values()
-                    )
+                else:
+                    driver_name = ""
+                number = cols[2].get_text().strip() if len(cols) > 2 else ""
+                manufacturer = cols[3].get_text().strip() if len(cols) > 3 else ""
+                lap_time = cols[4].get_text().strip() if len(cols) > 4 else ""
+                lap_speed = cols[5].get_text().strip() if len(cols) > 5 else ""
+                csv_list.append(
+                    {
+                        "rank": rank,
+                        "driver_name": driver_name,
+                        "number": number,
+                        "manufacturer": manufacturer,
+                        "lap_time": lap_time,
+                        "lap_speed": lap_speed,
+                    }.values()
+                )
         _sort_rr_rows_by_header_column(csv_list, headers, "rank", reverse=False)
         csv_file_path = path.replace(".html", ".csv")
         _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
