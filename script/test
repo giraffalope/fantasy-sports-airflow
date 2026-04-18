@@ -70,4 +70,17 @@ if [[ ${#paths[@]} -eq 0 ]]; then
 fi
 
 docker build -f Dockerfile.unit-tests -t "$IMAGE_NAME" "$ROOT"
-exec docker run --rm "$IMAGE_NAME" python -m pytest "${paths[@]}" "$@"
+
+docker_args=(--rm)
+if $run_integration; then
+  docker compose up -d mariadb >/dev/null
+  db_port="${DATABASE_PORT:-3306}"
+  default_conn="mariadb://username:password@host.docker.internal:${db_port}/nascar?charset=utf8mb4&collation=utf8mb4_uca1400_ai_ci"
+  docker_args+=(
+    --add-host=host.docker.internal:host-gateway
+    -e "AIRFLOW_CONN_NASCAR_CONN=${AIRFLOW_CONN_NASCAR_CONN:-$default_conn}"
+    -e "AIRFLOW_CONN_MARIADB_CONN=${AIRFLOW_CONN_MARIADB_CONN:-$default_conn}"
+  )
+fi
+
+exec docker run "${docker_args[@]}" "$IMAGE_NAME" python -m pytest "${paths[@]}" "$@"

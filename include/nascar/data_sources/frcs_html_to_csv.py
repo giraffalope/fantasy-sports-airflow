@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from bs4 import BeautifulSoup, Tag
 
+from include.nascar.schedule_week_date_csv import week_date_for_schedule_csv
 from include.utils.file import File
 
 _FRCS_SCHEDULE_RACE_COL = "race"
@@ -871,10 +872,13 @@ class FrcsHtmlToCsv:
             week_date = ""
             if date_td is not None:
                 ds = date_td.get("data-sort")
+                cell_txt = date_td.get_text(strip=True)
                 if ds:
-                    week_date = str(ds).strip()[:10]
+                    week_date = week_date_for_schedule_csv(str(ds), cell_txt)
+                    if not week_date:
+                        week_date = cell_txt
                 else:
-                    week_date = date_td.get_text(strip=True)
+                    week_date = cell_txt
             csv_list.append(
                 (
                     str(event_number),

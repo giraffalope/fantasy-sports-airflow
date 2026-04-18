@@ -150,9 +150,9 @@ WHERE NOT EXISTS (
 UPDATE nascar.data_sources_drivers dsd
 JOIN nascar.data_sources ds ON ds.id = dsd.data_source_id AND ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
 JOIN nascar.drivers d
-    ON (d.first_name COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
-    AND (d.last_name COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
-    AND (d.suffix COLLATE utf8mb4_uca1400_ai_ci) = (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    ON (d.first_name COLLATE utf8mb4_uca1400_ai_ci) <=> (nascar.get_driver_first_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    AND (d.last_name COLLATE utf8mb4_uca1400_ai_ci) <=> (nascar.get_driver_last_name(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
+    AND (d.suffix COLLATE utf8mb4_uca1400_ai_ci) <=> (nascar.get_driver_suffix(dsd.name) COLLATE utf8mb4_uca1400_ai_ci)
     AND d.deleted_at IS NULL
 SET dsd.driver_id = d.id
 WHERE dsd.driver_id IS NULL;

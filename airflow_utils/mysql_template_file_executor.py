@@ -5,6 +5,9 @@ from jinja2 import Template
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 
+# Use Airflow's task logger so SQL from PythonOperator callables appears in the task log UI.
+_TASK_LOG = logging.getLogger("airflow.task")
+
 
 def _connection_set_autocommit(conn, enabled: bool) -> None:
     """Support mysqlclient (callable), PyMySQL (callable), and mysql-connector (property)."""
@@ -38,7 +41,9 @@ def execute_sql_statements_transactional(hook: NascarMySqlHook, statements: list
         _connection_set_autocommit(conn, False)
         cursor = conn.cursor()
         try:
-            for stmt in statements:
+            total = len(statements)
+            for idx, stmt in enumerate(statements, start=1):
+                _TASK_LOG.info("Executing SQL statement %s/%s:\n%s", idx, total, stmt.strip())
                 cursor.execute(stmt)
             conn.commit()
         except Exception:
@@ -62,7 +67,7 @@ class MySqlTemplateFileExecutor(NascarMySqlHook):
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"SQL file not found: {file_path}")
 
-        logging.info(f"Attempting to read {file_path}")
+        _TASK_LOG.info("Attempting to read %s", file_path)
         with open(file_path) as f:
             raw_template = f.read()
 

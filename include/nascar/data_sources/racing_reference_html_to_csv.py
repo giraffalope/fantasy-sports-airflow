@@ -10,6 +10,7 @@ from datetime import datetime
 
 from bs4 import BeautifulSoup
 
+from include.nascar.schedule_week_date_csv import week_date_for_schedule_csv
 from include.utils.file import File
 
 # ``td`` race rows: class may be ``col``, ``col odd``, or (on some saves) omitted.
@@ -123,15 +124,25 @@ class RacingReferenceHtmlToCsv:
                 raceweek_title = upcoming.get_text().strip() if upcoming else ""
                 raceweek_title = re.findall('"([^"]*)"', raceweek_title)
                 raceweek_title = raceweek_title[0] if len(raceweek_title) else ""
-            raceweek_date = row.find("div", {"class": "date"}).get_text()
+            date_div = row.find("div", {"class": "date"})
+            raceweek_date = date_div.get_text() if date_div else ""
+            ds = date_div.get("data-sort") if date_div else None
+            if ds and str(ds).strip():
+                week_date = week_date_for_schedule_csv(str(ds), raceweek_date.strip())
+                if not week_date:
+                    week_date = datetime.strptime(raceweek_date.strip(), "%m/%d/%y").strftime(
+                        "%Y-%m-%d"
+                    )
+            else:
+                week_date = datetime.strptime(raceweek_date.strip(), "%m/%d/%y").strftime(
+                    "%Y-%m-%d"
+                )
             raceweek_track = row.find("div", {"class": "track"}).find("a").get_text()
             raceweek_track_url = row.find("div", {"class": "track"}).find("a")["href"]
             csv_row = {
                 "week_number": raceweek_number.strip(),
                 "week_url": raceweek_url.strip(),
-                "week_date": datetime.strptime(raceweek_date.strip(), "%m/%d/%y").strftime(
-                    "%Y-%m-%d"
-                ),
+                "week_date": week_date,
                 "week_track": raceweek_track.strip(),
                 "week_track_url": raceweek_track_url.strip(),
                 "week_race_name": raceweek_title.strip(),

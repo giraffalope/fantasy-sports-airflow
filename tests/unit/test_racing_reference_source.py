@@ -187,3 +187,24 @@ def test_racing_reference_converters_delegates_to_racing_reference_parser(
     text = csv_out.read_text(encoding="utf-8")
     assert "Daytona" in text
     assert "2025-03-15" in text
+
+
+def test_racing_reference_convert_schedule_data_sort_zoned_to_utc_date(
+    tmp_path, source: RacingReferenceSource
+) -> None:
+    """When ``date`` has ``data-sort`` with offset, ``week_date`` is UTC calendar day."""
+    html = tmp_path / "sched2.html"
+    csv_out = tmp_path / "sched2.csv"
+    html.write_text(
+        """
+        <div class="table-row">
+          <div class="race-number"><a href="/race/1" title="Test 400">1</a></div>
+          <div class="date" data-sort="2025-03-09T22:00:00-05:00">03/09/25</div>
+          <div class="track"><a href="/t">Track</a></div>
+        </div>
+        """,
+        encoding="utf-8",
+    )
+    source.converters.convert_schedule(str(html), str(csv_out))
+    text = csv_out.read_text(encoding="utf-8")
+    assert "2025-03-10" in text

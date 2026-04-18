@@ -9,6 +9,12 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libmariadb-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir \
     pytest==9.0.2 \
     pytest-cov==7.1.0 \
@@ -16,13 +22,35 @@ RUN pip install --no-cache-dir \
     beautifulsoup4 \
     lxml \
     "apache-airflow==3.1.8" \
-    apache-airflow-providers-standard
+    apache-airflow-providers-standard \
+    apache-airflow-providers-mysql
 
 COPY include ./include
 COPY airflow_utils ./airflow_utils
 COPY dags ./dags
 COPY tests ./tests
 COPY pyproject.toml ./pyproject.toml
+RUN mkdir -p /app/scraper-data/nascar/frcs.pro/cup/2010/01 \
+    /app/scraper-data/nascar/frcs.pro/cup/2024/13 \
+    /app/scraper-data/nascar/frcs.pro/cup/2025/25 \
+    /app/scraper-data/nascar/www.racing-reference.info/cup/2010/01 \
+    /app/scraper-data/nascar/www.racing-reference.info/cup/2015/01
+RUN mkdir -p /home/airflow/scraper \
+    && rm -rf /home/airflow/scraper/nascar \
+    && ln -s /app/scraper-data/nascar /home/airflow/scraper/nascar
+COPY scraper-data/nascar/frcs.pro/cup/2010/01/qualifying.html /app/scraper-data/nascar/frcs.pro/cup/2010/01/qualifying.html
+COPY scraper-data/nascar/frcs.pro/cup/2010/01/practice-01.html /app/scraper-data/nascar/frcs.pro/cup/2010/01/practice-01.html
+COPY scraper-data/nascar/frcs.pro/cup/2024/13/qualifying.html /app/scraper-data/nascar/frcs.pro/cup/2024/13/qualifying.html
+COPY scraper-data/nascar/frcs.pro/cup/2025/25/qualifying.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/qualifying.html
+COPY scraper-data/nascar/frcs.pro/cup/2025/25/practice-01.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/practice-01.html
+COPY scraper-data/nascar/frcs.pro/cup/2025/25/race-results.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/race-results.html
+COPY scraper-data/nascar/frcs.pro/cup/2025/25/pit-stops.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/pit-stops.html
+COPY scraper-data/nascar/frcs.pro/cup/2025/25/draftkings.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/draftkings.html
+COPY scraper-data/nascar/frcs.pro/cup/2025/25/fanduel.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/fanduel.html
+COPY scraper-data/nascar/frcs.pro/cup/2025/25/entrylist.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/entrylist.html
+COPY scraper-data/nascar/frcs.pro/cup/2025/25/lineup.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/lineup.html
+COPY scraper-data/nascar/www.racing-reference.info/cup/2010/01/qualifying.html /app/scraper-data/nascar/www.racing-reference.info/cup/2010/01/qualifying.html
+COPY scraper-data/nascar/www.racing-reference.info/cup/2015/01/qualifying.html /app/scraper-data/nascar/www.racing-reference.info/cup/2015/01/qualifying.html
 
 # Options (incl. coverage) come from [tool.pytest.ini_options] in pyproject.toml
 CMD ["python", "-m", "pytest"]

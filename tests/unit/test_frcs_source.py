@@ -131,6 +131,27 @@ def test_frcs_convert_schedule_row_order(tmp_path, source: FrcsSource) -> None:
     assert row2[0] == "2" and row2[1] == "2"
 
 
+def test_frcs_convert_schedule_data_sort_zoned_to_utc_date(tmp_path, source: FrcsSource) -> None:
+    html = tmp_path / "sched_z.html"
+    csv_out = tmp_path / "sched_z.csv"
+    html.write_text(
+        """
+        <table><tbody>
+        <tr>
+          <td data-column='number'>1</td>
+          <td data-column='date' data-sort='2026-03-09T22:00:00-05:00'>Mar 09</td>
+          <td data-column='track'><a href='https://frcs.pro/nascar/tracks/foo'>Foo Track</a></td>
+          <td data-column='race'><a href='https://frcs.pro/nascar/cup/races/results/2026/foo/race-a'>Race A</a></td>
+        </tr>
+        </tbody></table>
+        """,
+        encoding="utf-8",
+    )
+    source.converters.convert_schedule(str(html), str(csv_out))
+    text = csv_out.read_text(encoding="utf-8")
+    assert "2026-03-10" in text
+
+
 def test_parse_js_const_entry_list(tmp_path) -> None:
     html = tmp_path / "e.html"
     csv_out = tmp_path / "e.csv"
