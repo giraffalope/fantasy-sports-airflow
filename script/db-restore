@@ -9,6 +9,13 @@ Usage:
   ./script/db-restore <backup-file-path>
 
 Accepts plain .sql or gzip-compressed .sql.gz (e.g. from ./script/db-backup).
+
+Full-instance dumps (--all-databases) need a privileged user. By default this
+script uses root with DATABASE_ROOT_PASSWORD (same default as docker-compose).
+Override with DATABASE_RESTORE_USER / DATABASE_RESTORE_PASSWORD if needed.
+
+After restore, prints a short summary for DATABASE_NAME (default: nascar) using
+information_schema (InnoDB row counts are approximate).
 EOF
 }
 
@@ -35,23 +42,38 @@ if [[ ! -r "$BACKUP_FILE" ]]; then
   exit 1
 fi
 
-DB_USER="${DATABASE_USER:-username}"
-DB_PASSWORD="${DATABASE_PASSWORD:-password}"
+# -i keeps STDIN open; without it, redirected/piped input often never reaches the client.
+# --binary-mode avoids client mis-parsing dump bytes on stdin.
+# Service and client binary are both named "mariadb" in this image.
+mysql_stdin() {
+  docker compose exec -i -T \
+    -e MYSQL_PWD="$RESTORE_PASSWORD" \
+    mariadb \
+    mariadb --binary-mode -u"$RESTORE_USER"
+}
 
-restore_inner='if command -v mariadb >/dev/null 2>&1; then mariadb -u"$RESTORE_USER"; else mysql -u"$RESTORE_USER"; fi'
+RESTORE_USER="${DATABASE_RESTORE_USER:-root}"
+RESTORE_PASSWORD="${DATABASE_RESTORE_PASSWORD:-${DATABASE_ROOT_PASSWORD:-password}}"
 
 if [[ "$BACKUP_FILE" == *.gz ]]; then
-  gzip -dc -- "$BACKUP_FILE" | docker compose exec -T \
-    -e MYSQL_PWD="$DB_PASSWORD" \
-    -e RESTORE_USER="$DB_USER" \
-    mariadb \
-    sh -lc "$restore_inner"
+  gzip -dc -- "$BACKUP_FILE" | mysql_stdin
 else
-  docker compose exec -T \
-    -e MYSQL_PWD="$DB_PASSWORD" \
-    -e RESTORE_USER="$DB_USER" \
-    mariadb \
-    sh -lc "$restore_inner" < "$BACKUP_FILE"
+  mysql_stdin < "$BACKUP_FILE"
 fi
 
 echo "Restore completed from: $BACKUP_FILE"
+
+DB_NAME="${DATABASE_NAME:-nascar}"
+if [[ "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
+  summary="$(
+    docker compose exec -T \
+      -e MYSQL_PWD="$RESTORE_PASSWORD" \
+      mariadb \
+      mariadb -N -u"$RESTORE_USER" -e \
+        "SELECT CONCAT('tables=', COUNT(*), ' approx_rows=', COALESCE(SUM(TABLE_ROWS), 0)) FROM information_schema.TABLES WHERE TABLE_SCHEMA='${DB_NAME}' AND TABLE_TYPE='BASE TABLE';" 2>/dev/null || true
+  )"
+  if [[ -n "${summary}" ]]; then
+    echo "Post-restore summary for '${DB_NAME}': ${summary}"
+    echo "(approx_rows comes from information_schema; InnoDB counts are estimates.)"
+  fi
+fi

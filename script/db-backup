@@ -7,6 +7,14 @@ Create a full MariaDB backup from the Docker Compose mariadb service.
 
 Usage:
   ./script/db-backup
+
+Uses root by default (DATABASE_DUMP_USER / DATABASE_DUMP_PASSWORD, falling back to
+DATABASE_ROOT_PASSWORD) so --all-databases includes full data and privileges.
+Override dump user if needed, e.g. DATABASE_DUMP_USER=username.
+
+Dumps both schema and table row data (never passes --no-data). Passes
+--extended-insert, --quick, and --events so dumps stay data-complete even if a
+[mysqldump] section in the image would otherwise trim behavior.
 EOF
 }
 
@@ -29,13 +37,13 @@ BACKUP_FILE="$BACKUP_DIR/${TIMESTAMP}.sql.gz"
 
 mkdir -p "$BACKUP_DIR"
 
-DB_USER="${DATABASE_USER:-username}"
-DB_PASSWORD="${DATABASE_PASSWORD:-password}"
+DUMP_USER="${DATABASE_DUMP_USER:-root}"
+DUMP_PASSWORD="${DATABASE_DUMP_PASSWORD:-${DATABASE_ROOT_PASSWORD:-password}}"
 
 docker compose exec -T \
-  -e MYSQL_PWD="$DB_PASSWORD" \
-  -e DUMP_USER="$DB_USER" \
+  -e MYSQL_PWD="$DUMP_PASSWORD" \
+  -e DUMP_USER="$DUMP_USER" \
   mariadb \
-  sh -lc 'if command -v mariadb-dump >/dev/null 2>&1; then mariadb-dump --all-databases -u"$DUMP_USER"; else mysqldump --all-databases -u"$DUMP_USER"; fi' | gzip > "$BACKUP_FILE"
+  sh -lc 'if command -v mariadb-dump >/dev/null 2>&1; then exec mariadb-dump --all-databases --single-transaction --routines --triggers --events --extended-insert --quick -u"$DUMP_USER"; else exec mysqldump --all-databases --single-transaction --routines --triggers --events --extended-insert --quick -u"$DUMP_USER"; fi' | gzip > "$BACKUP_FILE"
 
 echo "Backup created: $BACKUP_FILE"
