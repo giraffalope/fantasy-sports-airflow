@@ -70,6 +70,7 @@ def test_penalties_import_sql_inserts_expected_destination_tables() -> None:
 def test_pitstops_import_sql_inserts_expected_destination_tables() -> None:
     sql = _sql_text("import_frcs_pit_stops_detail_staging_into_db.sql")
     assert "INSERT INTO nascar.pitstops" in sql
+    assert "crew_time" in sql
     assert "COALESCE" in sql and "driver_time" in sql
     assert "ROW_NUMBER()" in sql
 

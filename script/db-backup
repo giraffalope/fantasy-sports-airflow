@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Create a full MariaDB backup from the Docker Compose mariadb service.
+
+Usage:
+  ./script/db-backup
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -ne 0 ]]; then
+  usage >&2
+  exit 1
+fi
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+BACKUP_DIR="$ROOT/db/backups"
+TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP_FILE="$BACKUP_DIR/${TIMESTAMP}.sql.gz"
+
+mkdir -p "$BACKUP_DIR"
+
+DB_USER="${DATABASE_USER:-username}"
+DB_PASSWORD="${DATABASE_PASSWORD:-password}"
+
+docker compose exec -T \
+  -e MYSQL_PWD="$DB_PASSWORD" \
+  -e DUMP_USER="$DB_USER" \
+  mariadb \
+  sh -lc 'if command -v mariadb-dump >/dev/null 2>&1; then mariadb-dump --all-databases -u"$DUMP_USER"; else mysqldump --all-databases -u"$DUMP_USER"; fi' | gzip > "$BACKUP_FILE"
+
+echo "Backup created: $BACKUP_FILE"

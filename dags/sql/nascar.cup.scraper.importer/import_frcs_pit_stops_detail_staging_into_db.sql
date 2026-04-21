@@ -10,7 +10,7 @@ INSERT INTO nascar.pitstops (
     leader_lap,
     driver_lap,
     type,
-    stop_time,
+    crew_time,
     driver_time
 )
 SELECT
@@ -19,7 +19,7 @@ SELECT
     ranked.leader_lap,
     ranked.driver_lap,
     ranked.type,
-    ranked.stop_time,
+    ranked.crew_time,
     ranked.driver_time
 FROM (
     SELECT
@@ -41,7 +41,7 @@ FROM (
                 ELSE NULL
             END,
             CAST('00:00:00' AS TIME(3))
-        ) AS stop_time,
+        ) AS crew_time,
         COALESCE(
             CASE
                 WHEN TRIM(stg.driver_time) LIKE '%:%' THEN CAST(TRIM(stg.driver_time) AS TIME(3))

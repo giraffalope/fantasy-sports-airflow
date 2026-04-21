@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Restore a MariaDB backup into the Docker Compose mariadb service.
+
+Usage:
+  ./script/db-restore <backup-file-path>
+
+Accepts plain .sql or gzip-compressed .sql.gz (e.g. from ./script/db-backup).
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -ne 1 ]]; then
+  usage >&2
+  exit 1
+fi
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+BACKUP_FILE="$1"
+if [[ ! -f "$BACKUP_FILE" ]]; then
+  echo "Backup file does not exist: $BACKUP_FILE" >&2
+  exit 1
+fi
+if [[ ! -r "$BACKUP_FILE" ]]; then
+  echo "Backup file is not readable: $BACKUP_FILE" >&2
+  exit 1
+fi
+
+DB_USER="${DATABASE_USER:-username}"
+DB_PASSWORD="${DATABASE_PASSWORD:-password}"
+
+restore_inner='if command -v mariadb >/dev/null 2>&1; then mariadb -u"$RESTORE_USER"; else mysql -u"$RESTORE_USER"; fi'
+
+if [[ "$BACKUP_FILE" == *.gz ]]; then
+  gzip -dc -- "$BACKUP_FILE" | docker compose exec -T \
+    -e MYSQL_PWD="$DB_PASSWORD" \
+    -e RESTORE_USER="$DB_USER" \
+    mariadb \
+    sh -lc "$restore_inner"
+else
+  docker compose exec -T \
+    -e MYSQL_PWD="$DB_PASSWORD" \
+    -e RESTORE_USER="$DB_USER" \
+    mariadb \
+    sh -lc "$restore_inner" < "$BACKUP_FILE"
+fi
+
+echo "Restore completed from: $BACKUP_FILE"
