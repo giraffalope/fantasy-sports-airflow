@@ -12,6 +12,7 @@ from typing import Any, Literal
 from bs4 import BeautifulSoup, Tag
 
 from include.nascar.schedule_week_date_csv import week_date_for_schedule_csv
+from include.nascar.time_csv import normalize_time_to_hhmmss_mmm as _normalize_time_to_hhmmss_mmm
 from include.utils.file import File
 
 _FRCS_SCHEDULE_RACE_COL = "race"
@@ -167,7 +168,7 @@ def _frcs_qualifying_row_to_tuple(row: dict[str, Any]) -> tuple[str, str, str, s
     driver = _strip_html(driver_raw) if driver_raw else driver_raw
     num = first("car_no", "number", "car_number", "no")
     make = first("make", "manufacturer", "manuf")
-    lt = first("lap_time", "time", "best_lap")
+    lt = _normalize_time_to_hhmmss_mmm(first("lap_time", "time", "best_lap"))
     ls = first("lap_speed", "speed", "best_speed")
     return (rank, driver, num, make, lt, ls)
 
@@ -964,7 +965,10 @@ class FrcsHtmlToCsv:
             v = row.get(key)
             if v is None:
                 return ""
-            return str(v).strip()
+            out = str(v).strip()
+            if key in {"lap_time", "time5", "time10", "time20", "time25", "time30"}:
+                return _normalize_time_to_hhmmss_mmm(out)
+            return out
 
         # ``practiceData`` tabulator fields: time5..time30 (multi-lap averages), lap10_speed / lap10_from /
         # lap10_to (10-lap avg group — distinct from single-best-lap lap_speed).

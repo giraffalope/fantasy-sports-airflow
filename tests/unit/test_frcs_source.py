@@ -205,6 +205,9 @@ def test_frcs_convert_practices_uses_normalized_headers(tmp_path) -> None:
         "10_lap_start",
         "10_lap_end",
     ]
+    body = csv_out.read_text(encoding="utf-8")
+    assert "00:00:30.500" in body
+    assert "00:00:30.100" in body
 
 
 def test_frcs_convert_qualifying_uses_normalized_headers(tmp_path) -> None:
@@ -231,6 +234,8 @@ def test_frcs_convert_qualifying_uses_normalized_headers(tmp_path) -> None:
         "lap_time",
         "lap_speed",
     ]
+    body = csv_out.read_text(encoding="utf-8")
+    assert "00:00:30.500" in body
 
 
 def test_frcs_convert_penalties_race_infractions_table(tmp_path) -> None:

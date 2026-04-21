@@ -30,6 +30,16 @@ def test_qualifying_import_sql_inserts_results_and_entity_upserts() -> None:
     assert "INSERT INTO nascar.cars_drivers" in sql
 
 
+def test_practice_and_qualifying_import_sql_nulls_zero_speed_and_time() -> None:
+    practice_sql = _sql_text("import_frcs_practice_staging_into_db.sql")
+    qualifying_sql = _sql_text("import_frcs_qualifying_staging_into_db.sql")
+    for sql in (practice_sql, qualifying_sql):
+        assert "CAST(TRIM(t.speed) AS DECIMAL(8, 3)) = 0 THEN NULL" in sql
+        assert "CAST(TRIM(t.time) AS DECIMAL(12, 3)) = 0 THEN NULL" in sql
+        assert "CAST(TRIM(t.time) AS TIME(3)) = '00:00:00.000' THEN NULL" in sql
+        assert "AND TRIM(t.time) != ''" in sql
+
+
 def test_race_import_sql_inserts_expected_destination_tables() -> None:
     sql = _sql_text("import_frcs_race_staging_into_db.sql")
     assert "INSERT INTO nascar.races" in sql
@@ -89,6 +99,9 @@ def test_load_stage_practice_and_qualifying_sqls_target_staging_tables() -> None
 
 def test_load_stage_race_penalty_pitstop_dfs_sqls_target_staging_tables() -> None:
     race_sql = _sql_text("load_frcs_race_csvs_into_staging_tables.sql")
+    assert "race_results_csv_n_columns" in race_sql
+    assert "race_results_idx_status" in race_sql
+    assert "@c" in race_sql and "IGNORE 1 LINES" in race_sql
     penalties_sql = _sql_text("load_frcs_penalties_csv_into_staging_table.sql")
     pitstops_sql = _sql_text("load_frcs_pit_stops_detail_csv_into_staging_table.sql")
     dk_sql = _sql_text("load_frcs_draftkings_csv_into_staging_table.sql")

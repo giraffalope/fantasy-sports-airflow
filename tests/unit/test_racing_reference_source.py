@@ -164,7 +164,34 @@ def test_racing_reference_convert_qualifying_chasecol_driver_column(tmp_path) ->
     assert csv_path.is_file()
     text = csv_path.read_text(encoding="utf-8")
     assert "Martin Truex Jr" in text
-    assert "32.256" in text
+    assert "00:00:32.256" in text
+
+
+def test_racing_reference_convert_qualifying_minute_second_time_normalized(tmp_path) -> None:
+    from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
+
+    html = tmp_path / "qualifying.html"
+    html.write_text(
+        """
+        <html><body>
+        <table class="qualResultTbl">
+          <tr><td class="newhead" colspan="6">Qualifying Results</td></tr>
+          <tr class="odd">
+            <td class="col">1</td>
+            <td class="col"><a href="/driver/Test_Driver/">Test Driver</a></td>
+            <td class="col">19</td>
+            <td class="col">Toyota</td>
+            <td class="col">1:32.776</td>
+            <td class="col">167.411</td>
+          </tr>
+        </table>
+        </body></html>
+        """,
+        encoding="utf-8",
+    )
+    RacingReferenceHtmlToCsv.convert_qualifying(str(html))
+    text = (tmp_path / "qualifying.csv").read_text(encoding="utf-8")
+    assert "00:01:32.776" in text
 
 
 def test_racing_reference_converters_delegates_to_racing_reference_parser(

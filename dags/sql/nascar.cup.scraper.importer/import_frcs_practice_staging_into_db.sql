@@ -149,7 +149,9 @@ INSERT INTO nascar.data_sources_manufacturers (data_source_id, name)
 SELECT DISTINCT ds.id, TRIM(t.manufacturer)
 FROM nascar.temp_practice_{{ week_id }}_{{ number }}_{{ table_suffix }} t
 JOIN nascar.data_sources ds ON ds.name = '{{ source_name }}' AND ds.deleted_at IS NULL
-WHERE TRIM(t.manufacturer) IS NOT NULL AND TRIM(t.manufacturer) != ''
+WHERE TRIM(t.manufacturer) IS NOT NULL
+  AND TRIM(t.manufacturer) != ''
+  AND TRIM(t.manufacturer) NOT REGEXP '^[0-9]+$'
 ON DUPLICATE KEY UPDATE deleted_at = NULL;
 
 ---
@@ -296,15 +298,31 @@ FROM (
             t.practice_id,
             t.car_driver_id,
             CAST(TRIM(t.rank) AS UNSIGNED) AS finish_position,
-            t.speed,
             CASE
+                WHEN NULLIF(TRIM(t.speed), '') IS NULL THEN NULL
+                WHEN TRIM(t.speed) REGEXP '^[0-9]+(\\.[0-9]*)?$'
+                    AND CAST(TRIM(t.speed) AS DECIMAL(8, 3)) = 0 THEN NULL
+                WHEN TRIM(t.speed) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(TRIM(t.speed) AS DECIMAL(8, 3))
+                ELSE NULL
+            END AS speed,
+            CASE
+                WHEN TRIM(t.time) LIKE '%:%'
+                    AND CAST(TRIM(t.time) AS TIME(3)) = '00:00:00.000' THEN NULL
                 WHEN TRIM(t.time) LIKE '%:%' THEN CAST(TRIM(t.time) AS TIME(3))
+                WHEN TRIM(t.time) REGEXP '^[0-9]+(\\.[0-9]*)?$'
+                    AND CAST(TRIM(t.time) AS DECIMAL(12, 3)) = 0 THEN NULL
                 WHEN TRIM(t.time) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
                     SEC_TO_TIME(CAST(TRIM(t.time) AS DECIMAL(12, 3))) AS TIME(3)
                 )
                 ELSE NULL
             END AS best_time,
-            t.num_laps,
+            CASE
+                WHEN NULLIF(TRIM(t.num_laps), '') IS NULL THEN NULL
+                WHEN TRIM(t.num_laps) REGEXP '^[0-9]+$'
+                    AND CAST(TRIM(t.num_laps) AS UNSIGNED) = 0 THEN NULL
+                WHEN TRIM(t.num_laps) REGEXP '^[0-9]+$' THEN CAST(TRIM(t.num_laps) AS UNSIGNED)
+                ELSE NULL
+            END AS num_laps,
             CASE
                 WHEN NULLIF(TRIM(t.`5_lap_average_time`), '') IS NULL THEN NULL
                 WHEN TRIM(t.`5_lap_average_time`) LIKE '%:%' THEN CAST(TRIM(t.`5_lap_average_time`) AS TIME(3))
@@ -347,17 +365,25 @@ FROM (
             END AS `30_lap_average_time`,
             CASE
                 WHEN NULLIF(TRIM(t.`10_lap_average_speed`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`10_lap_average_speed`) REGEXP '^[0-9]+(\\.[0-9]*)?$'
+                    AND CAST(TRIM(t.`10_lap_average_speed`) AS DECIMAL(8, 3)) = 0 THEN NULL
                 WHEN TRIM(t.`10_lap_average_speed`) REGEXP '^[0-9]+(\\.[0-9]*)?$' THEN CAST(
                     TRIM(t.`10_lap_average_speed`) AS DECIMAL(8, 3)
                 )
                 ELSE NULL
             END AS `10_lap_average_speed`,
             CASE
-                WHEN NULLIF(TRIM(t.`10_lap_start`), '') REGEXP '^[0-9]+$' THEN CAST(TRIM(t.`10_lap_start`) AS UNSIGNED)
+                WHEN NULLIF(TRIM(t.`10_lap_start`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`10_lap_start`) REGEXP '^[0-9]+$'
+                    AND CAST(TRIM(t.`10_lap_start`) AS UNSIGNED) = 0 THEN NULL
+                WHEN TRIM(t.`10_lap_start`) REGEXP '^[0-9]+$' THEN CAST(TRIM(t.`10_lap_start`) AS UNSIGNED)
                 ELSE NULL
             END AS `10_lap_start`,
             CASE
-                WHEN NULLIF(TRIM(t.`10_lap_end`), '') REGEXP '^[0-9]+$' THEN CAST(TRIM(t.`10_lap_end`) AS UNSIGNED)
+                WHEN NULLIF(TRIM(t.`10_lap_end`), '') IS NULL THEN NULL
+                WHEN TRIM(t.`10_lap_end`) REGEXP '^[0-9]+$'
+                    AND CAST(TRIM(t.`10_lap_end`) AS UNSIGNED) = 0 THEN NULL
+                WHEN TRIM(t.`10_lap_end`) REGEXP '^[0-9]+$' THEN CAST(TRIM(t.`10_lap_end`) AS UNSIGNED)
                 ELSE NULL
             END AS `10_lap_end`,
             ROW_NUMBER() OVER (
@@ -366,7 +392,7 @@ FROM (
             ) AS rn_driver
         FROM nascar.temp_practice_{{ week_id }}_{{ number }}_{{ table_suffix }} t
         WHERE t.time IS NOT NULL
-          AND TRIM(t.time) NOT IN ('', '0.0')
+          AND TRIM(t.time) != ''
           AND t.practice_id IS NOT NULL
           AND t.car_driver_id IS NOT NULL
     ) by_driver

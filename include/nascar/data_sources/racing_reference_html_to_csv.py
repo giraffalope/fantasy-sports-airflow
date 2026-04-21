@@ -11,6 +11,7 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 
 from include.nascar.schedule_week_date_csv import week_date_for_schedule_csv
+from include.nascar.time_csv import normalize_time_to_hhmmss_mmm as _normalize_time_to_hhmmss_mmm
 from include.utils.file import File
 
 # ``td`` race rows: class may be ``col``, ``col odd``, or (on some saves) omitted.
@@ -517,7 +518,7 @@ class RacingReferenceHtmlToCsv:
                     )
                     number = cols[2].get_text().strip()
                     manufacturer = cols[3].get_text().strip()
-                    lap_time = cols[4].get_text().strip()
+                    lap_time = _normalize_time_to_hhmmss_mmm(cols[4].get_text().strip())
                     if len(cols) >= 9:
                         speed = cols[6].get_text().strip()
                         num_laps = cols[7].get_text().strip()
@@ -612,7 +613,7 @@ class RacingReferenceHtmlToCsv:
                     driver_name = ""
                 number = cols[2].get_text().strip() if len(cols) > 2 else ""
                 manufacturer = cols[3].get_text().strip() if len(cols) > 3 else ""
-                lap_time = cols[4].get_text().strip() if len(cols) > 4 else ""
+                lap_time = _normalize_time_to_hhmmss_mmm(cols[4].get_text().strip()) if len(cols) > 4 else ""
                 lap_speed = cols[5].get_text().strip() if len(cols) > 5 else ""
                 csv_list.append(
                     {

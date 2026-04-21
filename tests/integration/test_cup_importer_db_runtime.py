@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import shutil
 from datetime import UTC, datetime
@@ -177,6 +178,18 @@ def _prepare_week_25_csv_inputs() -> None:
         shutil.copyfile(p01, base / "practice-1.csv")
 
 
+def _force_first_data_row_zero(path: Path, *, time_col: str, speed_col: str) -> None:
+    rows = list(csv.DictReader(path.read_text(encoding="utf-8").splitlines()))
+    if not rows:
+        return
+    rows[0][time_col] = "0"
+    rows[0][speed_col] = "0"
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def test_importer_runtime_populates_practice_and_qualifying_results_in_db(monkeypatch) -> None:
     _require_db_conn()
     hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
@@ -242,3 +255,69 @@ def test_importer_runtime_populates_practice_and_qualifying_results_in_db(monkey
     assert int(practice_results_count) > 0
     assert int(qualifying_count) > 0
     assert int(qualifying_results_count) > 0
+
+
+def test_importer_runtime_converts_zero_speed_time_to_null(monkeypatch) -> None:
+    _require_db_conn()
+    hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
+    _prepare_week_25_csv_inputs()
+    base = Path("/home/airflow/scraper/nascar/frcs.pro/cup/2025/25")
+    _force_first_data_row_zero(base / "practice-1.csv", time_col="lap_time", speed_col="lap_speed")
+    _force_first_data_row_zero(base / "qualifying.csv", time_col="lap_time", speed_col="lap_speed")
+    week_id = _ensure_cup_2025_week_25(hook)
+
+    _cleanup_week_results(hook, week_id)
+
+    ti = _DummyTI()
+    ctx = {
+        "ti": ti,
+        "data_interval_start": datetime(2025, 8, 1, tzinfo=UTC),
+        "logical_date": datetime(2025, 8, 1, tzinfo=UTC),
+    }
+
+    monkeypatch.setattr(importer_mod, "_target_weeks", lambda *_a, **_k: [(week_id, 25)])
+    monkeypatch.setattr(
+        importer_mod,
+        "_build_importer_target_weeks_xcom_rows",
+        lambda *_a, **_k: [{"week_id": week_id, "event_number": 25, "rr_week_number": None}],
+    )
+    monkeypatch.setattr(
+        importer_mod,
+        "_emit_cup_importer_domain_event",
+        lambda *_a, **_k: None,
+    )
+
+    importer_mod.load_stage_frcs_entrylist_csvs(**ctx)
+    importer_mod.import_frcs_entrylist(**ctx)
+    importer_mod.load_stage_frcs_practices_csvs(**ctx)
+    importer_mod.import_frcs_practices(**ctx)
+    importer_mod.load_stage_frcs_qualifyings_csvs(**ctx)
+    importer_mod.import_frcs_qualifyings(**ctx)
+
+    practice_zero_rows = hook.get_first(
+        """
+        SELECT COUNT(*)
+        FROM nascar.practice_results pr
+        JOIN nascar.practices p ON p.id = pr.practice_id
+        WHERE p.week_id = %s
+          AND pr.finish_position = 1
+          AND pr.best_time IS NULL
+          AND pr.best_speed IS NULL
+        """,
+        parameters=(week_id,),
+    )[0]
+    qualifying_zero_rows = hook.get_first(
+        """
+        SELECT COUNT(*)
+        FROM nascar.qualifying_results qr
+        JOIN nascar.qualifyings q ON q.id = qr.qualifying_id
+        WHERE q.week_id = %s
+          AND qr.finish_position = 1
+          AND qr.best_time IS NULL
+          AND qr.best_speed IS NULL
+        """,
+        parameters=(week_id,),
+    )[0]
+
+    assert int(practice_zero_rows) >= 1
+    assert int(qualifying_zero_rows) >= 1

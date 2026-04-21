@@ -306,6 +306,8 @@ def test_convert_practices_nine_columns_omits_behind_leader(tmp_path) -> None:
         "total_lap",
         "best_lap",
     ]
+    assert "00:00:48.025" in body
+    assert "00:00:48.146" in body
     assert "187.402" in body
     assert "186.931" in body
     assert "0.121" not in body
@@ -375,6 +377,7 @@ def test_convert_practices_eight_columns(tmp_path) -> None:
         "total_lap",
         "best_lap",
     ]
+    assert "00:00:31.000" in body
     assert "175.0" in body
     assert "Other" in body
 
@@ -408,6 +411,32 @@ def test_convert_qualifying_uses_normalized_headers(tmp_path) -> None:
         "lap_time",
         "lap_speed",
     ]
+    assert "00:00:48.025" in body
+
+
+def test_convert_practices_normalizes_minute_second_lap_time(tmp_path) -> None:
+    html = tmp_path / "practice-01.html"
+    html.write_text(
+        """
+        <table class="pracResultsTbl">
+          <tr><td class="newhead">Practice Results</td></tr>
+          <tr class="odd">
+            <td class="col">1</td>
+            <td class="col"><a>Driver</a></td>
+            <td class="col">3</td>
+            <td class="col">Ford</td>
+            <td class="col">1:32.776</td>
+            <td class="col">175.0</td>
+            <td class="col">12</td>
+            <td class="col">30.5</td>
+          </tr>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_practices([str(html)])
+    body = (tmp_path / "practice-01.csv").read_text(encoding="utf-8")
+    assert "00:01:32.776" in body
 
 
 def test_convert_qualifying_pads_short_rows_with_empty_strings(tmp_path) -> None:
