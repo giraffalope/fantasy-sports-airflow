@@ -34,6 +34,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
 pythonpath = [".", "dags"]
+markers = [
+    "regression: targeted regression tests for known importer defects",
+]
 addopts = [
     "-ra",
     "--tb=short",

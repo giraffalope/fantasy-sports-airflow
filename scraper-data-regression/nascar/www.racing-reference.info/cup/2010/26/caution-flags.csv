@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","56","56","",""
+"yellow","57","62","6","#00,2 accident backstretch","19"
+"green","63","146","84","",""
+"yellow","147","153","7","#55 accident turn 4","20"
+"green","154","226","73","",""
+"yellow","227","241","15","rain","24"
+"green","242","400","159","",""

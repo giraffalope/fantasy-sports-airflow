@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","71","71","",""
+"yellow","72","78","7","end of stage 1","51"
+"green","79","231","153","",""
+"yellow","232","239","8","end of stage 2","48"
+"green","240","391","152","",""
+"yellow","392","397","6","#42,99 accident turn 4","12"
+"green","398","400","3","",""

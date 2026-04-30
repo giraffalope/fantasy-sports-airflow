@@ -1,0 +1,7 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","19","19","",""
+"yellow","20","22","3","#18 accident turn 1","none"
+"green","23","86","64","",""
+"yellow","87","90","4","#51 accident turn 2","42"
+"green","91","91","1","",""
+"yellow","92","98","7","#11,16,17,31,48 accident turn 1","38"

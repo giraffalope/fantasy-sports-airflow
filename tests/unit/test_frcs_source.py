@@ -602,21 +602,18 @@ def test_frcs_convert_race_results_results_table_headers_and_values(tmp_path) ->
     lines = csv_out.read_text(encoding="utf-8").splitlines()
     cols = next(csv.reader(io.StringIO(lines[0])))
     assert cols == [
-        "finish",
-        "start",
+        "position",
+        "starting_position",
         "number",
-        "driver_name",
-        "manufacturer",
-        "total_points",
-        "finish_points",
-        "stage_points",
-        "playoff_points",
+        "name",
+        "sponsor",
+        "owner",
+        "car",
         "laps",
-        "laps_led",
-        "times_led",
-        "stage_1",
-        "stage_2",
         "status",
+        "laps_led",
+        "points",
+        "playoff_points",
     ]
     assert "Tyler Reddick" in lines[1]
     assert "Running" in lines[1]
@@ -652,9 +649,49 @@ def test_frcs_convert_race_results_ignores_race_infractions_table(tmp_path) -> N
     FrcsHtmlToCsv.convert_race_results(str(html), str(csv_out))
     lines = csv_out.read_text(encoding="utf-8").splitlines()
     cols = next(csv.reader(io.StringIO(lines[0])))
-    assert cols[:4] == ["finish", "start", "number", "driver_name"]
+    assert cols[:4] == ["position", "starting_position", "number", "name"]
     assert "Actual Driver" in lines[1]
     assert "Someone" not in lines[1]
+
+
+def test_frcs_convert_race_results_legacy_owner_mapping_to_canonical_columns(tmp_path) -> None:
+    html = tmp_path / "race-results.html"
+    csv_out = tmp_path / "race-results.csv"
+    html.write_text(
+        """
+        <table id="resultsTable">
+          <thead><tr>
+            <th>Pos</th><th>St</th><th>#</th><th>Name</th><th>Sponsor</th><th>Owner</th>
+            <th>Car</th><th>Laps</th><th>Status</th><th>Led</th><th>Points</th><th>Playoff Points</th>
+          </tr></thead>
+          <tbody><tr>
+            <td>1</td><td>2</td><td>12</td><td><a>Ryan Blaney</a></td><td>Menards</td><td>Team Penske</td>
+            <td>Ford</td><td>267</td><td>Running</td><td>31</td><td>58</td><td>5</td>
+          </tr></tbody>
+        </table>
+        """,
+        encoding="utf-8",
+    )
+    FrcsHtmlToCsv.convert_race_results(str(html), str(csv_out))
+    rows = list(csv.reader(io.StringIO(csv_out.read_text(encoding="utf-8"))))
+    assert rows[0] == list(
+        (
+            "position",
+            "starting_position",
+            "number",
+            "name",
+            "sponsor",
+            "owner",
+            "car",
+            "laps",
+            "status",
+            "laps_led",
+            "points",
+            "playoff_points",
+        )
+    )
+    assert rows[1][3] == "Ryan Blaney"
+    assert rows[1][5] == "Team Penske"
 
 
 def test_parse_js_const_json_array_let_and_tight_bracket() -> None:

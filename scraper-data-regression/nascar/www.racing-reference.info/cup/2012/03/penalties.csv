@@ -1,0 +1,8 @@
+"number","driver_name","lap","flag","infraction","penalty"
+"10","David Reutimann","73","yellow","Too fast entering pits","Tail end"
+"32","Ken Schrader","100","green","Lug nut(s) not installed","Must pit"
+"33","Brendan Gaughan","120","green","Too fast entering pits","Pass thru"
+"30","David Stremme","122","yellow","Too fast entering pits","Pass thru"
+"43","Aric Almirola","123","green","Too fast entering pits","Pass thru"
+"36","Dave Blaney","207","yellow","Tire violation","Tail end"
+"38","David Gilliland","208","yellow","Too fast exiting pits","Tail end"

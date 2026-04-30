@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","26","26","",""
+"yellow","27","29","3","end of stage 1","52"
+"green","30","34","5","",""
+"yellow","35","36","2","#47 stalled on track","none"
+"green","37","51","15","",""
+"yellow","52","54","3","end of stage 2","52"
+"green","55","110","56","",""

@@ -156,7 +156,8 @@ class RacingReferenceHtmlToCsv:
     @staticmethod
     def _race_results_row_cells(tr) -> list:
         """Collect result ``td``/``th`` cells; RR sometimes omits ``class=\"col\"`` on saved HTML."""
-        cols = tr.find_all("td", class_=_RR_TD_COL_CLASS)
+        # Playoff rows can place the driver column in ``td.chasecol``.
+        cols = tr.find_all("td", class_=_rr_td_col_or_chasecol)
         if len(cols) >= 10:
             return cols
         direct = tr.find_all(["td", "th"], recursive=False)

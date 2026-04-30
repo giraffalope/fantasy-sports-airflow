@@ -1,0 +1,4 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","56","56","",""
+"yellow","57","60","4","#9 stopped on track","99"
+"green","61","90","30","",""

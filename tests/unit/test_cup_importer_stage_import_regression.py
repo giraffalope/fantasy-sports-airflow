@@ -40,7 +40,7 @@ def test_load_stage_practices_persists_staged_xcom_metadata() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.load_stage_frcs_practices_csvs(**kwargs)
+        importer_mod.load_stage_practices_csvs(**kwargs)
 
     assert execute_mock.call_args.args[3] == RacingReferenceSource().id
     assert ti.pushed["importer_staged_practices"] == [
@@ -79,7 +79,7 @@ def test_import_practices_uses_staged_xcom_and_not_filesystem() -> None:
             importer_mod, "_cup_practice_session_numbers", side_effect=AssertionError("should not be called")
         ),
     ):
-        importer_mod.import_frcs_practices(**kwargs)
+        importer_mod.import_practices(**kwargs)
 
     assert execute_mock.call_count == 1
     assert execute_mock.call_args.args[3] == RacingReferenceSource().id
@@ -110,7 +110,7 @@ def test_import_practices_skips_when_temp_entrylist_missing() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_frcs_practices(**kwargs)
+        importer_mod.import_practices(**kwargs)
 
     assert execute_mock.call_count == 0
 
@@ -133,7 +133,7 @@ def test_load_stage_qualifyings_persists_staged_xcom_metadata() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.load_stage_frcs_qualifyings_csvs(**kwargs)
+        importer_mod.load_stage_qualifyings_csvs(**kwargs)
 
     assert execute_mock.call_args.args[3] == FrcsSource().id
     assert ti.pushed["importer_staged_qualifyings"] == [
@@ -170,7 +170,7 @@ def test_import_qualifyings_uses_staged_xcom_and_not_filesystem() -> None:
             importer_mod, "_cup_qualifying_data_source_id", side_effect=AssertionError("should not be called")
         ),
     ):
-        importer_mod.import_frcs_qualifyings(**kwargs)
+        importer_mod.import_qualifyings(**kwargs)
 
     assert execute_mock.call_count == 1
     assert execute_mock.call_args.args[3] == RacingReferenceSource().id
@@ -200,7 +200,7 @@ def test_import_qualifyings_skips_when_temp_entrylist_missing() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_frcs_qualifyings(**kwargs)
+        importer_mod.import_qualifyings(**kwargs)
 
     assert execute_mock.call_count == 0
 
@@ -228,7 +228,7 @@ def test_import_practices_supports_frcs_and_racing_reference_staged_sources(sour
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_frcs_practices(**kwargs)
+        importer_mod.import_practices(**kwargs)
 
     assert execute_mock.call_count == 1
     assert execute_mock.call_args.args[3] == source_id
@@ -256,7 +256,7 @@ def test_import_qualifyings_supports_frcs_and_racing_reference_staged_sources(so
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_frcs_qualifyings(**kwargs)
+        importer_mod.import_qualifyings(**kwargs)
 
     assert execute_mock.call_count == 1
     assert execute_mock.call_args.args[3] == source_id
@@ -265,11 +265,11 @@ def test_import_qualifyings_supports_frcs_and_racing_reference_staged_sources(so
 @pytest.mark.parametrize(
     ("fn_name", "stg_name"),
     [
-        ("import_frcs_penalties", "stg_frcs_penalties_101_202601010000"),
-        ("import_frcs_pitstops", "stg_frcs_pit_stops_detail_101_202601010000"),
-        ("import_frcs_draftkings", "stg_frcs_draftkings_101_202601010000"),
-        ("import_frcs_fanduel", "stg_frcs_fanduel_101_202601010000"),
-        ("import_frcs_lineup", "stg_frcs_lineup_101_202601010000"),
+        ("import_penalties", "stg_frcs_penalties_101_202601010000"),
+        ("import_pitstops", "stg_frcs_pit_stops_detail_101_202601010000"),
+        ("import_draftkings", "stg_frcs_draftkings_101_202601010000"),
+        ("import_fanduel", "stg_frcs_fanduel_101_202601010000"),
+        ("import_lineup", "stg_frcs_lineup_101_202601010000"),
     ],
 )
 def test_import_tasks_execute_from_staging_when_csv_missing(fn_name: str, stg_name: str) -> None:
@@ -311,7 +311,7 @@ def test_import_races_executes_when_both_required_csvs_exist() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_frcs_races(**kwargs)
+        importer_mod.import_races(**kwargs)
 
     assert execute_mock.call_count == 1
 
@@ -333,7 +333,7 @@ def test_import_races_skips_when_temp_entrylist_missing() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_frcs_races(**kwargs)
+        importer_mod.import_races(**kwargs)
 
     assert execute_mock.call_count == 0
 
@@ -341,10 +341,10 @@ def test_import_races_skips_when_temp_entrylist_missing() -> None:
 @pytest.mark.parametrize(
     "fn_name",
     [
-        "load_stage_frcs_penalties_csvs",
-        "load_stage_frcs_pitstops_csvs",
-        "load_stage_frcs_draftkings_csvs",
-        "load_stage_frcs_fanduel_csvs",
+        "load_stage_penalties_csvs",
+        "load_stage_pitstops_csvs",
+        "load_stage_draftkings_csvs",
+        "load_stage_fanduel_csvs",
     ],
 )
 def test_load_stage_single_file_tasks_execute_when_csv_exists(fn_name: str) -> None:
@@ -381,6 +381,6 @@ def test_load_stage_races_executes_when_both_csvs_exist() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.load_stage_frcs_races_csvs(**kwargs)
+        importer_mod.load_stage_races_csvs(**kwargs)
 
     assert execute_mock.call_count == 1

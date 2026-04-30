@@ -4,6 +4,11 @@ Apache Airflow 3 project that schedules and runs data pipelines for fantasy NASC
 
 The stack is intended to run in Docker (Airflow with Celery, PostgreSQL, Redis, and a MariaDB service that is typically built from a sibling **fantasy-sports-db** repository). Shared Python helpers and scraper logic live under `include/`; Airflow-specific operators and executors live under `airflow_utils/`.
 
+## Documentation
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): full contributor workflow, testing policy, SQL/DAG change guidance, and PR standards.
+- [`AGENTS.md`](AGENTS.md): repository-specific AI coding agent conventions, validation requirements, and safe-edit expectations.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -24,6 +29,18 @@ Python dependencies and versions are declared in `pyproject.toml` and locked wit
 - For **local** Python (tests, IDE, `uv sync`): **uv** and **pyenv** as expected by `script/setup`, plus a `.python-version` file at the repo root
 
 On Linux, building the optional `mysqlclient` wheel needs MariaDB headers and a Python with development headers; `script/setup` can skip `mysqlclient` and rely on PyMySQL-compatible drivers when those are missing.
+
+## Where to start
+
+For first-time contributors:
+
+1. Run `./script/setup` to prepare Python and dependencies.
+2. Make your change in a focused branch.
+3. Run `./script/format` and `./script/lint`.
+4. Run tests with `uv run --group dev pytest` (or `./script/test` for containerized runs).
+5. Open a PR with test evidence and any schema/import impact notes.
+
+Use [`CONTRIBUTING.md`](CONTRIBUTING.md) for full policy and process details.
 
 ## Lint
 

@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","52","52","",""
+"yellow","53","55","3","#15 spun turn 4","10"
+"green","56","132","77","",""
+"yellow","133","141","9","debris backstretch","27"
+"green","142","187","46","",""
+"yellow","188","192","5","debris turns 3/4","20"
+"green","193","267","75","",""

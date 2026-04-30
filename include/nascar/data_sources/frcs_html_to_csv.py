@@ -623,12 +623,21 @@ def _frcs_fanduel_header_to_snake(raw: str) -> str:
 
 
 _FRCS_RACE_RESULTS_HEADER_MAP: dict[str, str] = {
+    "position": "finish",
     "fin": "finish",
     "st": "start",
+    "starting position": "start",
     "#": "number",
+    "no": "number",
     "driver": "driver_name",
+    "name": "driver_name",
+    "owner": "owner",
+    "team": "owner",
+    "sponsor": "sponsor",
     "make": "manufacturer",
+    "car": "manufacturer",
     "tot pts": "total_points",
+    "points": "total_points",
     "fin pts": "finish_points",
     "stg pts": "stage_points",
     "bon pts": "bonus_points",
@@ -648,6 +657,54 @@ def _frcs_race_results_header_to_snake(raw: str) -> str:
     if key in _FRCS_RACE_RESULTS_HEADER_MAP:
         return _FRCS_RACE_RESULTS_HEADER_MAP[key]
     return _frcs_header_label_to_snake_case(raw)
+
+
+_FRCS_RACE_RESULTS_CANONICAL_HEADERS: tuple[str, ...] = (
+    "position",
+    "starting_position",
+    "number",
+    "name",
+    "sponsor",
+    "owner",
+    "car",
+    "laps",
+    "status",
+    "laps_led",
+    "points",
+    "playoff_points",
+)
+
+
+def _frcs_race_results_canonical_row(
+    row_vals: tuple[str, ...],
+    headers: list[str],
+) -> tuple[str, ...]:
+    idx = {h: i for i, h in enumerate(headers)}
+
+    def first(*keys: str) -> str:
+        for k in keys:
+            i = idx.get(k)
+            if i is None or i >= len(row_vals):
+                continue
+            v = row_vals[i].strip()
+            if v:
+                return v
+        return ""
+
+    return (
+        first("finish", "position"),
+        first("start", "starting_position"),
+        first("number"),
+        first("driver_name", "name"),
+        first("sponsor"),
+        first("owner", "team"),
+        first("manufacturer", "car"),
+        first("laps"),
+        first("status"),
+        first("laps_led"),
+        first("total_points", "points"),
+        first("playoff_points"),
+    )
 
 
 def _frcs_unique_snake_headers(names: list[str]) -> list[str]:
@@ -913,14 +970,14 @@ class FrcsHtmlToCsv:
                     labels = _frcs_table_column_labels(candidate)
                     labels_norm = {re.sub(r"[^a-z0-9]+", "", x.lower()) for x in labels}
                     # Require race-results-like labels, not infractions columns.
-                    if {"fin", "st", "driver"} <= labels_norm:
+                    if {"fin", "st", "driver"} <= labels_norm or {"finish", "start", "driver"} <= labels_norm:
                         table = candidate
                         break
-        headers: list[str] = []
+        normalized_headers: list[str] = []
         csv_list: list[tuple[str, ...]] = []
         if table is not None:
             raw_labels = _frcs_table_column_labels(table)
-            headers = _frcs_unique_snake_headers(
+            normalized_headers = _frcs_unique_snake_headers(
                 [_frcs_race_results_header_to_snake(x) for x in raw_labels]
             )
             tbody = table.find("tbody")
@@ -929,12 +986,16 @@ class FrcsHtmlToCsv:
                 cells = tr.find_all("td")
                 if not cells:
                     continue
-                row = tuple(_frcs_cell_text(cells[i]) if i < len(cells) else "" for i in range(len(headers)))
-                if any(row):
-                    csv_list.append(row)
-        pos_col = "position" if "position" in headers else "finish"
-        _sort_csv_rows_by_column_numeric(csv_list, headers, pos_col, reverse=False)
+                row = tuple(
+                    _frcs_cell_text(cells[i]) if i < len(cells) else ""
+                    for i in range(len(normalized_headers))
+                )
+                canonical = _frcs_race_results_canonical_row(row, normalized_headers)
+                if any(canonical):
+                    csv_list.append(canonical)
         File.silent_remove(csv_file_path)
+        headers = list(_FRCS_RACE_RESULTS_CANONICAL_HEADERS)
+        _sort_csv_rows_by_column_numeric(csv_list, headers, "position", reverse=False)
         File.write_csv(csv_file_path, csv_list, headers)
 
     @staticmethod

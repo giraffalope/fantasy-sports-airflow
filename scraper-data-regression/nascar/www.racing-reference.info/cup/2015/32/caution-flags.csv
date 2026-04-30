@@ -1,0 +1,7 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","132","132","",""
+"yellow","133","139","7","#51 fluid on track","78"
+"green","140","184","45","",""
+"yellow","185","194","10","#1 fluid on track","35"
+"green","195","195","1","",""
+"yellow","196","196","1","#11,95,14,20,38,4,10,3,9,6,7 accident frontstretch","none"

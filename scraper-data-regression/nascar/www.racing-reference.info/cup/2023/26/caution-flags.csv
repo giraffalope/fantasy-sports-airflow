@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","36","36","",""
+"yellow","37","40","4","end of stage 1","13"
+"green","41","95","55","",""
+"yellow","96","104","9","#2,3,4,5,11,12,20,21,36,45,47,54 accident 4 [red: 9:28]","none"
+"green","105","156","52","",""
+"yellow","157","161","5","#14,41 accident backstretch","45"
+"green","162","163","2","",""

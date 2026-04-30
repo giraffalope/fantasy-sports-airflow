@@ -1,0 +1,6 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","16","16","",""
+"yellow","17","18","2","end of stage 1","none"
+"green","19","31","13","",""
+"yellow","32","33","2","end of stage 2","none"
+"green","34","68","35","",""

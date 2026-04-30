@@ -142,6 +142,34 @@ def test_convert_race_results_skips_short_rows(tmp_path) -> None:
     assert body.count("Driver A") == 1
 
 
+def test_convert_race_results_chasecol_driver_column(tmp_path) -> None:
+    """Playoff rows use ``td.chasecol`` for the driver; keep driver in ``name`` column."""
+    html = tmp_path / "race.html"
+    csv_path = tmp_path / "race.csv"
+    html.write_text(
+        """
+        <table class="race-results-tbl"><tbody>
+          <tr><td class="col">Pos</td><td class="col">St</td><td class="col">#</td>
+              <td class="col">Driver</td><td class="col">Sponsor / Owner</td><td class="col">Car</td>
+              <td class="col">Laps</td><td class="col">Status</td><td class="col">Led</td><td class="col">Pts</td><td class="col">PP</td></tr>
+          <tr>
+            <td class="col">2</td><td class="col">4</td><td class="col">24</td>
+            <td class="chasecol"><a>Chase Elliott</a></td>
+            <td class="col">Hooters (Rick Hendrick)</td>
+            <td class="col">Chevrolet</td><td class="col">312</td><td class="col">running</td>
+            <td class="col">34</td><td class="col">45</td><td class="col">0</td>
+          </tr>
+        </tbody></table>
+        """,
+        encoding="utf-8",
+    )
+    HtmlToCsvConverter.convert_race_results(str(html), str(csv_path))
+    rows = list(csv.reader(io.StringIO(csv_path.read_text(encoding="utf-8"))))
+    assert rows[1][3] == "Chase Elliott"
+    assert rows[1][4] == ""
+    assert rows[1][5] == ""
+
+
 def test_convert_prerace_penalties_no_other_results_cell_no_crash(tmp_path) -> None:
     html = tmp_path / "race.html"
     csv_path = tmp_path / "pre.csv"

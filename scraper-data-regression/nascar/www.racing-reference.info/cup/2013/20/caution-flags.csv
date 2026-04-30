@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","59","59","",""
+"yellow","60","64","5","#32 slow on track","9"
+"green","65","81","17","",""
+"yellow","82","86","5","#31 slow on track","51"
+"green","87","114","28","",""
+"yellow","115","118","4","#32 slow on track","55"
+"green","119","160","42","",""

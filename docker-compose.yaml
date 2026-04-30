@@ -333,7 +333,7 @@ services:
       context: ${FANTASY_SPORTS_DB_BUILD_CONTEXT:-../fantasy-sports-db}
       dockerfile: Dockerfile
     image: ${FANTASY_SPORTS_DB_IMAGE:-fantasy-sports-db:latest}
-    container_name: mariadb
+    container_name: ${MARIADB_CONTAINER_NAME:-mariadb}
     restart: always
     environment:
       MARIADB_MYSQL_LOCALHOST_USER: true

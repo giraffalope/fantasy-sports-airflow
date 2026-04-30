@@ -40,6 +40,11 @@ RUN mkdir -p /home/airflow/scraper \
     && ln -s /app/scraper-data/nascar /home/airflow/scraper/nascar
 COPY scraper-data/nascar/frcs.pro/cup/2010/01/qualifying.html /app/scraper-data/nascar/frcs.pro/cup/2010/01/qualifying.html
 COPY scraper-data/nascar/frcs.pro/cup/2010/01/practice-01.html /app/scraper-data/nascar/frcs.pro/cup/2010/01/practice-01.html
+COPY scraper-data/nascar/frcs.pro/cup/2010/01/entrylist.csv /app/scraper-data/nascar/frcs.pro/cup/2010/01/entrylist.csv
+COPY scraper-data/nascar/frcs.pro/cup/2010/01/lineup.csv /app/scraper-data/nascar/frcs.pro/cup/2010/01/lineup.csv
+COPY scraper-data/nascar/frcs.pro/cup/2010/01/race-results.csv /app/scraper-data/nascar/frcs.pro/cup/2010/01/race-results.csv
+COPY scraper-data/nascar/frcs.pro/cup/2010/01/loop-data.csv /app/scraper-data/nascar/frcs.pro/cup/2010/01/loop-data.csv
+COPY scraper-data/nascar/frcs.pro/cup/2010/01/practice-01.csv /app/scraper-data/nascar/frcs.pro/cup/2010/01/practice-01.csv
 COPY scraper-data/nascar/frcs.pro/cup/2024/13/qualifying.html /app/scraper-data/nascar/frcs.pro/cup/2024/13/qualifying.html
 COPY scraper-data/nascar/frcs.pro/cup/2025/25/qualifying.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/qualifying.html
 COPY scraper-data/nascar/frcs.pro/cup/2025/25/practice-01.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/practice-01.html
@@ -50,6 +55,8 @@ COPY scraper-data/nascar/frcs.pro/cup/2025/25/fanduel.html /app/scraper-data/nas
 COPY scraper-data/nascar/frcs.pro/cup/2025/25/entrylist.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/entrylist.html
 COPY scraper-data/nascar/frcs.pro/cup/2025/25/lineup.html /app/scraper-data/nascar/frcs.pro/cup/2025/25/lineup.html
 COPY scraper-data/nascar/www.racing-reference.info/cup/2010/01/qualifying.html /app/scraper-data/nascar/www.racing-reference.info/cup/2010/01/qualifying.html
+COPY scraper-data/nascar/www.racing-reference.info/cup/2010/01/race-results.csv /app/scraper-data/nascar/www.racing-reference.info/cup/2010/01/race-results.csv
+COPY scraper-data/nascar/www.racing-reference.info/cup/2010/01/loop-data.csv /app/scraper-data/nascar/www.racing-reference.info/cup/2010/01/loop-data.csv
 COPY scraper-data/nascar/www.racing-reference.info/cup/2015/01/qualifying.html /app/scraper-data/nascar/www.racing-reference.info/cup/2015/01/qualifying.html
 
 # Options (incl. coverage) come from [tool.pytest.ini_options] in pyproject.toml

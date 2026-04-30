@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","89","89","",""
+"yellow","90","93","4","debris","47"
+"green","94","190","97","",""
+"yellow","191","196","6","debris","27"
+"green","197","234","38","",""
+"yellow","235","239","5","#10 oil on track","48"
+"green","240","301","62","",""

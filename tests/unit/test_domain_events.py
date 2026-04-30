@@ -186,7 +186,7 @@ def test_unknown_backend_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_schedule_operators_have_domain_event_callbacks() -> None:
     import nascar.cup.scraper.importer as importer_dag
 
-    load_t = importer_dag.dag.get_task("load_stage_schedule_csv")
+    load_t = importer_dag.dag.get_task("load_stage_schedule_csvs")
     import_t = importer_dag.dag.get_task("import_schedule")
     load_cb = load_t.on_success_callback
     import_cb = import_t.on_success_callback

@@ -162,6 +162,48 @@ def _cleanup_week_results(hook: NascarMySqlHook, week_id: int) -> None:
         conn.close()
 
 
+def _cup_2010_week_1_ids(hook: NascarMySqlHook) -> tuple[int, int, int] | None:
+    row = hook.get_first(
+        """
+        SELECT r.id, w.id, w.season_id
+        FROM nascar.races r
+        JOIN nascar.weeks w ON w.id = r.week_id
+        JOIN nascar.seasons s ON s.id = w.season_id
+        WHERE s.series_id = %s
+          AND s.year = %s
+          AND w.number = %s
+          AND r.deleted_at IS NULL
+          AND w.deleted_at IS NULL
+          AND s.deleted_at IS NULL
+        LIMIT 1
+        """,
+        parameters=(1, 2010, 1),
+    )
+    if not row:
+        return None
+    return int(row[0]), int(row[1]), int(row[2])
+
+
+def _prepare_2010_week_1_csv_inputs_for_team_resolution() -> None:
+    frcs_base = Path("/home/airflow/scraper/nascar/frcs.pro/cup/2010/01")
+    if not frcs_base.is_dir():
+        pytest.skip("Required FRCS fixture CSV folder missing for 2010 week 1")
+
+    required = ["entrylist.csv", "lineup.csv", "race-results.csv", "loop-data.csv"]
+    for name in required:
+        if not (frcs_base / name).is_file():
+            pytest.skip(f"Missing required FRCS fixture CSV for 2010 week 1: {name}")
+
+    rr_base = Path("/home/airflow/scraper/nascar/www.racing-reference.info/cup/2010/01")
+    rr_base.mkdir(parents=True, exist_ok=True)
+
+    # Use the same canonical week fixtures for both sources as requested.
+    for name in ["entrylist.csv", "lineup.csv", "race-results.csv", "loop-data.csv", "qualifying.csv", "practice-1.csv"]:
+        src = frcs_base / name
+        if src.is_file():
+            shutil.copyfile(src, rr_base / name)
+
+
 def _prepare_week_25_csv_inputs() -> None:
     base = Path("/home/airflow/scraper/nascar/frcs.pro/cup/2025/25")
     entry_html = base / "entrylist.html"
@@ -217,12 +259,12 @@ def test_importer_runtime_populates_practice_and_qualifying_results_in_db(monkey
         lambda *_a, **_k: None,
     )
 
-    importer_mod.load_stage_frcs_entrylist_csvs(**ctx)
-    importer_mod.import_frcs_entrylist(**ctx)
-    importer_mod.load_stage_frcs_practices_csvs(**ctx)
-    importer_mod.import_frcs_practices(**ctx)
-    importer_mod.load_stage_frcs_qualifyings_csvs(**ctx)
-    importer_mod.import_frcs_qualifyings(**ctx)
+    importer_mod.load_stage_entrylist_csvs(**ctx)
+    importer_mod.import_entrylist(**ctx)
+    importer_mod.load_stage_practices_csvs(**ctx)
+    importer_mod.import_practices(**ctx)
+    importer_mod.load_stage_qualifyings_csvs(**ctx)
+    importer_mod.import_qualifyings(**ctx)
 
     practice_count = hook.get_first(
         "SELECT COUNT(*) FROM nascar.practices WHERE week_id = %s",
@@ -257,7 +299,7 @@ def test_importer_runtime_populates_practice_and_qualifying_results_in_db(monkey
     assert int(qualifying_results_count) > 0
 
 
-def test_importer_runtime_converts_zero_speed_time_to_null(monkeypatch) -> None:
+def test_importer_runtime_filters_rows_with_null_best_time_or_speed(monkeypatch) -> None:
     _require_db_conn()
     hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
     _prepare_week_25_csv_inputs()
@@ -287,37 +329,73 @@ def test_importer_runtime_converts_zero_speed_time_to_null(monkeypatch) -> None:
         lambda *_a, **_k: None,
     )
 
-    importer_mod.load_stage_frcs_entrylist_csvs(**ctx)
-    importer_mod.import_frcs_entrylist(**ctx)
-    importer_mod.load_stage_frcs_practices_csvs(**ctx)
-    importer_mod.import_frcs_practices(**ctx)
-    importer_mod.load_stage_frcs_qualifyings_csvs(**ctx)
-    importer_mod.import_frcs_qualifyings(**ctx)
+    importer_mod.load_stage_entrylist_csvs(**ctx)
+    importer_mod.import_entrylist(**ctx)
+    importer_mod.load_stage_practices_csvs(**ctx)
+    importer_mod.import_practices(**ctx)
+    importer_mod.load_stage_qualifyings_csvs(**ctx)
+    importer_mod.import_qualifyings(**ctx)
 
-    practice_zero_rows = hook.get_first(
+    practice_null_metric_rows = hook.get_first(
         """
         SELECT COUNT(*)
         FROM nascar.practice_results pr
         JOIN nascar.practices p ON p.id = pr.practice_id
         WHERE p.week_id = %s
-          AND pr.finish_position = 1
-          AND pr.best_time IS NULL
-          AND pr.best_speed IS NULL
+          AND (pr.best_time IS NULL OR pr.best_speed IS NULL)
         """,
         parameters=(week_id,),
     )[0]
-    qualifying_zero_rows = hook.get_first(
+    qualifying_null_metric_rows = hook.get_first(
         """
         SELECT COUNT(*)
         FROM nascar.qualifying_results qr
         JOIN nascar.qualifyings q ON q.id = qr.qualifying_id
         WHERE q.week_id = %s
-          AND qr.finish_position = 1
-          AND qr.best_time IS NULL
-          AND qr.best_speed IS NULL
+          AND (qr.best_time IS NULL OR qr.best_speed IS NULL)
         """,
         parameters=(week_id,),
     )[0]
 
-    assert int(practice_zero_rows) >= 1
-    assert int(qualifying_zero_rows) >= 1
+    assert int(practice_null_metric_rows) == 0
+    assert int(qualifying_null_metric_rows) == 0
+
+
+def test_importer_runtime_week1_enriched_race_results_has_non_null_team_names(monkeypatch) -> None:
+    _require_db_conn()
+    hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
+    _prepare_2010_week_1_csv_inputs_for_team_resolution()
+
+    ids = _cup_2010_week_1_ids(hook)
+    if ids is None:
+        pytest.skip("Could not resolve CUP 2010 week 1 race/week/season ids")
+    race_id, week_id, season_id = ids
+
+    ti = _DummyTI()
+    ctx = {
+        "ti": ti,
+        "data_interval_start": datetime(2010, 2, 1, tzinfo=UTC),
+        "logical_date": datetime(2010, 2, 1, tzinfo=UTC),
+    }
+
+    monkeypatch.setattr(importer_mod, "_pull_target_weeks", lambda *_a, **_k: [(week_id, season_id, 1, 1)])
+    monkeypatch.setattr(importer_mod, "_emit_cup_importer_domain_event", lambda *_a, **_k: None)
+
+    importer_mod.load_stage_lineup_csvs(**ctx)
+    importer_mod.load_stage_entrylist_csvs(**ctx)
+    importer_mod.load_stage_races_csvs(**ctx)
+    importer_mod.resolve_drivers_cars_manufacturers_teams(**ctx)
+    importer_mod.import_races(**ctx)
+
+    rows = hook.get_records("CALL nascar.enriched_race_results(%s)", parameters=(race_id,))
+    by_driver: dict[str, tuple] = {}
+    for row in rows:
+        first_name = row[4]
+        last_name = row[5]
+        if first_name is None or last_name is None:
+            continue
+        by_driver[f"{first_name} {last_name}"] = row
+
+    for target in ("Marcos Ambrose", "Michael McDowell"):
+        assert target in by_driver, f"Missing driver in enriched_race_results: {target}"
+        assert by_driver[target][12] is not None, f"team_name is NULL for {target}"

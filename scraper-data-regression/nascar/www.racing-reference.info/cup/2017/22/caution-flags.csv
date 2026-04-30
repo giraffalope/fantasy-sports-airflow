@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","21","21","",""
+"yellow","22","24","3","end of stage 1","14"
+"green","25","41","17","",""
+"yellow","42","44","3","end of stage 2","33"
+"green","45","52","8","",""
+"yellow","53","54","2","#34 debris backstretch","72"
+"green","55","90","36","",""

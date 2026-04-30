@@ -67,7 +67,7 @@ def test_runtime_race_results_penalties_and_pitstops_outputs_rows(tmp_path) -> N
     race_rows = _read_csv(race_csv)
     assert len(race_rows) >= 10
     race_header = race_rows[0]
-    assert "driver_name" in race_header and "manufacturer" in race_header
+    assert "name" in race_header and "car" in race_header
 
     penalties_rows = _read_csv(penalties_csv)
     assert len(penalties_rows) >= 2

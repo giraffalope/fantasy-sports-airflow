@@ -13,7 +13,7 @@ core names (staging/temp tables use ``table_suffix`` / ``week_id`` in the databa
 +-------------------------------+------------------------------------------+----------------------------------+
 | Importer step / task_id       | ``event_type``                           | ``entity_tables`` (typical)      |
 +===============================+==========================================+==================================+
-| ``load_stage_schedule_csv``   | ``CupImporterEventType.SCHEDULE_STAGED`` | ``stg_cup_frcs_schedule_import`` |
+| ``load_stage_schedule_csvs``   | ``CupImporterEventType.SCHEDULE_STAGED`` | ``stg_cup_frcs_schedule_import``, ``stg_cup_racing_reference_schedule_import`` |
 +-------------------------------+------------------------------------------+----------------------------------+
 | ``import_schedule``           | ``CupImporterEventType.SCHEDULE_IMPORTED`` | ``series``, ``seasons``, ``tracks``, ``weeks``, ``data_sources``, ``data_sources_tracks`` |
 +-------------------------------+------------------------------------------+----------------------------------+

@@ -1,0 +1,8 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","57","57","",""
+"yellow","58","64","7","fluid on track","13"
+"green","65","81","17","",""
+"yellow","82","86","5","end of stage 1","43"
+"green","87","161","75","",""
+"yellow","162","166","5","end of stage 2","37"
+"green","167","267","101","",""

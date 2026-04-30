@@ -1,0 +1,7 @@
+"condition","from_lap","to_lap","number_of_laps","reason","free_pass_cars"
+"green","1","210","210","",""
+"yellow","211","217","7","debris backstretch","3"
+"green","218","323","106","",""
+"yellow","324","328","5","#31 spun frontstretch","2"
+"green","329","329","1","",""
+"yellow","330","330","1","#43,21,23,38 accident backstretch","none"
