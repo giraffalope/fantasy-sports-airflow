@@ -1,23 +1,5 @@
-UPDATE nascar.races
-SET deleted_at = NOW()
-WHERE week_id = {{ week_id }}
-  AND deleted_at IS NULL;
-
----
-
-UPDATE nascar.races r
-JOIN (
-    SELECT id
-    FROM (
-        SELECT id
-        FROM nascar.races
-        WHERE week_id = {{ week_id }}
-        ORDER BY id DESC
-        LIMIT 1
-    ) revived
-) revived_row
-    ON revived_row.id = r.id
-SET r.deleted_at = NULL;
+DELETE FROM nascar.races
+WHERE week_id = {{ week_id }};
 
 ---
 

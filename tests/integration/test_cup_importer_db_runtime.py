@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-import nascar.cup.scraper.importer as importer_mod
+import nascar.cup.importer as importer_mod
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 from include.nascar.data_sources.frcs_html_to_csv import FrcsHtmlToCsv
@@ -359,6 +359,27 @@ def test_importer_runtime_filters_rows_with_null_best_time_or_speed(monkeypatch)
 
     assert int(practice_null_metric_rows) == 0
     assert int(qualifying_null_metric_rows) == 0
+
+
+def test_week_results_981_does_not_underflow_unsigned_subtraction() -> None:
+    _require_db_conn()
+    hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
+    conn = hook.get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("CALL nascar.agg_week_results(%s)", (981,))
+        rows = cur.fetchall()
+        col_names = [meta[0] for meta in (cur.description or ())]
+        assert "r_green_flag_pass_diff" in col_names
+        diff_idx = col_names.index("r_green_flag_pass_diff")
+        # We mainly guard against SQL 1690 underflow during proc execution.
+        for row in rows:
+            diff = row[diff_idx]
+            if diff is not None:
+                assert isinstance(diff, int | float)
+    finally:
+        cur.close()
+        conn.close()
 
 
 def test_importer_runtime_week1_enriched_race_results_has_non_null_team_names(monkeypatch) -> None:

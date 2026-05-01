@@ -16,6 +16,11 @@ in ``schedule.csv``), not the official ``week_number`` from the site ``#`` colum
 final task in the race-week DAG (``sync_race_results``), so it indicates a full pass already
 finished for that week folder. DAGs whose ``dag_id`` starts with ``backfill.`` bypass this skip
 so existing HTML can be re-converted to CSV.
+
+**Incomplete loop CSV refresh:** if ``loop-data.csv`` is missing, unreadable, or header-only,
+``sync_weeks`` removes all FRCS week scrape artifacts (race results, entry list, practices,
+qualifying, lineup, pit stops, loop data, DraftKings/FanDuel HTML, pit-stall PDF) so the usual
+``download_*_if_missing`` calls re-fetch from the site on that run.
 """
 
 from __future__ import annotations
@@ -53,6 +58,47 @@ from include.nascar.enums import NascarSeries
 from include.utils.file import File
 
 _FRCS_CUP = NascarSeries.CUP
+
+# Week-local files downloaded from FRCS (not schedule.csv). Removed when loop-data.csv
+# is incomplete so stale HTML/PDF is not kept across hourly runs.
+_FRCS_WEEK_SCRAPE_ARTIFACTS: tuple[str, ...] = (
+    "race-results.html",
+    "entrylist.html",
+    "qualifying.html",
+    "lineup.html",
+    "pit-stops.html",
+    "loop-data.html",
+    "draftkings.html",
+    "fanduel.html",
+    "pit-stall-selections.pdf",
+)
+
+
+def _frcs_purge_week_scrape_artifacts_if_loop_incomplete(
+    task: str, year: int, event_number: int, week_dir: str
+) -> None:
+    """
+    If the week is not complete (no data rows in loop-data.csv), delete cached scrape files
+    so downstream ``download_*_if_missing`` re-downloads them.
+    """
+    if _frcs_week_loop_data_csv_has_data_rows(week_dir):
+        return
+    removed_any = False
+    for name in _FRCS_WEEK_SCRAPE_ARTIFACTS:
+        path = os.path.join(week_dir, name)
+        if os.path.isfile(path):
+            File.silent_remove(path)
+            removed_any = True
+    for path in glob.glob(os.path.join(week_dir, "practice-*.html")):
+        File.silent_remove(path)
+        removed_any = True
+    if removed_any:
+        _frcs_week_line(
+            task,
+            year,
+            event_number,
+            "purged week HTML/PDF (loop-data.csv missing or header-only; re-fetch)",
+        )
 
 
 def _frcs_task_begin(task: str, year: int, run_anchor: datetime) -> None:
@@ -184,6 +230,9 @@ def cup_series_sync_weeks(**context: Any) -> None:
         if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
+        _frcs_purge_week_scrape_artifacts_if_loop_incomplete(
+            task, year, event_number, base
+        )
         _frcs_week_line(task, year, event_number, "ensure race-results.html")
         download_race_results_html_if_missing(
             src, _FRCS_CUP.db_name, year, event_number, week_url

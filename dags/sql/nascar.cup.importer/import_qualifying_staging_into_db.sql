@@ -2,10 +2,8 @@ DROP TABLE IF EXISTS nascar.tmp_qualifying_{{ week_id }}_{{ table_suffix }};
 
 ---
 
-UPDATE nascar.qualifyings
-SET deleted_at = NOW()
-WHERE week_id = {{ week_id }}
-  AND deleted_at IS NULL;
+DELETE FROM nascar.qualifyings
+WHERE week_id = {{ week_id }};
 
 ---
 
@@ -48,30 +46,8 @@ SET t.car_driver_id = COALESCE(tc_num.car_driver_id, tc_driver.car_driver_id);
 
 ---
 
-UPDATE nascar.qualifyings q
-JOIN (
-    SELECT id
-    FROM (
-        SELECT id
-        FROM nascar.qualifyings
-        WHERE week_id = {{ week_id }}
-        ORDER BY id DESC
-        LIMIT 1
-    ) revived
-) revived_row
-    ON revived_row.id = q.id
-SET q.deleted_at = NULL;
-
----
-
 INSERT INTO nascar.qualifyings (week_id)
-SELECT {{ week_id }}
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM nascar.qualifyings q
-    WHERE q.week_id = {{ week_id }}
-      AND q.deleted_at IS NULL
-);
+VALUES ({{ week_id }});
 
 ---
 

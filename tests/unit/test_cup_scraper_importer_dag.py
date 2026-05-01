@@ -1,11 +1,11 @@
-"""Unit tests for DAG ``nascar.cup.scraper.importer``."""
+"""Unit tests for DAG ``nascar.cup.importer``."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
 
-import nascar.cup.scraper.importer as importer_dag
+import nascar.cup.importer as importer_dag
 from nascar.cup.scraper.backfill_assets import (
     BACKFILL_YEARLY_SCHEDULE,
     CUP_SCRAPER_PROD_HOURLY_CRON,
@@ -14,7 +14,7 @@ from nascar.cup.scraper.backfill_assets import (
 
 def test_dag_metadata() -> None:
     dag = importer_dag.dag
-    assert dag.dag_id == "nascar.cup.scraper.importer"
+    assert dag.dag_id == "nascar.cup.importer"
     assert dag.catchup is False
     assert dag.max_active_runs == 1
     assert dag.schedule == CUP_SCRAPER_PROD_HOURLY_CRON
@@ -22,7 +22,7 @@ def test_dag_metadata() -> None:
 
 def test_backfill_dag_metadata() -> None:
     dag = importer_dag.backfill_dag
-    assert dag.dag_id == "backfill.nascar.cup.scraper.importer"
+    assert dag.dag_id == "backfill.nascar.cup.importer"
     assert dag.catchup is True
     assert dag.schedule == BACKFILL_YEARLY_SCHEDULE
 

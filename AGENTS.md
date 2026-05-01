@@ -4,8 +4,8 @@ Repository-specific instructions for AI coding agents working in `fantasy-sports
 
 ## Canonical Process Docs
 
-For importer DAG process details (including `nascar.cup.scraper.importer` and
-`backfill.nascar.cup.scraper.importer`), use:
+For importer DAG process details (including `nascar.cup.importer`,
+`backfill.nascar.cup.importer`, and downstream `nascar.cup.aggregate`), use:
 
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) -> `## Importer DAG Process`
 

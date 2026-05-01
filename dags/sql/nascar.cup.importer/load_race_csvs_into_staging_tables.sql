@@ -117,7 +117,7 @@ SET
     finish = nascar.clean_position(@finish),
     high_pos = nascar.clean_position(@high_pos),
     low_pos = nascar.clean_position(@low_pos),
-    avg_pos = nascar.clean_position(@avg_pos),
+    avg_pos = nascar.clean_unsigned_decimal(@avg_pos),
     pass_diff = nascar.clean_integer(@pass_diff),
     green_flag_passes = nascar.clean_unsigned_integer(@green_flag_passes),
     green_flag_times_passed = nascar.clean_unsigned_integer(@green_flag_times_passed),

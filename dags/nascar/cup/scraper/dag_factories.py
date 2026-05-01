@@ -11,7 +11,7 @@ schedule DAGs share ``CUP_SCRAPER_PROD_HOURLY_CRON`` so the sensor's default
 logical-date match is correct (no ``execution_date_fn``). Backfill pairs use
 ``BACKFILL_YEARLY_SCHEDULE`` on the same calendar day.
 
-**Importer → race-week:** ``nascar.cup.scraper.importer`` uses two sensors on
+**Importer → race-week:** ``nascar.cup.importer`` uses two sensors on
 ``sync_race_results`` (FRCS and Racing Reference), again with matching cron per
 environment.
 """

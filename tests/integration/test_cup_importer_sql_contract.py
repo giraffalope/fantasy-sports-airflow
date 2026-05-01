@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-SQL_ROOT = Path(__file__).resolve().parents[2] / "dags" / "sql" / "nascar.cup.scraper.importer"
+SQL_ROOT = Path(__file__).resolve().parents[2] / "dags" / "sql" / "nascar.cup.importer"
 
 
 def _sql_text(name: str) -> str:

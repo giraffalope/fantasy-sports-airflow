@@ -13,18 +13,16 @@ INNER JOIN nascar.dfs d ON d.id = dsal.dfs_id AND d.name = 'FanDuel' AND d.delet
 
 ---
 
-INSERT INTO nascar.dfs_salaries (dfs_id, race_id, dfs_driver_id, car_driver_id, salary)
+INSERT INTO nascar.dfs_salaries (dfs_id, race_id, car_driver_id, salary)
 SELECT
     ranked.dfs_id,
     ranked.race_id,
-    ranked.dfs_driver_id,
     ranked.car_driver_id,
     ranked.salary
 FROM (
     SELECT
         d.id AS dfs_id,
         r.id AS race_id,
-        CAST(stg.rank AS UNSIGNED) AS dfs_driver_id,
         COALESCE(tc_num.car_driver_id, tc_driver.car_driver_id) AS car_driver_id,
         CAST(stg.salary AS UNSIGNED) AS salary,
         ROW_NUMBER() OVER (

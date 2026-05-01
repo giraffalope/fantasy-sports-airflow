@@ -5,7 +5,7 @@ Events are emitted **after** successful templated SQL execution in Python callab
 ``on_success_callback`` on :class:`airflow_utils.mysql_template_file_operator.MySQLTemplateFileOperatorFromContext`
 when there is no surrounding callable (Cup schedule load/import).
 
-**Event catalog (Cup importer ``nascar.cup.scraper.importer``)**
+**Event catalog (Cup importer ``nascar.cup.importer``)**
 
 Each row is one successful execution of the corresponding step. ``entity_tables`` are logical
 core names (staging/temp tables use ``table_suffix`` / ``week_id`` in the database).

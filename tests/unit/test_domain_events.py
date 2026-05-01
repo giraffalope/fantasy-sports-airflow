@@ -37,7 +37,7 @@ def test_airflow_context_logical_date_from_dag_run() -> None:
 
 def test_airflow_context_from_mapping() -> None:
     class _Dag:
-        dag_id = "nascar.cup.scraper.importer"
+        dag_id = "nascar.cup.importer"
 
     class _TI:
         task_id = "import_practices"
@@ -48,7 +48,7 @@ def test_airflow_context_from_mapping() -> None:
 
     ctx = {"dag": _Dag(), "ti": _TI(), "dag_run": _DR()}
     af = de.airflow_context_from_mapping(ctx)
-    assert af.dag_id == "nascar.cup.scraper.importer"
+    assert af.dag_id == "nascar.cup.importer"
     assert af.task_id == "import_practices"
     assert af.run_id.startswith("scheduled__")
     assert af.logical_date is None
@@ -184,7 +184,7 @@ def test_unknown_backend_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_schedule_operators_have_domain_event_callbacks() -> None:
-    import nascar.cup.scraper.importer as importer_dag
+    import nascar.cup.importer as importer_dag
 
     load_t = importer_dag.dag.get_task("load_stage_schedule_csvs")
     import_t = importer_dag.dag.get_task("import_schedule")

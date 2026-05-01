@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-import nascar.cup.scraper.importer as importer_mod
+import nascar.cup.importer as importer_mod
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 
 
-SQL_ROOT = Path(__file__).resolve().parents[2] / "dags" / "sql" / "nascar.cup.scraper.importer"
+SQL_ROOT = Path(__file__).resolve().parents[2] / "dags" / "sql" / "nascar.cup.importer"
 _SCRAPER_ROOT = Path("/home/airflow/scraper/nascar")
 
 
@@ -78,13 +78,13 @@ def _ensure_2010_schedule_seeded(hook: NascarMySqlHook, context: dict[str, Any])
     hook_seed = NascarMySqlHook(mysql_conn_id="nascar_conn")
     importer_mod._execute_templated_sql_file(
         hook_seed,
-        importer_mod._sql_root() / "nascar.cup.scraper.importer" / "load_stage_schedule_csvs.sql",
+        importer_mod._sql_root() / "nascar.cup.importer" / "load_stage_schedule_csvs.sql",
         load_params,
         import_params["frcs_source_name"],
     )
     importer_mod._execute_templated_sql_file(
         hook_seed,
-        importer_mod._sql_root() / "nascar.cup.scraper.importer" / "import_schedule.sql",
+        importer_mod._sql_root() / "nascar.cup.importer" / "import_schedule.sql",
         import_params,
         import_params["frcs_source_name"],
     )

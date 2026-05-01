@@ -88,8 +88,9 @@ For SQL contract changes:
 
 The Cup importer is exposed as two DAGs with shared task logic:
 
-- `nascar.cup.scraper.importer` (production schedule, no catchup)
-- `backfill.nascar.cup.scraper.importer` (yearly backfill schedule, catchup enabled)
+- `nascar.cup.importer` (production schedule, no catchup)
+- `backfill.nascar.cup.importer` (yearly backfill schedule, catchup enabled)
+- `nascar.cup.aggregate` (hourly production aggregate load after importer cleanup)
 
 Both DAGs are created by the same DAG builder in `dags/nascar/cup/scraper/importer.py`, so task IDs, task order, and SQL execution semantics are intentionally shared unless explicitly changed.
 

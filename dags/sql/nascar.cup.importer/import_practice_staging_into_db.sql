@@ -2,11 +2,8 @@ DROP TABLE IF EXISTS nascar.tmp_practice_{{ week_id }}_{{ number }}_{{ table_suf
 
 ---
 
-UPDATE nascar.practices
-SET deleted_at = NOW()
-WHERE week_id = {{ week_id }}
-  AND number = {{ number }}
-  AND deleted_at IS NULL;
+DELETE FROM nascar.practices
+WHERE week_id = {{ week_id }} AND number = {{ number }};
 
 ---
 
@@ -86,32 +83,8 @@ SET p.car_driver_id = COALESCE(tc_num.car_driver_id, tc_driver.car_driver_id);
 
 ---
 
-UPDATE nascar.practices p
-JOIN (
-    SELECT id
-    FROM (
-        SELECT id
-        FROM nascar.practices
-        WHERE week_id = {{ week_id }}
-          AND number = {{ number }}
-        ORDER BY id DESC
-        LIMIT 1
-    ) revived
-) revived_row
-    ON revived_row.id = p.id
-SET p.deleted_at = NULL;
-
----
-
 INSERT INTO nascar.practices (week_id, number)
-SELECT {{ week_id }}, {{ number }}
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM nascar.practices p
-    WHERE p.week_id = {{ week_id }}
-      AND p.number = {{ number }}
-      AND p.deleted_at IS NULL
-);
+VALUES ({{ week_id }}, {{ number }});
 
 ---
 

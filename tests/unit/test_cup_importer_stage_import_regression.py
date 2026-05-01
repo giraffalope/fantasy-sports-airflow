@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import nascar.cup.scraper.importer as importer_mod
+import nascar.cup.importer as importer_mod
 import pytest
 
 from include.nascar.data_sources.frcs import FrcsSource
