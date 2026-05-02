@@ -42,6 +42,8 @@ if [[ ! -r "$BACKUP_FILE" ]]; then
   exit 1
 fi
 
+DB_NAME="${DATABASE_NAME:-nascar}"
+
 # -i keeps STDIN open; without it, redirected/piped input often never reaches the client.
 # --binary-mode avoids client mis-parsing dump bytes on stdin.
 # Service and client binary are both named "mariadb" in this image.
@@ -49,7 +51,7 @@ mysql_stdin() {
   docker compose exec -i -T \
     -e MYSQL_PWD="$RESTORE_PASSWORD" \
     mariadb \
-    mariadb --binary-mode -u"$RESTORE_USER"
+    mariadb --binary-mode -u"$RESTORE_USER" -D"$DB_NAME"
 }
 
 RESTORE_USER="${DATABASE_RESTORE_USER:-root}"
@@ -63,7 +65,6 @@ fi
 
 echo "Restore completed from: $BACKUP_FILE"
 
-DB_NAME="${DATABASE_NAME:-nascar}"
 if [[ "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
   summary="$(
     docker compose exec -T \

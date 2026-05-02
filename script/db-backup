@@ -3,18 +3,21 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Create a full MariaDB backup from the Docker Compose mariadb service.
+Create a MariaDB backup from the Docker Compose mariadb service.
 
 Usage:
   ./script/db-backup
+  ./script/db-backup --tables table1 table2 ...
 
 Uses root by default (DATABASE_DUMP_USER / DATABASE_DUMP_PASSWORD, falling back to
 DATABASE_ROOT_PASSWORD) so --all-databases includes full data and privileges.
 Override dump user if needed, e.g. DATABASE_DUMP_USER=username.
 
-Dumps both schema and table row data (never passes --no-data). Passes
---extended-insert, --quick, and --events so dumps stay data-complete even if a
-[mysqldump] section in the image would otherwise trim behavior.
+Default mode dumps full instance schema+data (--all-databases).
+
+--tables mode dumps data-only rows for selected tables from DATABASE_NAME
+(default: nascar). It passes --no-create-db and --no-create-info so output does
+not recreate databases or tables, and excludes routines/events/triggers.
 EOF
 }
 
@@ -23,9 +26,23 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
-if [[ $# -ne 0 ]]; then
-  usage >&2
-  exit 1
+MODE="full"
+TABLES=()
+
+if [[ $# -gt 0 ]]; then
+  if [[ "${1:-}" == "--tables" ]]; then
+    MODE="tables"
+    shift
+    if [[ $# -eq 0 ]]; then
+      echo "Error: --tables requires at least one table name." >&2
+      usage >&2
+      exit 1
+    fi
+    TABLES=("$@")
+  else
+    usage >&2
+    exit 1
+  fi
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,11 +56,33 @@ mkdir -p "$BACKUP_DIR"
 
 DUMP_USER="${DATABASE_DUMP_USER:-root}"
 DUMP_PASSWORD="${DATABASE_DUMP_PASSWORD:-${DATABASE_ROOT_PASSWORD:-password}}"
+DB_NAME="${DATABASE_NAME:-nascar}"
 
-docker compose exec -T \
-  -e MYSQL_PWD="$DUMP_PASSWORD" \
-  -e DUMP_USER="$DUMP_USER" \
-  mariadb \
-  sh -lc 'if command -v mariadb-dump >/dev/null 2>&1; then exec mariadb-dump --all-databases --single-transaction --routines --triggers --events --extended-insert --quick -u"$DUMP_USER"; else exec mysqldump --all-databases --single-transaction --routines --triggers --events --extended-insert --quick -u"$DUMP_USER"; fi' | gzip > "$BACKUP_FILE"
+if [[ "$MODE" == "tables" ]]; then
+  for table in "${TABLES[@]}"; do
+    if [[ ! "$table" =~ ^[A-Za-z0-9_]+$ ]]; then
+      echo "Error: invalid table name '$table'." >&2
+      echo "Allowed characters: letters, numbers, underscore." >&2
+      exit 1
+    fi
+  done
+fi
+
+if [[ "$MODE" == "full" ]]; then
+  docker compose exec -T \
+    -e MYSQL_PWD="$DUMP_PASSWORD" \
+    -e DUMP_USER="$DUMP_USER" \
+    mariadb \
+    sh -lc 'if command -v mariadb-dump >/dev/null 2>&1; then exec mariadb-dump --all-databases --single-transaction --routines --triggers --events --extended-insert --quick -u"$DUMP_USER"; else exec mysqldump --all-databases --single-transaction --routines --triggers --events --extended-insert --quick -u"$DUMP_USER"; fi' | gzip > "$BACKUP_FILE"
+else
+  TABLE_LIST="${TABLES[*]}"
+  docker compose exec -T \
+    -e MYSQL_PWD="$DUMP_PASSWORD" \
+    -e DUMP_USER="$DUMP_USER" \
+    -e DB_NAME="$DB_NAME" \
+    -e TABLE_LIST="$TABLE_LIST" \
+    mariadb \
+    sh -lc 'set -- $TABLE_LIST; if command -v mariadb-dump >/dev/null 2>&1; then exec mariadb-dump --single-transaction --extended-insert --quick --no-create-db --no-create-info --skip-triggers -u"$DUMP_USER" "$DB_NAME" "$@"; else exec mysqldump --single-transaction --extended-insert --quick --no-create-db --no-create-info --skip-triggers -u"$DUMP_USER" "$DB_NAME" "$@"; fi' | gzip > "$BACKUP_FILE"
+fi
 
 echo "Backup created: $BACKUP_FILE"
