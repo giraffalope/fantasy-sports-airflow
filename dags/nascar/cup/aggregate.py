@@ -3,6 +3,11 @@ Top-level Cup aggregate DAG.
 
 **Schedule:** hourly (see ``CUP_SCRAPER_PROD_HOURLY_CRON``), aligned with
 ``nascar.cup.importer``.
+
+Each hourly run loads ``agg_week_results`` once, then runs parameterized load
+procedures for every Cup week returned by the weeks query (finished race rows in
+``agg_week_results``). Wave 1 (manufacturers, teams) runs in parallel after the
+base load; wave 2 (prior-track aggregate tables) runs after wave 1 completes.
 """
 
 from __future__ import annotations
@@ -12,6 +17,11 @@ from pathlib import Path
 
 from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from airflow.sdk import DAG
+from include.nascar.cup.aggregate_load import (
+    WAVE1_LOAD_TASKS,
+    WAVE2_PREV_TRACK_LOAD_TASKS,
+    make_aggregate_load_operator,
+)
 from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
 from nascar.cup.scraper.dag_factories import (
     CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
@@ -46,11 +56,24 @@ with DAG(
         check_existence=True,
     )
 
+    sql_root = _sql_root()
+
     load_agg_week_results = MySQLTemplateFileOperatorFromContext(
         task_id="load_agg_week_results",
-        sql_file_path=_sql_root() / "nascar.cup.aggregate" / "load_agg_week_results.sql",
+        sql_file_path=sql_root / "nascar.cup.aggregate" / "load_agg_week_results.sql",
         mysql_conn_id="nascar_conn",
         parameters_factory=lambda _context: {},
     )
 
-    wait_importer_complete >> load_agg_week_results
+    wave1_tasks = [
+        make_aggregate_load_operator(task_id, sql_root=sql_root)
+        for task_id in WAVE1_LOAD_TASKS
+    ]
+    wave2_tasks = [
+        make_aggregate_load_operator(task_id, sql_root=sql_root)
+        for task_id in WAVE2_PREV_TRACK_LOAD_TASKS
+    ]
+
+    wait_importer_complete >> load_agg_week_results >> wave1_tasks
+    for wave1_task in wave1_tasks:
+        wave1_task >> wave2_tasks

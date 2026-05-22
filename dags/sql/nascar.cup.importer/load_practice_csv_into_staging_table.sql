@@ -48,8 +48,8 @@ SET
     manufacturer = nascar.clean_manufacturer_name(@manufacturer),
     time = nascar.clean_time(@time),
     speed = nascar.clean_speed(@speed),
-    num_laps = nascar.clean_unsigned_integer(@num_laps),
-    best_lap = nascar.clean_unsigned_integer(@best_lap),
+    num_laps = if(nascar.clean_unsigned_integer(@num_laps) > 0, nascar.clean_unsigned_integer(@num_laps), NULL),
+    best_lap = if(nascar.clean_unsigned_integer(@best_lap) > 0, nascar.clean_unsigned_integer(@best_lap), NULL),
     `5_lap_average_time` = NULL,
     `10_lap_average_time` = NULL,
     `20_lap_average_time` = NULL,
@@ -91,16 +91,16 @@ SET
     manufacturer = nascar.clean_manufacturer_name(@manufacturer),
     time = nascar.clean_time(@time),
     speed = nascar.clean_speed(@speed),
-    num_laps = nascar.clean_unsigned_integer(@num_laps),
-    best_lap = nascar.clean_unsigned_integer(@best_lap),
+    num_laps = if(nascar.clean_unsigned_integer(@num_laps) > 0, nascar.clean_unsigned_integer(@num_laps), NULL),
+    best_lap = if(nascar.clean_unsigned_integer(@best_lap) > 0, nascar.clean_unsigned_integer(@best_lap), NULL),
     `5_lap_average_time` = nascar.clean_time(@five_lap_avg),
     `10_lap_average_time` = nascar.clean_time(@ten_lap_avg),
     `20_lap_average_time` = nascar.clean_time(@twenty_lap_avg),
     `25_lap_average_time` = nascar.clean_time(@twentyfive_lap_avg),
     `30_lap_average_time` = nascar.clean_time(@thirty_lap_avg),
     `10_lap_average_speed` = nascar.clean_speed(@ten_lap_avg_speed),
-    `10_lap_start` = nascar.clean_unsigned_integer(@ten_lap_start),
-    `10_lap_end` = nascar.clean_unsigned_integer(@ten_lap_end)
+    `10_lap_start` = if(nascar.clean_unsigned_integer(@ten_lap_start) > 0, nascar.clean_unsigned_integer(@ten_lap_start), NULL),
+    `10_lap_end` = if(nascar.clean_unsigned_integer(@ten_lap_end) > 0, nascar.clean_unsigned_integer(@ten_lap_end), NULL)
 ;
 {% endif %}
 

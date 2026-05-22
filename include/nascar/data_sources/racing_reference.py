@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from bs4 import BeautifulSoup
 
+from include.nascar.data_sources.race_week_context import is_backfill_race_week_dag
 from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
 from include.nascar.enums import NascarSeries
 from include.utils.scraper import Scraper
@@ -167,6 +168,13 @@ def download_year_schedule_html(
     src = _resolve_racing_reference_source(source)
     year = context["data_interval_start"].year
     base = src.storage_path_series_year(series_name, year)
+    schedule_csv = os.path.join(base, "schedule.csv")
+    if is_backfill_race_week_dag(context) and os.path.isfile(schedule_csv):
+        logging.info(
+            "Racing Reference: skip schedule HTML download (backfill; %s already exists)",
+            schedule_csv,
+        )
+        return
     url = src.schedule_url(year)
     dest = os.path.join(base, "schedule.html")
     logging.info("Racing Reference: downloading schedule %s -> %s", url, dest)
@@ -195,6 +203,12 @@ def convert_year_schedule_html_to_csv(
     base = src.storage_path_series_year(series_name, year)
     html_file_path = f"{base}/schedule.html"
     csv_file_path = f"{base}/schedule.csv"
+    if is_backfill_race_week_dag(context) and os.path.isfile(csv_file_path):
+        logging.info(
+            "Racing Reference: skip schedule HTML→CSV (backfill; %s already exists)",
+            csv_file_path,
+        )
+        return
     logging.info("Racing Reference: converting schedule %s -> %s", html_file_path, csv_file_path)
     src.converters.convert_schedule(html_file_path, csv_file_path)
 

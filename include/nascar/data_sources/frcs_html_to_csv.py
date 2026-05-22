@@ -1369,6 +1369,12 @@ class FrcsHtmlToCsv:
     def convert_pit_stops(path: str | None) -> None:
         if path is None:
             return
+
+        def _pit_time_cell(raw: object) -> str:
+            """Match qualifying ``lap_time`` CSV format (``HH:MM:SS.mmm``) via ``time_csv``."""
+            s = str(raw).strip() if raw is not None else ""
+            return _normalize_time_to_hhmmss_mmm(s) if s else ""
+
         with open(path, encoding="utf-8") as f:
             html = f.read()
         summary = _parse_js_const_json_array(html, "pitStopSummary")
@@ -1399,11 +1405,11 @@ class FrcsHtmlToCsv:
                         str(row.get("start", "")).strip(),
                         str(row.get("finish", "")).strip(),
                         str(row.get("status", "")).strip(),
-                        str(row.get("avg_driver", "")).strip(),
-                        str(row.get("avg_crew", "")).strip(),
-                        str(row.get("avg_stop", "")).strip(),
-                        str(row.get("fastest_stop", "")).strip(),
-                        str(row.get("slowest_stop", "")).strip(),
+                        _pit_time_cell(row.get("avg_driver", "")),
+                        _pit_time_cell(row.get("avg_crew", "")),
+                        _pit_time_cell(row.get("avg_stop", "")),
+                        _pit_time_cell(row.get("fastest_stop", "")),
+                        _pit_time_cell(row.get("slowest_stop", "")),
                     )
                 )
         detail_headers = [
@@ -1426,9 +1432,9 @@ class FrcsHtmlToCsv:
                         str(row.get("leader_lap", "")).strip(),
                         str(row.get("pitter_lap", "")).strip(),
                         str(row.get("type", "")).strip(),
-                        str(row.get("stop_duration", "")).strip(),
-                        str(row.get("driver_time", "")).strip(),
-                        str(row.get("total_duration", "")).strip(),
+                        _pit_time_cell(row.get("stop_duration", "")),
+                        _pit_time_cell(row.get("driver_time", "")),
+                        _pit_time_cell(row.get("total_duration", "")),
                     )
                 )
         base = path.replace(".html", "")
