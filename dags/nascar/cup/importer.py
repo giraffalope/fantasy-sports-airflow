@@ -54,6 +54,7 @@ from nascar.cup.scraper.backfill_assets import (
     BACKFILL_START_DATE,
     BACKFILL_YEARLY_SCHEDULE,
     CUP_SCRAPER_PROD_HOURLY_CRON,
+    maybe_register_backfill_dag,
 )
 from nascar.cup.scraper.dag_factories import (
     CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
@@ -1895,7 +1896,8 @@ dag = _register_cup_importer_dag(
     wait_rr_race_week_dag_id="nascar.cup.scraper.racing_reference.race_week",
 )
 
-backfill_dag = _register_cup_importer_dag(
+backfill_dag: DAG | None = maybe_register_backfill_dag(
+    _register_cup_importer_dag,
     dag_id=f"backfill.{DAG_ID}",
     schedule=BACKFILL_YEARLY_SCHEDULE,
     start_date=BACKFILL_START_DATE,

@@ -17,6 +17,12 @@ for the cross-DAG flow diagram, then drill into the file matching the DAG you
 are touching. Keep these docs in sync when you change task IDs, ordering,
 schedules, or external-sensor targets.
 
+## Backfill DAG visibility
+
+The five `backfill.*` Cup DAGs are hidden by default. Set `FS_ENABLE_BACKFILL_DAGS=1`
+in [`.env`](./.env) (see [`.env.example`](./.env.example)) and restart scheduler /
+dag-processor after toggling. Unit tests enable backfill via [`tests/conftest.py`](./tests/conftest.py).
+
 ## Scope and Priorities
 
 - Prioritize data integrity for importer SQL, staging logic, and entity mapping.

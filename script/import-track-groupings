@@ -9,7 +9,7 @@ Usage:
   ./script/import-track-groupings [csv-file-path]
 
 Defaults:
-  csv-file-path: /home/jackalope/bin/nascar_tracks_groupings.csv
+  csv-file-path: <repo>/data/nascar_tracks_groupings.csv
   database:      ${DATABASE_NAME:-nascar}
   user:          ${DATABASE_DUMP_USER:-root}
   password:      ${DATABASE_DUMP_PASSWORD:-${DATABASE_ROOT_PASSWORD:-password}}
@@ -27,7 +27,7 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-CSV_PATH="${1:-/home/jackalope/bin/nascar_tracks_groupings.csv}"
+CSV_PATH="${1:-$ROOT/data/nascar_tracks_groupings.csv}"
 DB_NAME="${DATABASE_NAME:-nascar}"
 DB_USER="${DATABASE_DUMP_USER:-root}"
 DB_PASSWORD="${DATABASE_DUMP_PASSWORD:-${DATABASE_ROOT_PASSWORD:-password}}"
@@ -55,6 +55,13 @@ import sys
 
 csv_path = sys.argv[1]
 
+# FRCS CSV names -> nascar.tracks.name when the schedule importer uses a different label.
+TRACK_NAME_ALIASES = {
+    "Chicago Street Circuit": "Chicago Street Race",
+    "Charlotte Motor Speedway Road Course": "Charlotte Motor Speedway (Road Course)",
+    "Autodromo Hermanos Rodriguez": "Autódromo Hermanos Rodríguez",
+}
+
 required = [
     "track_name",
     "accupredict_track_grouping",
@@ -73,6 +80,7 @@ with open(csv_path, newline="", encoding="utf-8") as f:
 
     for row in reader:
         track_name = (row["track_name"] or "").strip()
+        track_name = TRACK_NAME_ALIASES.get(track_name, track_name)
         if not track_name:
             continue
         for col in required[1:]:

@@ -23,13 +23,27 @@ the DraftKings slate. Concretely:
 - **Predict snapshots (`kind='predict'`):** materialized for upcoming Cup
   weeks where `r_start_position IS NOT NULL` but `r_finish_position IS NULL`
   in `agg_week_results`. Features only; no labels.
-- **Retraining:** per target (`r_finish_position`, `r_total_fastest_laps`,
-  `r_total_laps_led`), refit an XGBoost regressor using Boruta-selected
-  features and a `RandomizedSearchCV` over chronological folds, but **only
-  when** the latest finished week is newer than the most recent training
-  cohort recorded in `ml_model_training_snapshots`.
-- **Predicting:** apply the latest active model per target to each prediction
-  snapshot row, blend the per-target predictions into DraftKings points via
+- **Retraining:** per `(series_id, model_scope, target)`, refit an XGBoost
+  regressor using Boruta-selected features and a `RandomizedSearchCV` over
+  chronological folds, but **only when** the latest finished week is newer
+  than the most recent training cohort recorded in
+  `ml_model_training_snapshots`. Models are partitioned by NASCAR series
+  first (Cup / Xfinity / Truck) so Cup snapshots never train weights used
+  to predict Xfinity races. Within a series the scopes are:
+  - `track` — one model per `track_id` with at least `FS_ML_MIN_TRACK_WEEKS`
+    finished weeks (default `3`). Features restricted to the per-track
+    family (`*_pt_*`) plus anchor columns (`r_start_position`, etc.).
+  - `track_type` — one model per `track_type_id` with at least
+    `FS_ML_MIN_TYPE_WEEKS` finished weeks (default `10`). Features
+    restricted to that type's `*_tt_<track_type_id>_*` columns plus
+    anchors. Used as the cold-start fallback for tracks lacking enough
+    history.
+  - `global` — legacy single-frame model per series. Trained whenever
+    `FS_ML_ENABLE_GLOBAL_FALLBACK=1` (default).
+- **Predicting:** resolve a model per target via the routing chain
+  `series_id -> track -> track_type -> global` (see
+  [include/nascar/ml/model_scope.py](../../include/nascar/ml/model_scope.py)),
+  blend the per-target predictions into DraftKings points via
   `nascar.dfs_scoring_rules`, and upsert into `ml_predictions`.
 
 ## Schedule and basic settings
@@ -126,38 +140,58 @@ flowchart TB
      retraining.
   4. Loads the full training frame via
      `include.nascar.ml.training_targets.load_training_frame` (ordered by
-     `week_id` to keep `TimeSeriesSplit` chronological).
-  5. For each target in `DEFAULT_TARGETS` (`r_finish_position`,
-     `r_total_fastest_laps`, `r_total_laps_led`) calls
-     `train_models_for_targets` which runs Boruta feature selection
-     (`include.nascar.ml.xgb_boruta.select_features`), then `tune_xgb`
-     (`RandomizedSearchCV` + `TimeSeriesSplit`), then fits the final
-     `XGBRegressor`, evaluating MAE on the trailing `holdout_weeks` weeks
-     (env `FS_ML_HOLDOUT_WEEKS`, default `1`).
+     `week_id` to keep `TimeSeriesSplit` chronological). Each row carries
+     `series_id` from the snapshot header, `track_id`, and `track_type_id`
+     (canonical primary type from `tracks_track_types`).
+  5. **Per-series, per-scope training loop.** Wraps the per-track /
+     per-track-type / global loops in an outer `group_frame_by_series`
+     iteration so a single retrain pass produces independent model
+     families for each series present in `ml_training_snapshots`. Within
+     each series:
+     - Group rows by `track_id` (track scope) or `track_type_id`
+       (track_type scope); keep buckets with at least
+       `FS_ML_MIN_TRACK_WEEKS` / `FS_ML_MIN_TYPE_WEEKS` distinct finished
+       weeks. The global scope always sees the full series sub-frame and
+       is gated behind `FS_ML_ENABLE_GLOBAL_FALLBACK`.
+     - For each bucket, build a per-scope feature allowlist from
+       `model_scope.features_for_scope`:
+       `*_pt_*` + anchors for `track`, `*_tt_<track_type_id>_*` + anchors
+       for `track_type`, everything for `global`.
+     - For each target in `DEFAULT_TARGETS` (`r_finish_position`,
+       `r_total_fastest_laps`, `r_total_laps_led`) call
+       `train_models_for_targets(rows, feature_allowlist=...)`. Boruta runs
+       on the allowlist subset, then `tune_xgb` (`RandomizedSearchCV` +
+       `TimeSeriesSplit`), then a final `XGBRegressor` fit. MAE on the
+       trailing `FS_ML_HOLDOUT_WEEKS` (default `1`) weeks is recorded.
   6. Persists artifacts to `<FS_ML_ARTIFACT_ROOT>/<model_id>/<target>.json`
-     (default `/opt/airflow/artifacts/ml/...`) and writes
-     `ml_feature_sets` (`target_keys` = `[target]`, `selected_features`,
-     `boruta_metadata`), `ml_models` (`algorithm='xgboost'`,
-     `hyperparams_json` includes the target), `ml_model_training_snapshots`
-     (every training snapshot id), and per-target `ml_model_evaluations`
-     rows (`metric='mae'`).
-  7. Computes overall DraftKings DFS-points MAE for the holdout
-     (`predicted_dfs_mae_on_holdout` applies scoring rules to the
-     per-target predictions) and writes one
-     `ml_model_evaluations` row (`metric='dfs_points_mae'`) against the
-     primary model (`PRIMARY_TARGET = "r_finish_position"`).
+     and writes:
+     - `ml_feature_sets` — `target_keys=[target]`, `selected_features`,
+       `boruta_metadata` (includes `scope` block with `series_id` /
+       `model_scope` / `track_id` / `track_type_id`).
+     - `ml_models` — one row per `(series_id, scope, scope_key, target)`
+       with `series_id` (NOT NULL) plus `model_scope` / `track_id` /
+       `track_type_id` populated per the `chk_ml_models_scope_keys` check
+       constraint.
+     - `ml_model_training_snapshots` — every snapshot id in the bucket.
+     - `ml_model_evaluations` — per-model `mae` rows + a primary-model
+       `dfs_points_mae` row per (scope, group).
 - **Inputs:** `ml_training_snapshots`, `ml_training_rows`, `ml_labels`,
-  `ml_models` / `ml_model_training_snapshots`, `dfs_scoring_rules`.
+  `tracks_track_types`, `ml_models` / `ml_model_training_snapshots`,
+  `dfs_scoring_rules`.
 - **Outputs:** rows in `ml_feature_sets`, `ml_models`,
   `ml_model_training_snapshots`, `ml_model_evaluations`; serialized XGBoost
-  artifacts on disk; returns a dict with `trained_models`,
-  `primary_model_id`, `dfs_points_mae`, and (when skipped) the skip reason.
+  artifacts on disk; returns a dict with `scope_results` (one entry per
+  trained `(scope, group)`), `latest_train_week`, `covered_week`, and
+  (when skipped) the skip reason.
 - **Upstream:** `build_ml_training_snapshots`. **Downstream:**
   `predict_upcoming_week`.
 - **Failure notes:** RandomizedSearchCV defaults can be capped via
   `FS_ML_TUNE_N_ITER` and `FS_ML_TUNE_CV_SPLITS`, and tuning can be
   short-circuited entirely with `FS_ML_TUNE_DISABLE=1` (the run still
   records `tuning_skipped=True` in `ml_feature_sets.boruta_metadata`).
+  Buckets that fall under the min-week threshold are silently skipped — a
+  rare-track-type (e.g. road course in early season) simply does not get a
+  scoped model until enough weeks accumulate.
 
 ### `predict_upcoming_week`
 
@@ -166,27 +200,59 @@ flowchart TB
   [include/nascar/ml/predict_task.py](../../include/nascar/ml/predict_task.py).
 - **Behavior:**
   1. Resolves the active DraftKings scoring rules.
-  2. Loads the latest `kind='predict'` snapshot for the active rules
-     (`_latest_predict_snapshot`). If none exists, returns
-     `no_predict_snapshot`.
-  3. For each target in `DEFAULT_TARGETS`, fetches the most recent
-     active `ml_models` row joined through `ml_feature_sets.target_keys`,
-     loads the on-disk artifact, and scores the prediction snapshot's
+  2. Loads the latest `kind='predict'` snapshot for the active rules.
+     The snapshot lookup joins `tracks_track_types` so the snapshot dict
+     carries `series_id`, `track_id`, and the canonical `track_type_id`.
+     If no predict snapshot exists, returns `no_predict_snapshot`.
+  3. For each target in `DEFAULT_TARGETS`, walks the scope routing chain
+     in `_resolve_model_for_target`. The snapshot's `series_id` is the
+     outermost filter on every `_scope_lookup` so a Cup model never
+     resolves for an Xfinity / Truck predict snapshot at the same
+     physical track:
+
+     ```mermaid
+     flowchart TB
+       Snap["predict snapshot (series_id, track_id, track_type_id)"]
+       HasTrack{"track model for (series_id, track_id)?"}
+       HasType{"track_type model for (series_id, track_type_id)?"}
+       HasGlobal{"FS_ML_ENABLE_GLOBAL_FALLBACK and global model for series_id?"}
+       TrackModel["use track model"]
+       TypeModel["use track_type model"]
+       GlobalModel["use series global model"]
+       Skip["return no_model_for_target"]
+       Snap --> HasTrack
+       HasTrack -- yes --> TrackModel
+       HasTrack -- no --> HasType
+       HasType -- yes --> TypeModel
+       HasType -- no --> HasGlobal
+       HasGlobal -- yes --> GlobalModel
+       HasGlobal -- no --> Skip
+     ```
+
+     A model entry is considered usable only if it has a non-null
+     `artifact_uri`. There is no cross-series fallback by design.
+  4. Loads the on-disk artifact and scores the prediction snapshot's
      `ml_training_rows`.
-  4. Combines the per-target predictions into a `predicted_targets_json`
+  5. Combines the per-target predictions into a `predicted_targets_json`
      blob, applies `compute_dfs_points_from_targets(scoring_rules, ...)`
      to derive `predicted_dfs_points`, and upserts one
      `ml_predictions` row per `car_driver_id` keyed by the primary model
      id (`PRIMARY_TARGET = "r_finish_position"`).
-- **Inputs:** `ml_training_snapshots` (`kind='predict'`),
-  `ml_training_rows`, `ml_models`, `ml_feature_sets`, on-disk XGBoost
-  artifacts, `dfs_scoring_rules`.
+- **Inputs:** `ml_training_snapshots` (`kind='predict'`, contributes
+  `series_id`, `track_id`, `track_type_id`), `ml_training_rows`,
+  `ml_models` (filtered by `series_id` and `model_scope`),
+  `ml_feature_sets`, `tracks_track_types`, on-disk XGBoost artifacts,
+  `dfs_scoring_rules`.
 - **Outputs:** rows in `ml_predictions`; returns a dict with
-  `primary_model_id`, the snapshot id, and the number of rows scored.
+  `primary_model_id`, `model_ids`, `resolved_scopes` (per-target scope
+  metadata including `series_id` and whether the track, track_type, or
+  global model was chosen), the snapshot id, and the number of rows
+  scored.
 - **Upstream:** `train_models_if_needed`. **Downstream:** none in this DAG.
-- **Failure notes:** missing per-target models surface as
-  `missing_model_for_target` skips. Re-running after a successful
-  `train_models_if_needed` resolves the missing model.
+- **Failure notes:** if even the global fallback is missing (or disabled)
+  the task short-circuits with `no_model_for_target:<target>`. Per-target
+  scope decisions are logged so it is easy to see which model was actually
+  used for each prediction.
 
 ## Data sources and sinks
 
@@ -231,6 +297,16 @@ flowchart TB
   - `FS_ML_TUNE_DISABLE` — `1` / `true` / `yes` short-circuits tuning to
     `DEFAULT_PARAMS` and records `tuning_skipped=true` in
     `ml_feature_sets.boruta_metadata`.
+  - `FS_ML_MIN_TRACK_WEEKS` — int, defaults to `3`. Minimum distinct
+    finished Cup weeks at a `track_id` before a track-scoped model is
+    trained.
+  - `FS_ML_MIN_TYPE_WEEKS` — int, defaults to `10`. Same idea for the
+    per-track-type fallback. Lower values speed up cold-start coverage at
+    the cost of less stable models.
+  - `FS_ML_ENABLE_GLOBAL_FALLBACK` — `0` disables both training **and**
+    predict-time resolution of the legacy global-scope model. Default `1`
+    keeps the rollout safe while per-track / per-track-type coverage
+    grows.
 - **Python deps:** `scikit-learn`, `xgboost`, `boruta` (see
   [pyproject.toml](../../pyproject.toml)).
 
@@ -262,3 +338,6 @@ this DAG run once after the aggregate DAG fills in historical
 - [tests/unit/test_train_predict_pipeline.py](../../tests/unit/test_train_predict_pipeline.py) — end-to-end synthetic train + predict including hand-computed DFS points.
 - [tests/unit/test_xgb_tuning.py](../../tests/unit/test_xgb_tuning.py) — RandomizedSearchCV envelope + `FS_ML_TUNE_DISABLE` short-circuit.
 - [tests/unit/test_snapshot_build_predict_kind.py](../../tests/unit/test_snapshot_build_predict_kind.py) — predict-kind branch (no labels, anchor SQL, `kind` column).
+- [tests/unit/test_model_scope.py](../../tests/unit/test_model_scope.py) — feature-allowlist filtering, frame grouping, env-var thresholds.
+- [tests/unit/test_predict_routing.py](../../tests/unit/test_predict_routing.py) — predict-time resolver: series_id → track → track_type → global, including the global-fallback disable flag, missing-artifact skip, and the cross-series isolation guard.
+- [tests/unit/test_scoped_training.py](../../tests/unit/test_scoped_training.py) — confirms `feature_allowlist` keeps track scope on `*_pt_*` features and track_type scope on the matching `*_tt_<id>_*` family.

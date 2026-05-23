@@ -13,13 +13,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from airflow.sdk import Asset
+from airflow.sdk import Asset, DAG
 from nascar.cup.scraper.backfill_assets import (
     BACKFILL_END_DATE,
     BACKFILL_FRCS_CUP_RACE_WEEK_ASSET,
     BACKFILL_START_DATE,
     BACKFILL_YEARLY_SCHEDULE,
     CUP_SCRAPER_PROD_HOURLY_CRON,
+    maybe_register_backfill_dag,
 )
 from nascar.cup.scraper.dag_factories import register_frcs_race_week_dag
 
@@ -47,7 +48,8 @@ dag = register_frcs_race_week_dag(
     doc_md=__doc__,
 )
 
-backfill_dag = register_frcs_race_week_dag(
+backfill_dag: DAG | None = maybe_register_backfill_dag(
+    register_frcs_race_week_dag,
     dag_id=f"backfill.{DAG_ID}",
     schedule=BACKFILL_YEARLY_SCHEDULE,
     start_date=BACKFILL_START_DATE,

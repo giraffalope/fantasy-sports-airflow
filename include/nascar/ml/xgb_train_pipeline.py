@@ -93,6 +93,7 @@ def train_models_for_targets(
     artifact_dir: Path | None = None,
     random_state: int = 42,
     boruta_max_iter: int = 50,
+    feature_allowlist: list[str] | None = None,
 ) -> list[TrainedTargetModel]:
     """
     Train one XGBRegressor per target on ``frame`` and return trained models.
@@ -101,6 +102,10 @@ def train_models_for_targets(
     ``ml_feature_sets`` / ``ml_models`` rows; this function only does the math and
     optionally writes XGBoost JSON artifacts to ``artifact_dir`` (one file per
     target named ``<target>.json``).
+
+    ``feature_allowlist`` (when provided) restricts the candidate Boruta input
+    columns. Train-task uses it to enforce per-scope feature families (``*_pt_*``
+    for track models, ``*_tt_<id>_*`` for track-type models, etc.).
     """
     from sklearn.metrics import mean_absolute_error
     from xgboost import XGBRegressor
@@ -108,7 +113,11 @@ def train_models_for_targets(
     if not frame:
         raise ValueError("train_models_for_targets: empty frame")
 
-    feature_names = sorted({key for row in frame for key in (row.get("features") or {}).keys()})
+    candidate_keys = {key for row in frame for key in (row.get("features") or {}).keys()}
+    if feature_allowlist is not None:
+        allow = set(feature_allowlist)
+        candidate_keys &= allow
+    feature_names = sorted(candidate_keys)
     if not feature_names:
         raise ValueError("train_models_for_targets: no feature keys present in frame")
 

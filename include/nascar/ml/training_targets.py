@@ -41,9 +41,9 @@ def load_training_frame(
     Output is sorted by ``(week_id, ml_training_snapshot_id, car_driver_id)`` so
     callers can build chronological TimeSeriesSplit folds without re-sorting.
 
-    Returns a list of dicts with keys: features, r_start_position, targets, dfs_points,
-    dfs_points_breakdown, car_driver_id, driver_id, ml_training_snapshot_id, week_id,
-    target_keys.
+    Each row carries ``track_id`` (always set on the snapshot header) and
+    ``track_type_id`` (the canonical primary type from ``tracks_track_types``,
+    NULL when the track is unmapped). Train-task scope grouping reads these.
     """
     if not ml_training_snapshot_ids:
         return []
@@ -53,7 +53,10 @@ def load_training_frame(
     sql = f"""
         SELECT
             r.ml_training_snapshot_id,
+            s.series_id,
             s.week_id,
+            s.track_id,
+            tt.track_type_id,
             r.car_driver_id,
             r.driver_id,
             r.r_start_position,
@@ -71,6 +74,12 @@ def load_training_frame(
         JOIN nascar.ml_training_snapshots s
             ON s.id = r.ml_training_snapshot_id
            AND s.deleted_at IS NULL
+        LEFT JOIN (
+            SELECT track_id, MIN(track_type_id) AS track_type_id
+            FROM nascar.tracks_track_types
+            WHERE deleted_at IS NULL
+            GROUP BY track_id
+        ) tt ON tt.track_id = s.track_id
         WHERE r.ml_training_snapshot_id IN ({placeholders})
           AND r.deleted_at IS NULL
         ORDER BY s.week_id ASC, r.ml_training_snapshot_id ASC, r.car_driver_id ASC
@@ -81,7 +90,10 @@ def load_training_frame(
     for raw in rows:
         (
             snapshot_id,
+            series_id,
             week_id,
+            track_id,
+            track_type_id,
             car_driver_id,
             driver_id,
             r_start_position,
@@ -95,7 +107,10 @@ def load_training_frame(
         frame.append(
             {
                 "ml_training_snapshot_id": int(snapshot_id),
+                "series_id": int(series_id),
                 "week_id": int(week_id),
+                "track_id": int(track_id),
+                "track_type_id": int(track_type_id) if track_type_id is not None else None,
                 "car_driver_id": int(car_driver_id),
                 "driver_id": int(driver_id),
                 "r_start_position": r_start_position,
