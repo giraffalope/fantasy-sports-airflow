@@ -9,6 +9,14 @@ For importer DAG process details (including `nascar.cup.importer`,
 
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) -> `## Importer DAG Process`
 
+## Per-DAG Documentation
+
+Authoritative per-DAG references live under [`docs/nascar/`](./docs/nascar/), one
+markdown file per DAG source file. Start at [`docs/nascar/README.md`](./docs/nascar/README.md)
+for the cross-DAG flow diagram, then drill into the file matching the DAG you
+are touching. Keep these docs in sync when you change task IDs, ordering,
+schedules, or external-sensor targets.
+
 ## Scope and Priorities
 
 - Prioritize data integrity for importer SQL, staging logic, and entity mapping.
@@ -45,6 +53,7 @@ If host environment tooling is missing, prefer `uv run ...` for project-local ex
 - If modifying loader/import SQL semantics, update SQL contract assertions.
 - If changing source-precedence or fallback behavior, add explicit test assertions for that rule.
 - If changing null-handling behavior, add test coverage for both mapped and unmapped paths.
+- If changing DAG task graphs, schedules, or external-sensor targets, refresh the matching file under [`docs/nascar/`](./docs/nascar/) in the same PR.
 
 ## Importer-Specific Guardrails
 

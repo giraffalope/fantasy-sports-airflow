@@ -22,6 +22,9 @@ dependencies = [
     "playwright==1.53.0",
     "SQLAlchemy",
     "pymysql",
+    "scikit-learn>=1.8.0",
+    "xgboost>=3.2.0",
+    "boruta>=0.4.3",
 ]
 
 [dependency-groups]

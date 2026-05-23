@@ -38,8 +38,12 @@ def load_training_frame(
     """
     Load rows for model training: features, pre-race start, label targets, derived dfs_points.
 
+    Output is sorted by ``(week_id, ml_training_snapshot_id, car_driver_id)`` so
+    callers can build chronological TimeSeriesSplit folds without re-sorting.
+
     Returns a list of dicts with keys: features, r_start_position, targets, dfs_points,
-    dfs_points_breakdown, car_driver_id, driver_id, ml_training_snapshot_id, target_keys.
+    dfs_points_breakdown, car_driver_id, driver_id, ml_training_snapshot_id, week_id,
+    target_keys.
     """
     if not ml_training_snapshot_ids:
         return []
@@ -49,6 +53,7 @@ def load_training_frame(
     sql = f"""
         SELECT
             r.ml_training_snapshot_id,
+            s.week_id,
             r.car_driver_id,
             r.driver_id,
             r.r_start_position,
@@ -68,6 +73,7 @@ def load_training_frame(
            AND s.deleted_at IS NULL
         WHERE r.ml_training_snapshot_id IN ({placeholders})
           AND r.deleted_at IS NULL
+        ORDER BY s.week_id ASC, r.ml_training_snapshot_id ASC, r.car_driver_id ASC
     """
     rows = hook.get_records(sql, parameters=tuple(ml_training_snapshot_ids))
 
@@ -75,6 +81,7 @@ def load_training_frame(
     for raw in rows:
         (
             snapshot_id,
+            week_id,
             car_driver_id,
             driver_id,
             r_start_position,
@@ -88,6 +95,7 @@ def load_training_frame(
         frame.append(
             {
                 "ml_training_snapshot_id": int(snapshot_id),
+                "week_id": int(week_id),
                 "car_driver_id": int(car_driver_id),
                 "driver_id": int(driver_id),
                 "r_start_position": r_start_position,

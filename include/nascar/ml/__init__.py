@@ -11,6 +11,8 @@ from include.nascar.ml.scoring import (
 )
 
 __all__ = [
+    "build_all_week_prediction_snapshots",
+    "build_all_week_training_snapshots",
     "build_car_driver_training_snapshot",
     "build_scoring_row",
     "compute_dfs_points",
@@ -23,10 +25,14 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name == "build_car_driver_training_snapshot":
-        from include.nascar.ml.snapshot_build import build_car_driver_training_snapshot
+    if name in (
+        "build_car_driver_training_snapshot",
+        "build_all_week_training_snapshots",
+        "build_all_week_prediction_snapshots",
+    ):
+        from include.nascar.ml import snapshot_build
 
-        return build_car_driver_training_snapshot
+        return getattr(snapshot_build, name)
     if name in ("load_training_frame", "predicted_dfs_points_for_rows"):
         from include.nascar.ml import training_targets
 

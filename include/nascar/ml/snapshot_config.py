@@ -8,6 +8,9 @@ DRAFTKINGS_DFS_ID = 1
 FANDUEL_DFS_ID = 37
 GRAIN_CAR_DRIVER = "car_driver"
 
+SNAPSHOT_KIND_TRAIN = "train"
+SNAPSHOT_KIND_PREDICT = "predict"
+
 AUDIT_COLUMNS = frozenset(
     {"id", "created_at", "updated_at", "deleted_at"},
 )

@@ -1,4 +1,13 @@
-"""Build ml_training_snapshots, ml_training_rows, and ml_labels for a race week."""
+"""Build ml_training_snapshots, ml_training_rows, and ml_labels for a race week.
+
+Two snapshot kinds are materialized:
+
+- ``train`` snapshots include both features and labels for finished races
+  (``r_finish_position IS NOT NULL``).
+- ``predict`` snapshots include features only for upcoming races with known
+  starting positions (``r_start_position IS NOT NULL AND r_finish_position IS NULL``).
+  No ``ml_labels`` rows are written for predict snapshots.
+"""
 
 from __future__ import annotations
 
@@ -22,10 +31,26 @@ from include.nascar.ml.snapshot_config import (
     GRAIN_COLUMNS,
     PREV_TRACK_SOURCES,
     PREV_TRACK_TYPES_SOURCES,
+    SNAPSHOT_KIND_PREDICT,
+    SNAPSHOT_KIND_TRAIN,
     TIME_COLUMN_SUFFIXES,
     PrevTrackSource,
     PrevTrackTypesSource,
 )
+
+_VALID_KINDS = frozenset({SNAPSHOT_KIND_TRAIN, SNAPSHOT_KIND_PREDICT})
+
+_PREDICT_WEEKS_SQL = """
+SELECT DISTINCT s.series_id, w.id AS week_id
+FROM nascar.agg_week_results awr
+JOIN nascar.weeks w ON awr.week_id = w.id AND w.deleted_at IS NULL
+JOIN nascar.seasons s ON w.season_id = s.id AND s.deleted_at IS NULL
+WHERE awr.deleted_at IS NULL
+  AND awr.r_start_position IS NOT NULL
+  AND awr.r_finish_position IS NULL
+  AND s.series_id = %s
+ORDER BY w.id
+"""
 
 _LOG = logging.getLogger(__name__)
 
@@ -195,7 +220,14 @@ def _load_scoring_rules(hook: NascarMySqlHook, dfs_id: int) -> tuple[int, dict[s
     return int(rules_id), rules
 
 
-def _delete_existing_snapshot(hook: NascarMySqlHook, series_id: int, week_id: int, rules_id: int) -> None:
+def _delete_existing_snapshot(
+    hook: NascarMySqlHook,
+    *,
+    series_id: int,
+    week_id: int,
+    rules_id: int,
+    kind: str,
+) -> None:
     hook.run(
         """
         UPDATE nascar.ml_training_snapshots
@@ -203,10 +235,11 @@ def _delete_existing_snapshot(hook: NascarMySqlHook, series_id: int, week_id: in
         WHERE series_id = %s
           AND week_id = %s
           AND grain = %s
+          AND kind = %s
           AND dfs_scoring_rules_id = %s
           AND deleted_at IS NULL
         """,
-        parameters=(series_id, week_id, GRAIN_CAR_DRIVER, rules_id),
+        parameters=(series_id, week_id, GRAIN_CAR_DRIVER, kind, rules_id),
     )
 
 
@@ -221,6 +254,7 @@ def _insert_snapshot(
     target_keys: list[str],
     dfs_id: int,
     rules_id: int,
+    kind: str,
     pipeline_version: str | None,
 ) -> int:
     feature_column_count = len(feature_keys)
@@ -235,6 +269,7 @@ def _insert_snapshot(
             week_id,
             track_id,
             grain,
+            kind,
             feature_keys,
             feature_column_count,
             feature_schema_hash,
@@ -244,7 +279,7 @@ def _insert_snapshot(
             dfs_id,
             dfs_scoring_rules_id,
             source_pipeline_version
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         parameters=(
             series_id,
@@ -252,6 +287,7 @@ def _insert_snapshot(
             week_id,
             track_id,
             GRAIN_CAR_DRIVER,
+            kind,
             json.dumps(feature_keys),
             feature_column_count,
             feature_schema_hash,
@@ -267,10 +303,10 @@ def _insert_snapshot(
         """
         SELECT id FROM nascar.ml_training_snapshots
         WHERE series_id = %s AND week_id = %s AND grain = %s
-          AND dfs_scoring_rules_id = %s AND deleted_at IS NULL
+          AND kind = %s AND dfs_scoring_rules_id = %s AND deleted_at IS NULL
         ORDER BY id DESC LIMIT 1
         """,
-        parameters=(series_id, week_id, GRAIN_CAR_DRIVER, rules_id),
+        parameters=(series_id, week_id, GRAIN_CAR_DRIVER, kind, rules_id),
     )
     return int(snapshot_rows[0][0])
 
@@ -279,20 +315,31 @@ def build_car_driver_training_snapshot(
     series_id: int,
     week_id: int,
     *,
+    kind: str = SNAPSHOT_KIND_TRAIN,
     mysql_conn_id: str = "nascar_conn",
     dfs_id: int = DRAFTKINGS_DFS_ID,
     pipeline_version: str | None = None,
 ) -> int | None:
     """
-    Materialize snapshot + rows + labels for one week. Returns snapshot id or None if no rows.
+    Materialize snapshot + rows (+ labels when ``kind='train'``) for one week.
 
-    Labels store post-race stat targets (``targets_json``); ``dfs_points`` is derived via scoring rules.
+    Returns snapshot id or None when no rows match. ``kind='predict'`` skips
+    writing ``ml_labels`` and selects rows where the race has not yet finished
+    but the starting grid is known.
     """
+    if kind not in _VALID_KINDS:
+        raise ValueError(f"Unknown snapshot kind: {kind!r}; expected one of {sorted(_VALID_KINDS)}")
+
     hook = NascarMySqlHook(mysql_conn_id=mysql_conn_id)
     rules_id, scoring_rules = _load_scoring_rules(hook, dfs_id)
     label_target_keys = target_keys_for_rules(scoring_rules)
 
-    anchor_sql = """
+    if kind == SNAPSHOT_KIND_TRAIN:
+        anchor_filter = "AND awr.r_finish_position IS NOT NULL"
+    else:
+        anchor_filter = "AND awr.r_start_position IS NOT NULL AND awr.r_finish_position IS NULL"
+
+    anchor_sql = f"""
         SELECT
             awr.id,
             awr.series_id,
@@ -335,7 +382,7 @@ def build_car_driver_training_snapshot(
         WHERE awr.series_id = %s
           AND awr.week_id = %s
           AND awr.deleted_at IS NULL
-          AND awr.r_finish_position IS NOT NULL
+          {anchor_filter}
     """
     anchor_rows = hook.get_records(
         anchor_sql,
@@ -343,9 +390,10 @@ def build_car_driver_training_snapshot(
     )
     if not anchor_rows:
         _LOG.info(
-            "build_car_driver_training_snapshot: no agg_week_results for series_id=%s week_id=%s",
+            "build_car_driver_training_snapshot: no agg_week_results for series_id=%s week_id=%s kind=%s",
             series_id,
             week_id,
+            kind,
         )
         return None
 
@@ -474,20 +522,21 @@ def build_car_driver_training_snapshot(
             }
         )
 
-        targets = targets_from_agg_row(anchor, scoring_rules)
-        dfs_points, breakdown = compute_dfs_points_from_targets(
-            anchor.get("r_start_position"),
-            targets,
-            scoring_rules,
-        )
-        label_rows.append(
-            {
-                "car_driver_id": entity_ids["car_driver_id"],
-                "targets_json": targets,
-                "dfs_points": dfs_points,
-                "dfs_points_breakdown": breakdown,
-            }
-        )
+        if kind == SNAPSHOT_KIND_TRAIN:
+            targets = targets_from_agg_row(anchor, scoring_rules)
+            dfs_points, breakdown = compute_dfs_points_from_targets(
+                anchor.get("r_start_position"),
+                targets,
+                scoring_rules,
+            )
+            label_rows.append(
+                {
+                    "car_driver_id": entity_ids["car_driver_id"],
+                    "targets_json": targets,
+                    "dfs_points": dfs_points,
+                    "dfs_points_breakdown": breakdown,
+                }
+            )
 
     feature_keys = sorted(all_feature_keys)
     for row in training_rows:
@@ -495,7 +544,13 @@ def build_car_driver_training_snapshot(
         for key in feature_keys:
             row_features.setdefault(key, None)
 
-    _delete_existing_snapshot(hook, series_id, week_id, rules_id)
+    _delete_existing_snapshot(
+        hook,
+        series_id=series_id,
+        week_id=week_id,
+        rules_id=rules_id,
+        kind=kind,
+    )
     snapshot_id = _insert_snapshot(
         hook,
         series_id=series_id,
@@ -506,6 +561,7 @@ def build_car_driver_training_snapshot(
         target_keys=label_target_keys,
         dfs_id=dfs_id,
         rules_id=rules_id,
+        kind=kind,
         pipeline_version=pipeline_version,
     )
 
@@ -560,9 +616,10 @@ def build_car_driver_training_snapshot(
         )
 
     _LOG.info(
-        "build_car_driver_training_snapshot: series_id=%s week_id=%s snapshot_id=%s rows=%s features=%s targets=%s",
+        "build_car_driver_training_snapshot: series_id=%s week_id=%s kind=%s snapshot_id=%s rows=%s features=%s targets=%s",
         series_id,
         week_id,
+        kind,
         snapshot_id,
         len(training_rows),
         len(feature_keys),
@@ -576,7 +633,7 @@ def build_all_week_training_snapshots(
     mysql_conn_id: str = "nascar_conn",
     pipeline_version: str | None = None,
 ) -> list[int]:
-    """Build snapshots for every Cup week with finished agg_week_results."""
+    """Build train snapshots for every Cup week with finished agg_week_results."""
     from include.nascar.cup.aggregate_load import WEEKS_TO_LOAD_SQL
     from include.nascar.enums import NascarSeries
 
@@ -589,6 +646,33 @@ def build_all_week_training_snapshots(
         snapshot_id = build_car_driver_training_snapshot(
             series_id,
             int(week_id),
+            kind=SNAPSHOT_KIND_TRAIN,
+            mysql_conn_id=mysql_conn_id,
+            pipeline_version=pipeline_version,
+        )
+        if snapshot_id is not None:
+            snapshot_ids.append(snapshot_id)
+    return snapshot_ids
+
+
+def build_all_week_prediction_snapshots(
+    *,
+    mysql_conn_id: str = "nascar_conn",
+    pipeline_version: str | None = None,
+) -> list[int]:
+    """Build predict snapshots for Cup weeks with known starting grids but no finish yet."""
+    from include.nascar.enums import NascarSeries
+
+    hook = NascarMySqlHook(mysql_conn_id=mysql_conn_id)
+    series_id = NascarSeries.CUP.series_id
+    weeks = hook.get_records(_PREDICT_WEEKS_SQL, parameters=(series_id,))
+
+    snapshot_ids: list[int] = []
+    for _series_id, week_id in weeks:
+        snapshot_id = build_car_driver_training_snapshot(
+            series_id,
+            int(week_id),
+            kind=SNAPSHOT_KIND_PREDICT,
             mysql_conn_id=mysql_conn_id,
             pipeline_version=pipeline_version,
         )

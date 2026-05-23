@@ -8,6 +8,7 @@ import nascar.cup.aggregate as aggregate_dag
 from include.nascar.cup.aggregate_load import (
     WAVE1_LOAD_TASKS,
     WAVE2_PREV_TRACK_LOAD_TASKS,
+    aggregate_base_load_parameters,
     aggregate_load_parameters,
 )
 from include.nascar.enums import NascarSeries
@@ -21,7 +22,7 @@ _EXPECTED_TASK_IDS = frozenset(
     {
         "wait_importer_complete",
         "load_agg_week_results",
-        "build_ml_training_snapshots",
+        "aggregate_done",
         *WAVE1_LOAD_TASKS,
         *WAVE2_PREV_TRACK_LOAD_TASKS,
     }
@@ -81,13 +82,17 @@ def test_wave1_upstream_of_every_wave2_task() -> None:
         assert dag.get_task(wave2_id).upstream_task_ids == set(WAVE1_LOAD_TASKS)
 
 
-def test_wave2_upstream_of_ml_training_snapshots() -> None:
+def test_wave2_upstream_of_aggregate_done_sentinel() -> None:
     dag = aggregate_dag.dag
-    build_ml = dag.get_task("build_ml_training_snapshots")
+    aggregate_done = dag.get_task("aggregate_done")
 
-    assert build_ml.upstream_task_ids == set(WAVE2_PREV_TRACK_LOAD_TASKS)
+    assert aggregate_done.upstream_task_ids == set(WAVE2_PREV_TRACK_LOAD_TASKS)
     for wave2_id in WAVE2_PREV_TRACK_LOAD_TASKS:
-        assert build_ml.task_id in dag.get_task(wave2_id).downstream_task_ids
+        assert aggregate_done.task_id in dag.get_task(wave2_id).downstream_task_ids
+
+
+def test_aggregate_base_load_parameters_returns_series_id() -> None:
+    assert aggregate_base_load_parameters({}) == {"series_id": NascarSeries.CUP.series_id}
 
 
 @patch("include.nascar.cup.aggregate_load.NascarMySqlHook")

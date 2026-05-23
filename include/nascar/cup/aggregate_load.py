@@ -81,6 +81,11 @@ def aggregate_load_parameters(context: Mapping[str, Any]) -> dict[str, Any]:
     return {"series_id": series_id, "weeks": weeks}
 
 
+def aggregate_base_load_parameters(_context: Mapping[str, Any]) -> dict[str, Any]:
+    """Series-scoping params for the no-weeks-list ``load_agg_week_results`` proc."""
+    return {"series_id": NascarSeries.CUP.series_id}
+
+
 def make_aggregate_load_operator(
     task_id: str,
     *,

@@ -1,1 +1,1 @@
-CALL nascar.load_agg_week_results();
+CALL nascar.load_agg_week_results({{ series_id }});

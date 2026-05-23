@@ -8,7 +8,8 @@ Each hourly run loads ``agg_week_results`` once, then runs parameterized load
 procedures for every Cup week returned by the weeks query (finished race rows in
 ``agg_week_results``). Wave 1 (manufacturers, teams) runs in parallel after the
 base load; wave 2 (prior-track entity, manufacturer, and CG/CGM aggregate tables, 34 parallel tasks) runs after wave 1 completes;
-then ``build_ml_training_snapshots`` materializes ML feature rows and labels per week.
+the terminal ``aggregate_done`` sentinel fans-in from every wave 2 task so downstream
+DAGs (such as ``nascar.cup.machine_learning``) can wait on a single stable task id.
 """
 
 from __future__ import annotations
@@ -16,13 +17,13 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from airflow.sdk import DAG
-from include.nascar.ml.training_snapshot_task import build_ml_training_snapshots_task
 from include.nascar.cup.aggregate_load import (
     WAVE1_LOAD_TASKS,
     WAVE2_PREV_TRACK_LOAD_TASKS,
+    aggregate_base_load_parameters,
     make_aggregate_load_operator,
 )
 from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
@@ -65,7 +66,7 @@ with DAG(
         task_id="load_agg_week_results",
         sql_file_path=sql_root / "nascar.cup.aggregate" / "load_agg_week_results.sql",
         mysql_conn_id="nascar_conn",
-        parameters_factory=lambda _context: {},
+        parameters_factory=aggregate_base_load_parameters,
     )
 
     wave1_tasks = [
@@ -77,13 +78,10 @@ with DAG(
         for task_id in WAVE2_PREV_TRACK_LOAD_TASKS
     ]
 
-    build_ml_training_snapshots = PythonOperator(
-        task_id="build_ml_training_snapshots",
-        python_callable=build_ml_training_snapshots_task,
-    )
+    aggregate_done = EmptyOperator(task_id="aggregate_done")
 
     wait_importer_complete >> load_agg_week_results >> wave1_tasks
     for wave1_task in wave1_tasks:
         wave1_task >> wave2_tasks
     for wave2_task in wave2_tasks:
-        wave2_task >> build_ml_training_snapshots
+        wave2_task >> aggregate_done
