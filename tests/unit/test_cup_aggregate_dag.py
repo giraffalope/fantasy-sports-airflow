@@ -21,6 +21,7 @@ _EXPECTED_TASK_IDS = frozenset(
     {
         "wait_importer_complete",
         "load_agg_week_results",
+        "build_ml_training_snapshots",
         *WAVE1_LOAD_TASKS,
         *WAVE2_PREV_TRACK_LOAD_TASKS,
     }
@@ -49,7 +50,7 @@ def test_wait_sensor_targets_importer_cleanup_task() -> None:
 def test_task_ids() -> None:
     dag = aggregate_dag.dag
     assert set(dag.task_dict.keys()) == _EXPECTED_TASK_IDS
-    assert len(dag.task_dict) == 16
+    assert len(dag.task_dict) == 39
 
 
 def test_wait_then_base_load() -> None:
@@ -78,6 +79,15 @@ def test_wave1_upstream_of_every_wave2_task() -> None:
 
     for wave2_id in WAVE2_PREV_TRACK_LOAD_TASKS:
         assert dag.get_task(wave2_id).upstream_task_ids == set(WAVE1_LOAD_TASKS)
+
+
+def test_wave2_upstream_of_ml_training_snapshots() -> None:
+    dag = aggregate_dag.dag
+    build_ml = dag.get_task("build_ml_training_snapshots")
+
+    assert build_ml.upstream_task_ids == set(WAVE2_PREV_TRACK_LOAD_TASKS)
+    for wave2_id in WAVE2_PREV_TRACK_LOAD_TASKS:
+        assert build_ml.task_id in dag.get_task(wave2_id).downstream_task_ids
 
 
 @patch("include.nascar.cup.aggregate_load.NascarMySqlHook")

@@ -7,7 +7,8 @@ Top-level Cup aggregate DAG.
 Each hourly run loads ``agg_week_results`` once, then runs parameterized load
 procedures for every Cup week returned by the weeks query (finished race rows in
 ``agg_week_results``). Wave 1 (manufacturers, teams) runs in parallel after the
-base load; wave 2 (prior-track aggregate tables) runs after wave 1 completes.
+base load; wave 2 (prior-track entity, manufacturer, and CG/CGM aggregate tables, 34 parallel tasks) runs after wave 1 completes;
+then ``build_ml_training_snapshots`` materializes ML feature rows and labels per week.
 """
 
 from __future__ import annotations
@@ -15,8 +16,10 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from airflow.sdk import DAG
+from include.nascar.ml.training_snapshot_task import build_ml_training_snapshots_task
 from include.nascar.cup.aggregate_load import (
     WAVE1_LOAD_TASKS,
     WAVE2_PREV_TRACK_LOAD_TASKS,
@@ -74,6 +77,13 @@ with DAG(
         for task_id in WAVE2_PREV_TRACK_LOAD_TASKS
     ]
 
+    build_ml_training_snapshots = PythonOperator(
+        task_id="build_ml_training_snapshots",
+        python_callable=build_ml_training_snapshots_task,
+    )
+
     wait_importer_complete >> load_agg_week_results >> wave1_tasks
     for wave1_task in wave1_tasks:
         wave1_task >> wave2_tasks
+    for wave2_task in wave2_tasks:
+        wave2_task >> build_ml_training_snapshots

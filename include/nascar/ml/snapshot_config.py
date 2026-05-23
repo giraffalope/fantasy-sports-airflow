@@ -1,0 +1,95 @@
+"""Configuration for joining agg_week_prev_* tables into ML training snapshots."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+DRAFTKINGS_DFS_ID = 1
+FANDUEL_DFS_ID = 37
+GRAIN_CAR_DRIVER = "car_driver"
+
+AUDIT_COLUMNS = frozenset(
+    {"id", "created_at", "updated_at", "deleted_at"},
+)
+
+GRAIN_COLUMNS = frozenset(
+    {
+        "series_id",
+        "season_id",
+        "week_id",
+        "track_id",
+        "track_type_id",
+        "car_driver_id",
+        "driver_id",
+        "car_id",
+        "team_id",
+        "manufacturer_id",
+        "car_generation_id",
+        "car_generation_model_id",
+    },
+)
+
+TIME_COLUMN_SUFFIXES = ("_time",)
+
+
+@dataclass(frozen=True)
+class PrevTrackSource:
+    table_name: str
+    prefix: str
+    join_column: str
+
+
+@dataclass(frozen=True)
+class PrevTrackTypesSource:
+    table_name: str
+    prefix: str
+    join_column: str
+
+
+PREV_TRACK_SOURCES: tuple[PrevTrackSource, ...] = (
+    PrevTrackSource("agg_week_prev_track_cars_drivers_results", "cd_pt", "car_driver_id"),
+    PrevTrackSource("agg_week_prev_track_drivers_results", "drv_pt", "driver_id"),
+    PrevTrackSource("agg_week_prev_track_cars_results", "car_pt", "car_id"),
+    PrevTrackSource("agg_week_prev_track_teams_results", "team_pt", "team_id"),
+    PrevTrackSource("agg_week_prev_track_manufacturers_results", "mfr_pt", "manufacturer_id"),
+    PrevTrackSource(
+        "agg_week_prev_track_car_generations_results",
+        "cg_pt",
+        "car_generation_id",
+    ),
+    PrevTrackSource(
+        "agg_week_prev_track_car_generation_models_results",
+        "cgm_pt",
+        "car_generation_model_id",
+    ),
+)
+
+PREV_TRACK_TYPES_SOURCES: tuple[PrevTrackTypesSource, ...] = (
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_cars_drivers_results",
+        "cd",
+        "car_driver_id",
+    ),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_drivers_results",
+        "drv",
+        "driver_id",
+    ),
+    PrevTrackTypesSource("agg_week_prev_track_types_cars_results", "car", "car_id"),
+    PrevTrackTypesSource("agg_week_prev_track_types_teams_results", "team", "team_id"),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_manufacturers_results",
+        "mfr",
+        "manufacturer_id",
+    ),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_car_generations_results",
+        "cg",
+        "car_generation_id",
+    ),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_car_generation_models_results",
+        "cgm",
+        "car_generation_model_id",
+    ),
+)
