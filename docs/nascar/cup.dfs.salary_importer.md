@@ -1,8 +1,8 @@
 # `nascar.cup.dfs.salary_importer`
 
 Hourly Cup DraftKings salary import. Ensures the current-week DFS folder exists on
-the mounted volume, then loads any `DKSalaries.csv` files found under
-`draftkings/nascar/cup/{season_year}/{week_number}/` into `nascar.dfs_salaries`.
+the mounted volume, then loads `DKSalaries.csv` for the series current week only
+(from `v_series_current_week`) into `nascar.dfs_salaries`.
 
 - **DAG ID:** `nascar.cup.dfs.salary_importer` (no `backfill.*` twin)
 - **Source:** [dags/nascar/cup/dfs/salary_importer.py](../../dags/nascar/cup/dfs/salary_importer.py)
@@ -36,8 +36,8 @@ create the CSV file.
 
 | Task ID | Callable | Purpose |
 | --- | --- | --- |
-| `ensure_draftkings_week_directory` | `ensure_draftkings_week_directory_task` | `mkdir -p` for the current Cup week (from latest `race_results`) |
-| `import_draftkings_salaries` | `import_draftkings_salaries_task` | Glob all Cup `DKSalaries.csv` files and upsert `dfs_salaries` (`dfs_id=1`) |
+| `ensure_draftkings_week_directory` | `ensure_draftkings_week_directory_task` | `mkdir -p` for the current Cup week (`v_series_current_week`) |
+| `import_draftkings_salaries` | `import_draftkings_salaries_task` | Import current-week `DKSalaries.csv` only and upsert `dfs_salaries` (`dfs_id=1`) |
 
 ### CSV mapping
 

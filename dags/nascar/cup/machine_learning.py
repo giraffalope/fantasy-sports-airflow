@@ -5,14 +5,13 @@ Cup machine-learning DAG.
 terminal ``aggregate_done`` sentinel, then:
 
 1. ``build_ml_training_snapshots`` — materializes ``ml_training_snapshots`` + child
-   rows for both finished weeks (``kind='train'``) and upcoming weeks with known
-   starting grids (``kind='predict'``).
+   rows for all finished weeks (``kind='train'``) and the **current week** only
+   for predict (``kind='predict'``, via ``v_series_current_week``).
 2. ``train_models_if_needed`` — per DraftKings target stat, retrains an XGBoost
-   regressor (Boruta feature selection + RandomizedSearchCV tuning) **only when
-   a new finished week is available** since the most recent ``ml_models`` row.
-3. ``predict_upcoming_week`` — runs the latest model per target against any
-   ``kind='predict'`` snapshot and writes ``ml_predictions`` rows with derived
-   DFS-point breakdowns.
+   regressor when models do not yet cover the latest train week through
+   ``v_series_before_current_week`` and ``v_series_current_week``.
+3. ``predict_upcoming_week`` — scores the current week's ``kind='predict'``
+   snapshot and writes ``ml_predictions`` rows with derived DFS-point breakdowns.
 """
 
 from __future__ import annotations

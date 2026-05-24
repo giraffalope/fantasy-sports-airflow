@@ -4,8 +4,8 @@ Two snapshot kinds are materialized:
 
 - ``train`` snapshots include both features and labels for finished races
   (``r_finish_position IS NOT NULL``).
-- ``predict`` snapshots include features only for upcoming races with known
-  starting positions (``r_start_position IS NOT NULL AND r_finish_position IS NULL``).
+- ``predict`` snapshots include features only for the series **current week**
+  (``v_series_current_week``) when the race has a known grid and no finish yet.
   No ``ml_labels`` rows are written for predict snapshots.
 """
 
@@ -40,19 +40,25 @@ from include.nascar.ml.snapshot_config import (
 
 _VALID_KINDS = frozenset({SNAPSHOT_KIND_TRAIN, SNAPSHOT_KIND_PREDICT})
 
-_PREDICT_WEEKS_SQL = """
-SELECT DISTINCT s.series_id, w.id AS week_id
-FROM nascar.agg_week_results awr
-JOIN nascar.weeks w ON awr.week_id = w.id AND w.deleted_at IS NULL
-JOIN nascar.seasons s ON w.season_id = s.id AND s.deleted_at IS NULL
-WHERE awr.deleted_at IS NULL
-  AND awr.r_start_position IS NOT NULL
-  AND awr.r_finish_position IS NULL
-  AND s.series_id = %s
-ORDER BY w.id
-"""
-
 _LOG = logging.getLogger(__name__)
+
+
+def _current_week_predict_week_id(
+    hook: NascarMySqlHook,
+    *,
+    series_id: int,
+) -> int | None:
+    from include.nascar.cup.current_week import (
+        resolve_series_current_week,
+        week_eligible_for_predict_snapshot,
+    )
+
+    current = resolve_series_current_week(hook, series_id=series_id)
+    if current is None:
+        return None
+    if not week_eligible_for_predict_snapshot(hook, week_id=current.week_id):
+        return None
+    return current.week_id
 
 _METRIC_COLUMNS_CACHE: dict[str, list[str]] = {}
 
@@ -685,7 +691,7 @@ def build_all_week_prediction_snapshots(
     mysql_conn_id: str = "nascar_conn",
     pipeline_version: str | None = None,
 ) -> list[int]:
-    """Build predict snapshots for Cup weeks with known starting grids but no finish yet."""
+    """Build predict snapshot for the series current week when grid is known, race open."""
     from include.nascar.enums import NascarSeries
 
     hook = NascarMySqlHook(mysql_conn_id=mysql_conn_id)
@@ -697,17 +703,19 @@ def build_all_week_prediction_snapshots(
         return []
 
     series_id = NascarSeries.CUP.series_id
-    weeks = hook.get_records(_PREDICT_WEEKS_SQL, parameters=(series_id,))
-
-    snapshot_ids: list[int] = []
-    for _series_id, week_id in weeks:
-        snapshot_id = build_car_driver_training_snapshot(
+    week_id = _current_week_predict_week_id(hook, series_id=series_id)
+    if week_id is None:
+        _LOG.info(
+            "build_all_week_prediction_snapshots: no eligible current week for series_id=%s",
             series_id,
-            int(week_id),
-            kind=SNAPSHOT_KIND_PREDICT,
-            mysql_conn_id=mysql_conn_id,
-            pipeline_version=pipeline_version,
         )
-        if snapshot_id is not None:
-            snapshot_ids.append(snapshot_id)
-    return snapshot_ids
+        return []
+
+    snapshot_id = build_car_driver_training_snapshot(
+        series_id,
+        week_id,
+        kind=SNAPSHOT_KIND_PREDICT,
+        mysql_conn_id=mysql_conn_id,
+        pipeline_version=pipeline_version,
+    )
+    return [snapshot_id] if snapshot_id is not None else []

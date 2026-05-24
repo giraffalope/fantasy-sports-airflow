@@ -44,6 +44,10 @@ SET
 
 ---
 
+DROP TABLE IF EXISTS nascar.stg_cup_racing_reference_schedule_import_{{ table_suffix }};
+
+---
+
 CREATE TABLE nascar.stg_cup_racing_reference_schedule_import_{{ table_suffix }} (
     week_number INT UNSIGNED NULL,
     week_url VARCHAR(255) NULL,

@@ -104,7 +104,9 @@ def test_aggregate_load_parameters_uses_incremental_sql(mock_hook_cls: MagicMock
         (NascarSeries.CUP.series_id, 20),
     ]
 
-    params = aggregate_load_parameters({})
+    params = aggregate_load_parameters(
+        {}, task_id="load_agg_week_teams_results"
+    )
 
     assert params == {
         "series_id": NascarSeries.CUP.series_id,
@@ -112,6 +114,7 @@ def test_aggregate_load_parameters_uses_incremental_sql(mock_hook_cls: MagicMock
     }
     sql = mock_hook_cls.return_value.get_records.call_args[0][0]
     assert sql == WEEKS_TO_AGGREGATE_SQL
+    assert "v_series_current_week" in sql
     assert mock_hook_cls.return_value.get_records.call_args[1]["parameters"] == (
         NascarSeries.CUP.series_id,
         NascarSeries.CUP.series_id,
@@ -124,7 +127,9 @@ def test_aggregate_load_parameters_empty_when_nothing_needed(
 ) -> None:
     mock_hook_cls.return_value.get_records.return_value = []
 
-    params = aggregate_load_parameters({})
+    params = aggregate_load_parameters(
+        {}, task_id="load_agg_week_teams_results"
+    )
 
     assert params == {"series_id": NascarSeries.CUP.series_id, "weeks": []}
 
@@ -139,7 +144,9 @@ def test_aggregate_load_parameters_rebuild_all_uses_finished_weeks_sql(
         (NascarSeries.CUP.series_id, 5),
     ]
 
-    params = aggregate_load_parameters({})
+    params = aggregate_load_parameters(
+        {}, task_id="load_agg_week_teams_results"
+    )
 
     assert params["weeks"] == [{"week_id": 5}]
     sql = mock_hook_cls.return_value.get_records.call_args[0][0]

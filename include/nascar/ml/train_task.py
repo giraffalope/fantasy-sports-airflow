@@ -13,8 +13,9 @@ on the appropriate feature allowlist, fit the regressor, and persist a row in
   warm up. Disable via ``FS_ML_ENABLE_GLOBAL_FALLBACK=0``.
 
 The task short-circuits when ``ml_model_training_snapshots`` already covers the
-latest finished ``ml_training_snapshots.week_id`` for every scope/target combo
-that has enough history to train, so we don't refit every hour.
+latest train week through ``v_series_before_current_week`` and
+``v_series_current_week`` for every scope/target combo that has enough history
+to train, so we don't refit every hour.
 """
 
 from __future__ import annotations
@@ -27,6 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+from include.nascar.cup.current_week import (
+    latest_train_week_for_retrain,
+    resolve_series_current_week,
+)
+from include.nascar.enums import NascarSeries
 from include.nascar.ml.model_scope import (
     ALL_SCOPES,
     SCOPE_GLOBAL,
@@ -77,20 +83,20 @@ def _active_rules(hook: NascarMySqlHook, dfs_id: int) -> tuple[int, dict[str, An
     return int(rules_id), rules
 
 
-def _latest_train_week(hook: NascarMySqlHook, rules_id: int) -> int | None:
-    rows = hook.get_records(
-        """
-        SELECT MAX(week_id)
-        FROM nascar.ml_training_snapshots
-        WHERE kind = %s
-          AND dfs_scoring_rules_id = %s
-          AND deleted_at IS NULL
-        """,
-        parameters=(SNAPSHOT_KIND_TRAIN, rules_id),
-    )
-    if not rows or rows[0][0] is None:
+def _latest_train_week_for_retrain_gate(
+    hook: NascarMySqlHook,
+    rules_id: int,
+    *,
+    series_id: int = NascarSeries.CUP.series_id,
+) -> int | None:
+    if resolve_series_current_week(hook, series_id=series_id) is None:
         return None
-    return int(rows[0][0])
+    return latest_train_week_for_retrain(
+        hook,
+        rules_id=rules_id,
+        series_id=series_id,
+        train_kind=SNAPSHOT_KIND_TRAIN,
+    )
 
 
 def _max_covered_train_week(hook: NascarMySqlHook, rules_id: int) -> int | None:
@@ -502,7 +508,11 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
         return {"skipped": "no_active_rules"}
     rules_id, scoring_rules = rules
 
-    latest_train_week = _latest_train_week(hook, rules_id)
+    if resolve_series_current_week(hook, series_id=NascarSeries.CUP.series_id) is None:
+        _LOG.info("train_models_if_needed_task: no current week in v_series_current_week")
+        return {"skipped": "no_current_week"}
+
+    latest_train_week = _latest_train_week_for_retrain_gate(hook, rules_id)
     if latest_train_week is None:
         _LOG.info("train_models_if_needed_task: no train snapshots yet for rules_id=%s", rules_id)
         return {"skipped": "no_training_snapshots"}

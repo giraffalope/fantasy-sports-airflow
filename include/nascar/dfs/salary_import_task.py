@@ -5,30 +5,27 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
-from include.nascar.dfs.paths import draftkings_salaries_dir, draftkings_salaries_glob
+from include.nascar.cup.current_week import resolve_series_current_week
+from include.nascar.dfs.paths import draftkings_salaries_csv, draftkings_salaries_dir
 from include.nascar.enums import NascarSeries
 from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID
 
 _LOG = logging.getLogger(__name__)
 
-_CURRENT_WEEK_SQL = """
-SELECT w.id AS week_id,
-       w.number AS week_number,
-       s.year AS season_year,
+_CURRENT_WEEK_WITH_RACE_SQL = """
+SELECT v.week_id,
+       v.week_number,
+       v.season_year,
        r.id AS race_id
-FROM nascar.race_results rr
-JOIN nascar.races r ON rr.race_id = r.id AND r.deleted_at IS NULL
-JOIN nascar.weeks w ON r.week_id = w.id AND w.deleted_at IS NULL
-JOIN nascar.seasons s ON w.season_id = s.id AND s.deleted_at IS NULL
-WHERE rr.deleted_at IS NULL
-  AND s.series_id = %s
-ORDER BY w.id DESC
+FROM nascar.v_series_current_week v
+LEFT JOIN nascar.races r
+    ON r.week_id = v.week_id AND r.deleted_at IS NULL
+WHERE v.series_id = %s
 LIMIT 1
 """
 
@@ -72,7 +69,7 @@ class CupWeekContext:
     week_id: int
     week_number: int
     season_year: int
-    race_id: int
+    race_id: int | None
 
 
 def _normalize_driver_name(raw: str) -> str:
@@ -94,7 +91,7 @@ def resolve_current_cup_week(
     *,
     series_id: int = NascarSeries.CUP.series_id,
 ) -> CupWeekContext | None:
-    rows = hook.get_records(_CURRENT_WEEK_SQL, parameters=(series_id,))
+    rows = hook.get_records(_CURRENT_WEEK_WITH_RACE_SQL, parameters=(series_id,))
     if not rows:
         return None
     week_id, week_number, season_year, race_id = rows[0]
@@ -102,7 +99,7 @@ def resolve_current_cup_week(
         week_id=int(week_id),
         week_number=int(week_number),
         season_year=int(season_year),
-        race_id=int(race_id),
+        race_id=int(race_id) if race_id is not None else None,
     )
 
 
@@ -128,7 +125,7 @@ def ensure_draftkings_week_directory_task(**_context: object) -> dict[str, Any]:
     hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
     ctx = resolve_current_cup_week(hook)
     if ctx is None:
-        _LOG.info("ensure_draftkings_week_directory: no current Cup week with race_results")
+        _LOG.info("ensure_draftkings_week_directory: no current Cup week in v_series_current_week")
         return {"skipped": True, "reason": "no_current_week"}
 
     directory = draftkings_salaries_dir(ctx.season_year, ctx.week_number)
@@ -267,41 +264,29 @@ def _import_csv_file(
     }
 
 
-def _parse_draftkings_salary_path(path: Path) -> tuple[int, int] | None:
-    """Return ``(season_year, week_number)`` from a Cup DK salaries path."""
-    if path.name != "DKSalaries.csv":
-        return None
-    parts = path.parts
-    try:
-        cup_idx = parts.index("cup")
-        return int(parts[cup_idx + 1]), int(parts[cup_idx + 2])
-    except (ValueError, IndexError):
-        return None
-
-
 def import_draftkings_salaries_task(**_context: object) -> dict[str, Any]:
-    """Load every ``DKSalaries.csv`` found under the Cup DFS tree."""
+    """Load ``DKSalaries.csv`` for the series current week only."""
     hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
-    root = draftkings_salaries_glob()
-    if not root.exists():
-        _LOG.info("import_draftkings_salaries: no dfs root at %s", root)
+    ctx = resolve_current_cup_week(hook)
+    if ctx is None:
+        _LOG.info("import_draftkings_salaries: no current Cup week in v_series_current_week")
+        return {"files": [], "imported": 0, "skipped": True, "reason": "no_current_week"}
+
+    csv_path = draftkings_salaries_csv(ctx.season_year, ctx.week_number)
+    if not csv_path.is_file():
+        _LOG.info(
+            "import_draftkings_salaries: no CSV for current week year=%s week=%s path=%s",
+            ctx.season_year,
+            ctx.week_number,
+            csv_path,
+        )
         return {"files": [], "imported": 0}
 
-    results: list[dict[str, Any]] = []
-    for path in sorted(root.glob("*/*/DKSalaries.csv")):
-        parsed = _parse_draftkings_salary_path(path)
-        if parsed is None:
-            _LOG.warning("import_draftkings_salaries: unrecognized path %s", path)
-            continue
-        season_year, week_number = parsed
-        results.append(
-            _import_csv_file(
-                hook,
-                str(path),
-                season_year=season_year,
-                week_number=week_number,
-            )
-        )
-
-    total_inserted = sum(r.get("rows_inserted", 0) for r in results)
-    return {"files": results, "imported": total_inserted}
+    result = _import_csv_file(
+        hook,
+        str(csv_path),
+        season_year=ctx.season_year,
+        week_number=ctx.week_number,
+    )
+    total_inserted = result.get("rows_inserted", 0)
+    return {"files": [result], "imported": total_inserted}

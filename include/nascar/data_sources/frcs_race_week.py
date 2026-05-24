@@ -47,7 +47,14 @@ from include.nascar.data_sources.frcs import (
     download_qualifying_html_if_missing,
     download_race_results_html_if_missing,
 )
+from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+from include.nascar.cup.current_week import (
+    SeriesCurrentWeek,
+    resolve_series_current_week,
+    week_has_dfs_salaries,
+)
 from include.nascar.data_sources.race_week_context import is_backfill_race_week_dag
+from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID
 from include.nascar.data_sources.racing_reference_race_week import (
     _cup_series_schedule_year_from_context,
     parse_schedule_week_date,
@@ -157,6 +164,29 @@ def _frcs_week_skip_if_loop_csv_present(
     if not _frcs_week_loop_data_csv_has_data_rows(week_dir):
         return False
     _frcs_week_line(task, year, event_number, "skip (loop-data.csv has data rows)")
+    return True
+
+
+def _frcs_week_skip_if_current_week_dfs_salaries_present(
+    task: str,
+    year: int,
+    event_number: int,
+    context: dict[str, Any] | None,
+    *,
+    current: SeriesCurrentWeek | None,
+    hook: NascarMySqlHook,
+) -> bool:
+    if context is not None and is_backfill_race_week_dag(context):
+        return False
+    if current is None:
+        return False
+    if year != current.season_year or event_number != current.week_number:
+        return False
+    if not week_has_dfs_salaries(
+        hook, week_id=current.week_id, dfs_id=DRAFTKINGS_DFS_ID
+    ):
+        return False
+    _frcs_week_line(task, year, event_number, "skip (current week dfs_salaries exist)")
     return True
 
 
@@ -413,12 +443,18 @@ def cup_series_sync_draftkings(**context: Any) -> None:
     conv = src.converters
     task = cup_series_sync_draftkings.__name__
     _frcs_task_begin(task, year, run_anchor)
+    hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
+    current = resolve_series_current_week(hook, series_id=_FRCS_CUP.series_id)
     weeks = 0
     for event_number, _ in iter_week_numbers_with_url(
         src, _FRCS_CUP.db_name, year, run_anchor=run_anchor
     ):
         base = src.storage_path_week(_FRCS_CUP.db_name, year, event_number)
         if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
+            continue
+        if _frcs_week_skip_if_current_week_dfs_salaries_present(
+            task, year, event_number, context, current=current, hook=hook
+        ):
             continue
         weeks += 1
         race_html = os.path.join(base, "race-results.html")

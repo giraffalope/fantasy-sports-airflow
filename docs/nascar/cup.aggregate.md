@@ -80,15 +80,13 @@ shared behavior is captured once here:
   `dags/sql/nascar.cup.aggregate/X.sql`.
 - **Parameters factory:** `aggregate_load_parameters` (also in
   [include/nascar/cup/aggregate_load.py](../../include/nascar/cup/aggregate_load.py))
-  runs `WEEKS_TO_AGGREGATE_SQL` against `nascar_conn`. Week discovery is driven
-  by weeks with `race_results` through the current race week (`MAX(week_id)`).
-  **Backfill mode** — when any historical week (before `current_week`) lacks
-  base `agg_week_results` or wave-1 / wave-2 proxy rows (teams, manufacturers,
-  prev-track cars/drivers), every incomplete week through `current_week` is
-  included (cold start loads all weeks 1…N). **Steady-state mode** — once
-  history is complete, only `current_week` is included when derived rows are
-  missing or base `agg_week_results` is newer than downstream (importer still
-  updating the live race). When the list is empty, Jinja emits no `CALL`s. Set
+  runs per-task SQL (`build_weeks_to_aggregate_sql`) against `nascar_conn`.
+  **Current week** comes from `v_series_current_week` and is always included.
+  **Historical weeks** (before `current_week`) with a completed race
+  (`race_results`) are included only when that wave task's target `agg_*` table
+  has no rows for the week. Once history is complete, steady-state runs refresh
+  only `current_week` (per task). When the list is empty, Jinja emits no
+  `CALL`s. Set
   `FS_AGG_REBUILD_ALL_WEEKS=1` to use `FINISHED_AGG_WEEKS_SQL` (all finished
   weeks) for a manual full rebuild.
   The factory returns `{"series_id": NascarSeries.CUP.series_id, "weeks":
@@ -120,13 +118,12 @@ shared behavior is captured once here:
   scopes the proc to Cup so a future Xfinity / Truck aggregate DAG can
   reuse the same proc with its own `series_id` without trampling Cup rows.
 - **Stored procedure:** `nascar.load_agg_week_results(p_series_id BIGINT
-  UNSIGNED)` — backfills weeks with `race_results` through the current race
-  week that have no `agg_week_results` rows yet; refreshes **only the current
-  week** when `race_results` are newer than existing agg rows or the week is
-  still in-progress (no finished agg rows). Historical weeks with finished
-  base rows are not re-merged on hourly runs. The proc `DELETE`s existing
-  rows for weeks it is about to re-insert, then runs the existing
-  `INSERT … SELECT`.
+  UNSIGNED)` — backfills historical race weeks before `current_week` that lack
+  base `agg_week_results` rows; **always refreshes `current_week`** every run
+  (`current_week` from `v_series_current_week`).
+  Historical weeks with existing base rows are not re-merged on hourly runs.
+  The proc `DELETE`s existing rows for weeks it is about to re-insert, then
+  runs the existing `INSERT … SELECT`.
 - **Behavior:** rebuilds the per-week per-car_driver row that downstream
   loaders join against. Columns include `r_start_position`, `r_finish_position`,
   `r_place_diff`, `r_total_fastest_laps`, `r_total_laps_led`, and other

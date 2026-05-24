@@ -2,14 +2,13 @@
 
 ``FINISHED_AGG_WEEKS_SQL`` — every Cup week with finished ``agg_week_results`` (ML snapshots).
 
-``WEEKS_TO_AGGREGATE_SQL`` — two-mode week selection for wave-1 / wave-2 loaders:
+``build_weeks_to_aggregate_sql`` — per-task week selection for wave-1 / wave-2 loaders:
 
-- **Backfill mode** (history before ``current_week`` not fully aggregated): every week
-  with ``race_results`` through ``current_week`` that lacks base or derived aggregates.
-- **Steady-state mode** (history complete): only ``current_week`` when derived rows are
-  missing or base ``agg_week_results`` is newer than downstream.
+- **Historical** (``week_id < current_week`` with a completed race): include when the
+  target ``agg_*`` table has no rows for that week.
+- **Current week**: always refresh every run (from ``v_series_current_week``).
 
-``load_agg_week_results`` (proc 6019) uses the same current-week rules for base rows.
+``load_agg_week_results`` (proc 6019) uses the same view for ``current_week``.
 """
 
 from __future__ import annotations
@@ -39,127 +38,6 @@ ORDER BY w.id
 
 # Backward-compatible alias (ML and legacy callers).
 WEEKS_TO_LOAD_SQL = FINISHED_AGG_WEEKS_SQL
-
-WEEKS_TO_AGGREGATE_SQL = """
-WITH current_week AS (
-    SELECT MAX(w.id) AS week_id
-    FROM nascar.race_results rr
-    JOIN nascar.races r ON rr.race_id = r.id AND r.deleted_at IS NULL
-    JOIN nascar.weeks w ON r.week_id = w.id AND w.deleted_at IS NULL
-    JOIN nascar.seasons s ON w.season_id = s.id AND s.deleted_at IS NULL
-    WHERE rr.deleted_at IS NULL
-      AND s.series_id = %s
-),
-weeks_with_race AS (
-    SELECT DISTINCT s.series_id, w.id AS week_id
-    FROM nascar.race_results rr
-    JOIN nascar.races r ON rr.race_id = r.id AND r.deleted_at IS NULL
-    JOIN nascar.weeks w ON r.week_id = w.id AND w.deleted_at IS NULL
-    JOIN nascar.seasons s ON w.season_id = s.id AND s.deleted_at IS NULL
-    JOIN current_week cw ON cw.week_id IS NOT NULL
-    WHERE rr.deleted_at IS NULL
-      AND s.series_id = %s
-      AND w.id <= cw.week_id
-),
-week_completeness AS (
-    SELECT wr.series_id,
-           wr.week_id,
-           CASE
-               WHEN EXISTS (
-                   SELECT 1
-                   FROM nascar.agg_week_results awr
-                   WHERE awr.series_id = wr.series_id
-                     AND awr.week_id = wr.week_id
-                     AND awr.deleted_at IS NULL
-               )
-               AND EXISTS (
-                   SELECT 1
-                   FROM nascar.agg_week_teams_results t
-                   WHERE t.series_id = wr.series_id
-                     AND t.week_id = wr.week_id
-                     AND t.deleted_at IS NULL
-               )
-               AND EXISTS (
-                   SELECT 1
-                   FROM nascar.agg_week_manufacturers_results m
-                   WHERE m.series_id = wr.series_id
-                     AND m.week_id = wr.week_id
-                     AND m.deleted_at IS NULL
-               )
-               AND EXISTS (
-                   SELECT 1
-                   FROM nascar.agg_week_prev_track_cars_drivers_results p
-                   WHERE p.series_id = wr.series_id
-                     AND p.week_id = wr.week_id
-                     AND p.deleted_at IS NULL
-               )
-               THEN 1
-               ELSE 0
-           END AS is_complete
-    FROM weeks_with_race wr
-),
-history_coverage_complete AS (
-    SELECT CASE
-        WHEN NOT EXISTS (
-            SELECT 1
-            FROM week_completeness wc
-            JOIN current_week cw ON cw.week_id IS NOT NULL
-            WHERE wc.week_id < cw.week_id
-              AND wc.is_complete = 0
-        ) THEN 1
-        ELSE 0
-    END AS is_complete
-),
-derived_downstream_max AS (
-    SELECT awr.series_id,
-           awr.week_id,
-           MAX(d.updated_at) AS max_downstream_updated_at
-    FROM nascar.agg_week_results awr
-    LEFT JOIN (
-        SELECT series_id, week_id, updated_at
-        FROM nascar.agg_week_teams_results
-        WHERE deleted_at IS NULL
-        UNION ALL
-        SELECT series_id, week_id, updated_at
-        FROM nascar.agg_week_manufacturers_results
-        WHERE deleted_at IS NULL
-        UNION ALL
-        SELECT series_id, week_id, updated_at
-        FROM nascar.agg_week_prev_track_cars_drivers_results
-        WHERE deleted_at IS NULL
-    ) d ON d.series_id = awr.series_id AND d.week_id = awr.week_id
-    WHERE awr.deleted_at IS NULL
-    GROUP BY awr.series_id, awr.week_id
-)
-SELECT DISTINCT wr.series_id, wr.week_id
-FROM weeks_with_race wr
-JOIN current_week cw ON cw.week_id IS NOT NULL
-CROSS JOIN history_coverage_complete hcc
-LEFT JOIN week_completeness wc
-    ON wc.series_id = wr.series_id AND wc.week_id = wr.week_id
-LEFT JOIN nascar.agg_week_results awr
-    ON awr.series_id = wr.series_id
-   AND awr.week_id = wr.week_id
-   AND awr.deleted_at IS NULL
-LEFT JOIN derived_downstream_max ddm
-    ON ddm.series_id = wr.series_id AND ddm.week_id = wr.week_id
-WHERE (
-    hcc.is_complete = 0
-    AND COALESCE(wc.is_complete, 0) = 0
-)
-OR (
-    hcc.is_complete = 1
-    AND wr.week_id = cw.week_id
-    AND (
-        COALESCE(wc.is_complete, 0) = 0
-        OR awr.updated_at > COALESCE(
-            ddm.max_downstream_updated_at,
-            TIMESTAMP '1970-01-01 00:00:00'
-        )
-    )
-)
-ORDER BY wr.week_id
-"""
 
 WAVE1_LOAD_TASKS: tuple[str, ...] = (
     "load_agg_week_manufacturers_results",
@@ -203,14 +81,77 @@ WAVE2_PREV_TRACK_LOAD_TASKS: tuple[str, ...] = (
     "load_agg_week_prev_track_types_cgm_teams_results",
 )
 
+ALL_AGG_LOAD_TASKS: tuple[str, ...] = WAVE1_LOAD_TASKS + WAVE2_PREV_TRACK_LOAD_TASKS
+
+AGG_TABLE_BY_TASK: dict[str, str] = {
+    task_id: task_id.removeprefix("load_") for task_id in ALL_AGG_LOAD_TASKS
+}
+
+
+def build_weeks_to_aggregate_sql(agg_table: str) -> str:
+    """Return week-discovery SQL for one wave loader's target ``agg_*`` table."""
+    if agg_table not in AGG_TABLE_BY_TASK.values():
+        raise ValueError(f"unknown aggregate table: {agg_table}")
+    return f"""
+WITH current_week AS (
+    SELECT week_id, series_id
+    FROM nascar.v_series_current_week
+    WHERE series_id = %s
+),
+weeks_in_scope AS (
+    SELECT DISTINCT s.series_id, w.id AS week_id
+    FROM nascar.weeks w
+    JOIN nascar.seasons s ON w.season_id = s.id AND s.deleted_at IS NULL
+    JOIN current_week cw ON cw.week_id IS NOT NULL
+    WHERE s.series_id = %s
+      AND w.deleted_at IS NULL
+      AND (
+          w.id = cw.week_id
+          OR (
+              w.id < cw.week_id
+              AND EXISTS (
+                  SELECT 1
+                  FROM nascar.race_results rr
+                  JOIN nascar.races r ON rr.race_id = r.id AND r.deleted_at IS NULL
+                  WHERE rr.deleted_at IS NULL
+                    AND r.week_id = w.id
+              )
+          )
+      )
+)
+SELECT DISTINCT wr.series_id, wr.week_id
+FROM weeks_in_scope wr
+JOIN current_week cw ON cw.week_id IS NOT NULL
+WHERE wr.week_id = cw.week_id
+   OR (
+        wr.week_id < cw.week_id
+        AND NOT EXISTS (
+            SELECT 1
+            FROM nascar.{agg_table} t
+            WHERE t.series_id = wr.series_id
+              AND t.week_id = wr.week_id
+              AND t.deleted_at IS NULL
+        )
+   )
+ORDER BY wr.week_id
+"""
+
+
+# Default SQL for tests and backward-compatible imports (teams wave-1 table).
+WEEKS_TO_AGGREGATE_SQL = build_weeks_to_aggregate_sql("agg_week_teams_results")
+
 
 def _rebuild_all_weeks_enabled() -> bool:
     raw = os.environ.get("FS_AGG_REBUILD_ALL_WEEKS", "0")
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-def aggregate_load_parameters(context: Mapping[str, Any]) -> dict[str, Any]:
-    """Weeks needing wave-1 / wave-2 reload after ``load_agg_week_results`` (incremental)."""
+def aggregate_load_parameters(
+    context: Mapping[str, Any],
+    *,
+    task_id: str,
+) -> dict[str, Any]:
+    """Weeks needing reload for one wave loader after ``load_agg_week_results``."""
     series_id = NascarSeries.CUP.series_id
     hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
     if _rebuild_all_weeks_enabled():
@@ -218,13 +159,15 @@ def aggregate_load_parameters(context: Mapping[str, Any]) -> dict[str, Any]:
         parameters: tuple[int, ...] = (series_id,)
         mode = "rebuild_all"
     else:
-        sql = WEEKS_TO_AGGREGATE_SQL
+        agg_table = AGG_TABLE_BY_TASK[task_id]
+        sql = build_weeks_to_aggregate_sql(agg_table)
         parameters = (series_id, series_id)
         mode = "incremental"
     rows = hook.get_records(sql, parameters=parameters)
     weeks = [{"week_id": int(week_id)} for _series_id, week_id in rows]
     _LOG.info(
-        "aggregate_load_parameters series_id=%s mode=%s weeks_to_load=%s",
+        "aggregate_load_parameters task_id=%s series_id=%s mode=%s weeks_to_load=%s",
+        task_id,
         series_id,
         mode,
         [w["week_id"] for w in weeks],
@@ -247,5 +190,7 @@ def make_aggregate_load_operator(
         task_id=task_id,
         sql_file_path=sql_root / "nascar.cup.aggregate" / f"{task_id}.sql",
         mysql_conn_id=mysql_conn_id,
-        parameters_factory=aggregate_load_parameters,
+        parameters_factory=lambda ctx, tid=task_id: aggregate_load_parameters(
+            ctx, task_id=tid
+        ),
     )

@@ -4,12 +4,11 @@ Top-level Cup aggregate DAG.
 **Schedule:** hourly (see ``CUP_SCRAPER_PROD_HOURLY_CRON``), aligned with
 ``nascar.cup.importer``.
 
-Each hourly run calls ``load_agg_week_results`` (backfill missing base rows through
-the current race week; refresh only the current week when importer data changes),
-then runs wave-1 / wave-2 loaders in two modes: **backfill** all weeks with
-``race_results`` through ``current_week`` that lack aggregates when history is
-incomplete; **steady-state** only ``current_week`` when history is complete and
-importer data may still be changing. Wave 1 (manufacturers,
+Each hourly run calls ``load_agg_week_results`` (backfill historical race weeks
+missing base rows; always refresh ``current_week``), then runs wave-1 / wave-2
+loaders per task: historical race weeks missing rows in that task's ``agg_*``
+table, plus ``current_week`` every run. ``current_week`` comes from
+``v_series_current_week``. Wave 1 (manufacturers,
 teams) runs in parallel after the base load; wave 2 (prior-track entity,
 manufacturer, and CG/CGM aggregate tables, 34 parallel tasks) runs after wave 1
 completes; the terminal ``aggregate_done`` sentinel fans-in from every wave 2 task

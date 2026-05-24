@@ -103,10 +103,12 @@ flowchart TB
   rows (`r_finish_position IS NOT NULL`) and writes one snapshot per week +
   scoring-rules version into `ml_training_snapshots` with `kind='train'`,
   one row per car-driver into `ml_training_rows`, and one label row per
-  car-driver into `ml_labels`. The predict branch enumerates every Cup
-  week with `r_start_position IS NOT NULL AND r_finish_position IS NULL`
-  via `_PREDICT_WEEKS_SQL` and writes `kind='predict'` snapshots +
-  `ml_training_rows` (no `ml_labels`). The `(series_id, week_id, grain,
+  car-driver into `ml_labels`. The predict branch builds at most one
+  `kind='predict'` snapshot for the Cup **current week** from
+  `v_series_current_week` when that week has a known grid and no finish
+  (`r_start_position IS NOT NULL AND r_finish_position IS NULL` on
+  `agg_week_results`) and writes `ml_training_rows` only (no `ml_labels`).
+  The `(series_id, week_id, grain,
   kind, dfs_scoring_rules_id)` unique key keeps train and predict snapshots
   separate.
 - **Inputs:** `agg_week_results` plus the prior-track / track-types
@@ -141,17 +143,19 @@ flowchart TB
   1. Looks up the latest active `nascar.dfs_scoring_rules` row for
      DraftKings (`DRAFTKINGS_DFS_ID = 1`). Skips with `no_active_rules` if
      missing.
-  2. Reads `MAX(week_id)` from `ml_training_snapshots WHERE kind='train' AND
-     dfs_scoring_rules_id = ...`. Skips with `no_training_snapshots` if
-     empty.
-  3. Reads `MAX(s.week_id)` joined through `ml_model_training_snapshots →
+  2. Requires a row in `v_series_current_week` for Cup; skips with
+     `no_current_week` if missing.
+  3. Reads the latest train `week_id` capped to weeks in
+     `v_series_before_current_week` or the current week (finished live
+     week train snapshots). Skips with `no_training_snapshots` if empty.
+  4. Reads `MAX(s.week_id)` joined through `ml_model_training_snapshots →
      ml_training_snapshots`. If the covered week is already at or beyond
-     the latest train week, returns `no_new_finished_weeks` without
+     that latest train week, returns `no_new_finished_weeks` without
      retraining.
-  4. Reads the feature allowlist from `ml_training_snapshots.feature_keys`
+  5. Reads the feature allowlist from `ml_training_snapshots.feature_keys`
      on the latest train snapshot for the active rules version (no full-table
      scan of every row's `features_json`).
-  5. **Per-series, per-scope training loop** with **scoped SQL loads** via
+  6. **Per-series, per-scope training loop** with **scoped SQL loads** via
      `load_training_frame(dfs_scoring_rules_id=..., series_id=..., ...)`.
      Each `(track_id)` / `(track_type_id)` / global bucket loads only its rows,
      trains, then drops the frame before the next scope — avoiding a single
@@ -173,7 +177,7 @@ flowchart TB
        on the allowlist subset, then `tune_xgb` (`RandomizedSearchCV` +
        `TimeSeriesSplit`), then a final `XGBRegressor` fit. MAE on the
        trailing `FS_ML_HOLDOUT_WEEKS` (default `1`) weeks is recorded.
-  6. Persists artifacts to `<FS_ML_ARTIFACT_ROOT>/<model_id>/<target>.json`
+  7. Persists artifacts to `<FS_ML_ARTIFACT_ROOT>/<model_id>/<target>.json`
      and writes:
      - `ml_feature_sets` — `target_keys=[target]`, `selected_features`,
        `boruta_metadata` (includes `scope` block with `series_id` /
@@ -210,7 +214,8 @@ flowchart TB
   [include/nascar/ml/predict_task.py](../../include/nascar/ml/predict_task.py).
 - **Behavior:**
   1. Resolves the active DraftKings scoring rules.
-  2. Loads the latest `kind='predict'` snapshot for the active rules.
+  2. Loads the `kind='predict'` snapshot for the active rules on the Cup
+     **current week** (`v_series_current_week`, not `MAX(week_id)`).
      The snapshot lookup joins `tracks_track_types` so the snapshot dict
      carries `series_id`, `track_id`, and the canonical `track_type_id`.
      If no predict snapshot exists, returns `no_predict_snapshot`.

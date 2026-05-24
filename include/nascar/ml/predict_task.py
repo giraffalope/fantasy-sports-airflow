@@ -24,6 +24,7 @@ from include.nascar.ml.model_scope import (
     global_fallback_enabled,
 )
 from include.nascar.ml.scoring import compute_dfs_points_from_targets
+from include.nascar.enums import NascarSeries
 from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID, SNAPSHOT_KIND_PREDICT
 from include.nascar.ml.xgb_train_pipeline import DEFAULT_TARGETS, PRIMARY_TARGET
 
@@ -58,7 +59,12 @@ def _active_rules(hook: NascarMySqlHook, dfs_id: int) -> tuple[int, dict[str, An
     return int(rules_id), rules
 
 
-def _latest_predict_snapshot(hook: NascarMySqlHook, rules_id: int) -> dict[str, Any] | None:
+def _latest_predict_snapshot(
+    hook: NascarMySqlHook,
+    rules_id: int,
+    *,
+    series_id: int = NascarSeries.CUP.series_id,
+) -> dict[str, Any] | None:
     rows = hook.get_records(
         """
         SELECT
@@ -69,6 +75,9 @@ def _latest_predict_snapshot(hook: NascarMySqlHook, rules_id: int) -> dict[str, 
             tt.track_type_id,
             s.feature_keys
         FROM nascar.ml_training_snapshots s
+        JOIN nascar.v_series_current_week cw
+            ON cw.series_id = s.series_id
+           AND cw.week_id = s.week_id
         LEFT JOIN (
             SELECT track_id, MIN(track_type_id) AS track_type_id
             FROM nascar.tracks_track_types
@@ -78,10 +87,10 @@ def _latest_predict_snapshot(hook: NascarMySqlHook, rules_id: int) -> dict[str, 
         WHERE s.kind = %s
           AND s.dfs_scoring_rules_id = %s
           AND s.deleted_at IS NULL
-        ORDER BY s.week_id DESC, s.id DESC
+          AND s.series_id = %s
         LIMIT 1
         """,
-        parameters=(SNAPSHOT_KIND_PREDICT, rules_id),
+        parameters=(SNAPSHOT_KIND_PREDICT, rules_id, series_id),
     )
     if not rows:
         return None
