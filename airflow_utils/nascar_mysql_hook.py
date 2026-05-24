@@ -11,6 +11,9 @@ collation without a separate ``SET NAMES``. If neither ``collation`` nor ``init_
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 
 _DEFAULT_CHARSET = "utf8mb4"
@@ -48,3 +51,22 @@ class NascarMySqlHook(MySqlHook):
         elif not collation:
             cfg["init_command"] = _DEFAULT_INIT_COMMAND
         return cfg
+
+    def run_insert_returning_id(
+        self,
+        sql: str,
+        parameters: Sequence[Any] | None = None,
+    ) -> int:
+        """Execute an INSERT on one connection and return ``cursor.lastrowid``.
+
+        ``LAST_INSERT_ID()`` via a separate ``get_records`` call is unsafe with
+        pooled connections (often returns 0). Use this for auto-increment FKs.
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, parameters or ())
+                insert_id = cursor.lastrowid
+            conn.commit()
+        if not insert_id:
+            raise RuntimeError("INSERT did not return an auto-increment id")
+        return int(insert_id)

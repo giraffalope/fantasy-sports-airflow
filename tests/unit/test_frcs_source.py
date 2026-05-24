@@ -131,6 +131,31 @@ def test_frcs_convert_schedule_row_order(tmp_path, source: FrcsSource) -> None:
     assert row2[0] == "2" and row2[1] == "2"
 
 
+def test_frcs_convert_schedule_prefers_track_link_title(tmp_path, source: FrcsSource) -> None:
+    html = tmp_path / "sched_title.html"
+    csv_out = tmp_path / "sched_title.csv"
+    html.write_text(
+        """
+        <table><tbody>
+        <tr>
+          <td data-column='number'>1</td>
+          <td data-column='date' data-sort='2026-02-16 00:00:00'>Feb 16</td>
+          <td data-column='track'>
+            <a href='https://frcs.pro/nascar/tracks/daytona'
+               title='Daytona International Speedway'>Daytona International Spe…</a>
+          </td>
+          <td data-column='race'><a href='https://frcs.pro/nascar/cup/races/results/2026/daytona/race-a'>Daytona 500</a></td>
+        </tr>
+        </tbody></table>
+        """,
+        encoding="utf-8",
+    )
+    source.converters.convert_schedule(str(html), str(csv_out))
+    text = csv_out.read_text(encoding="utf-8")
+    assert "Daytona International Speedway" in text
+    assert "Daytona International Spe…" not in text
+
+
 def test_frcs_convert_schedule_data_sort_zoned_to_utc_date(tmp_path, source: FrcsSource) -> None:
     html = tmp_path / "sched_z.html"
     csv_out = tmp_path / "sched_z.csv"

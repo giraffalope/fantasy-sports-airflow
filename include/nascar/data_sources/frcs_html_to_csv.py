@@ -924,7 +924,10 @@ class FrcsHtmlToCsv:
             week_race_name = race_a.get_text(strip=True)
             track_td = tds.get(_FRCS_SCHEDULE_TRACK_COL)
             track_a = track_td.find("a", href=True) if track_td else None
-            week_track = track_a.get_text(strip=True) if track_a else ""
+            if track_a:
+                week_track = (track_a.get("title") or "").strip() or track_a.get_text(strip=True)
+            else:
+                week_track = ""
             week_track_url = track_a["href"].strip() if track_a and track_a.get("href") else ""
             date_td = tds.get(_FRCS_SCHEDULE_DATE_COL)
             week_date = ""

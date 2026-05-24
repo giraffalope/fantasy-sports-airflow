@@ -32,12 +32,9 @@ from include.nascar.ml.model_scope import (
     SCOPE_GLOBAL,
     SCOPE_TRACK,
     SCOPE_TRACK_TYPE,
-    distinct_week_count,
     features_for_scope,
     global_fallback_enabled,
-    group_frame_by_series,
-    group_frame_by_track,
-    group_frame_by_track_type,
+    max_train_weeks,
     min_track_type_weeks,
     min_track_weeks,
 )
@@ -114,19 +111,99 @@ def _max_covered_train_week(hook: NascarMySqlHook, rules_id: int) -> int | None:
     return int(rows[0][0])
 
 
-def _train_snapshot_ids(hook: NascarMySqlHook, rules_id: int) -> list[int]:
+def _distinct_series_ids(hook: NascarMySqlHook, rules_id: int) -> list[int]:
     rows = hook.get_records(
         """
-        SELECT id
+        SELECT DISTINCT series_id
         FROM nascar.ml_training_snapshots
         WHERE kind = %s
           AND dfs_scoring_rules_id = %s
           AND deleted_at IS NULL
-        ORDER BY week_id ASC, id ASC
+        ORDER BY series_id ASC
         """,
         parameters=(SNAPSHOT_KIND_TRAIN, rules_id),
     )
     return [int(r[0]) for r in rows]
+
+
+def _tracks_meeting_threshold(
+    hook: NascarMySqlHook,
+    rules_id: int,
+    series_id: int,
+    min_weeks: int,
+) -> list[int]:
+    rows = hook.get_records(
+        """
+        SELECT s.track_id
+        FROM nascar.ml_training_snapshots s
+        WHERE s.kind = %s
+          AND s.dfs_scoring_rules_id = %s
+          AND s.series_id = %s
+          AND s.deleted_at IS NULL
+        GROUP BY s.track_id
+        HAVING COUNT(DISTINCT s.week_id) >= %s
+        ORDER BY s.track_id ASC
+        """,
+        parameters=(SNAPSHOT_KIND_TRAIN, rules_id, series_id, min_weeks),
+    )
+    return [int(r[0]) for r in rows]
+
+
+def _track_types_meeting_threshold(
+    hook: NascarMySqlHook,
+    rules_id: int,
+    series_id: int,
+    min_weeks: int,
+) -> list[int]:
+    rows = hook.get_records(
+        """
+        SELECT tt.track_type_id
+        FROM nascar.ml_training_snapshots s
+        JOIN (
+            SELECT track_id, MIN(track_type_id) AS track_type_id
+            FROM nascar.tracks_track_types
+            WHERE deleted_at IS NULL
+            GROUP BY track_id
+        ) tt ON tt.track_id = s.track_id
+        WHERE s.kind = %s
+          AND s.dfs_scoring_rules_id = %s
+          AND s.series_id = %s
+          AND s.deleted_at IS NULL
+          AND tt.track_type_id IS NOT NULL
+        GROUP BY tt.track_type_id
+        HAVING COUNT(DISTINCT s.week_id) >= %s
+        ORDER BY tt.track_type_id ASC
+        """,
+        parameters=(SNAPSHOT_KIND_TRAIN, rules_id, series_id, min_weeks),
+    )
+    return [int(r[0]) for r in rows]
+
+
+def _feature_keys_from_snapshot_metadata(
+    hook: NascarMySqlHook,
+    rules_id: int,
+) -> list[str]:
+    rows = hook.get_records(
+        """
+        SELECT feature_keys
+        FROM nascar.ml_training_snapshots
+        WHERE kind = %s
+          AND dfs_scoring_rules_id = %s
+          AND deleted_at IS NULL
+        ORDER BY week_id DESC, id DESC
+        LIMIT 1
+        """,
+        parameters=(SNAPSHOT_KIND_TRAIN, rules_id),
+    )
+    if not rows or rows[0][0] is None:
+        return []
+    raw = rows[0][0]
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    keys = json.loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(keys, list):
+        return []
+    return sorted(str(k) for k in keys)
 
 
 def _insert_feature_set(
@@ -137,7 +214,7 @@ def _insert_feature_set(
     selected_features: list[str],
     boruta_metadata: dict[str, Any],
 ) -> int:
-    hook.run(
+    return hook.run_insert_returning_id(
         """
         INSERT INTO nascar.ml_feature_sets (
             ml_training_snapshot_id,
@@ -153,8 +230,6 @@ def _insert_feature_set(
             json.dumps(boruta_metadata),
         ),
     )
-    rows = hook.get_records("SELECT LAST_INSERT_ID()")
-    return int(rows[0][0])
 
 
 def _insert_model(
@@ -168,7 +243,7 @@ def _insert_model(
     track_id: int | None,
     track_type_id: int | None,
 ) -> int:
-    hook.run(
+    return hook.run_insert_returning_id(
         """
         INSERT INTO nascar.ml_models (
             ml_feature_set_id,
@@ -192,8 +267,6 @@ def _insert_model(
             artifact_uri,
         ),
     )
-    rows = hook.get_records("SELECT LAST_INSERT_ID()")
-    return int(rows[0][0])
 
 
 def _update_model_artifact(hook: NascarMySqlHook, model_id: int, artifact_uri: str) -> None:
@@ -447,14 +520,17 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
             "covered_week": covered_week,
         }
 
-    snapshot_ids = _train_snapshot_ids(hook, rules_id)
-    if not snapshot_ids:
+    series_ids = _distinct_series_ids(hook, rules_id)
+    if not series_ids:
         return {"skipped": "no_training_snapshots"}
 
-    frame = load_training_frame(snapshot_ids, mysql_conn_id=mysql_conn_id)
-    if not frame:
-        _LOG.warning("train_models_if_needed_task: training frame empty for snapshots=%s", snapshot_ids)
-        return {"skipped": "empty_frame"}
+    all_feature_keys = _feature_keys_from_snapshot_metadata(hook, rules_id)
+    if not all_feature_keys:
+        _LOG.warning(
+            "train_models_if_needed_task: no feature_keys in snapshot metadata for rules_id=%s",
+            rules_id,
+        )
+        return {"skipped": "no_feature_keys"}
 
     artifact_root = _artifact_root()
 
@@ -464,22 +540,28 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
     except ValueError:
         holdout_weeks = 1
 
-    all_feature_keys = sorted({k for row in frame for k in (row.get("features") or {}).keys()})
-
     scope_results: list[dict[str, Any]] = []
 
     track_threshold = min_track_weeks()
     type_threshold = min_track_type_weeks()
     enable_global = global_fallback_enabled()
+    global_week_cap = max_train_weeks() if enable_global else 0
+
+    track_features = features_for_scope(all_feature_keys, scope=SCOPE_TRACK)
 
     # Outer series loop ensures Cup / Xfinity / Truck models never share weights.
-    for series_id, series_rows in group_frame_by_series(frame).items():
-        # Per-track models: one per track with enough finished weeks (within series).
-        for track_id, rows in group_frame_by_track(series_rows).items():
-            if distinct_week_count(rows) < track_threshold:
-                continue
-            track_features = features_for_scope(all_feature_keys, scope=SCOPE_TRACK)
+    for series_id in series_ids:
+        # Per-track models: scoped SQL load per venue (frees memory after each scope).
+        for track_id in _tracks_meeting_threshold(hook, rules_id, series_id, track_threshold):
             if not track_features:
+                continue
+            rows = load_training_frame(
+                dfs_scoring_rules_id=rules_id,
+                series_id=series_id,
+                track_id=track_id,
+                mysql_conn_id=mysql_conn_id,
+            )
+            if not rows:
                 continue
             scope_results.append(
                 _train_scope(
@@ -495,17 +577,26 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
                     scoring_rules=scoring_rules,
                 )
             )
+            del rows
 
         # Per-track-type models: similar-track fallback for cold tracks (within series).
-        for track_type_id, rows in group_frame_by_track_type(series_rows).items():
-            if distinct_week_count(rows) < type_threshold:
-                continue
+        for track_type_id in _track_types_meeting_threshold(
+            hook, rules_id, series_id, type_threshold
+        ):
             type_features = features_for_scope(
                 all_feature_keys,
                 scope=SCOPE_TRACK_TYPE,
                 track_type_id=track_type_id,
             )
             if not type_features:
+                continue
+            rows = load_training_frame(
+                dfs_scoring_rules_id=rules_id,
+                series_id=series_id,
+                track_type_id=track_type_id,
+                mysql_conn_id=mysql_conn_id,
+            )
+            if not rows:
                 continue
             scope_results.append(
                 _train_scope(
@@ -521,15 +612,28 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
                     scoring_rules=scoring_rules,
                 )
             )
+            del rows
 
-        # Per-series global fallback (legacy behavior). Disable with FS_ML_ENABLE_GLOBAL_FALLBACK=0.
+        # Per-series global fallback. Optional week cap via FS_ML_MAX_TRAIN_WEEKS.
         if enable_global:
             global_features = features_for_scope(all_feature_keys, scope=SCOPE_GLOBAL)
+            if not global_features:
+                continue
+            load_kw: dict[str, Any] = {
+                "dfs_scoring_rules_id": rules_id,
+                "series_id": series_id,
+                "mysql_conn_id": mysql_conn_id,
+            }
+            if global_week_cap > 0:
+                load_kw["max_weeks"] = global_week_cap
+            rows = load_training_frame(**load_kw)
+            if not rows:
+                continue
             scope_results.append(
                 _train_scope(
                     series_id=series_id,
                     scope=SCOPE_GLOBAL,
-                    rows=series_rows,
+                    rows=rows,
                     track_id=None,
                     track_type_id=None,
                     feature_keys=global_features,
@@ -539,6 +643,7 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
                     scoring_rules=scoring_rules,
                 )
             )
+            del rows
 
     _LOG.info(
         "train_models_if_needed_task: latest_week=%s covered_week=%s scopes_trained=%s",

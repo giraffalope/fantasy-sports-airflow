@@ -112,15 +112,25 @@ flowchart TB
 - **Inputs:** `agg_week_results` plus the prior-track / track-types
   aggregate tables in [snapshot_config.py](../../include/nascar/ml/snapshot_config.py)
   (`PREV_TRACK_SOURCES`, `PREV_TRACK_TYPES_SOURCES`); active
-  `nascar.dfs_scoring_rules` row for DraftKings (`dfs_id=1`).
+  `nascar.dfs_scoring_rules` row for DraftKings (`dfs_id=1`). Reference data
+  is seeded on DB init via
+  [`9001-insert_dfs_seed.sql`](../../../fantasy-sports-db/nascar/seed/9001-insert_dfs_seed.sql)
+  and
+  [`9002-insert_dfs_scoring_rules_seed.sql`](../../../fantasy-sports-db/nascar/seed/9002-insert_dfs_scoring_rules_seed.sql).
+  On an existing database, apply those files manually before the first ML run.
 - **Outputs:** rows in `ml_training_snapshots`, `ml_training_rows`, and
   `ml_labels`; returns `{"train": [snapshot_id,...], "predict": [...]}` for
   observability.
 - **Upstream:** `wait_aggregate_complete`. **Downstream:**
   `train_models_if_needed`.
-- **Failure notes:** the unique-key violation on
-  `(series_id, week_id, grain, kind, dfs_scoring_rules_id)` is caught by
-  `_delete_existing_snapshot` before insert, so rebuilds are idempotent.
+- **Failure notes:** before insert, `_delete_existing_snapshot` physically
+  deletes any prior row for `(series_id, week_id, grain, kind,
+  dfs_scoring_rules_id)` (CASCADE removes child rows/labels). Soft-delete
+  cannot be used here because the unique key ignores `deleted_at`. Rebuilds
+  are idempotent once this delete runs.
+  If no active `dfs_scoring_rules` row exists for DraftKings, the task logs a
+  warning and returns empty train/predict id lists (same as `train_models_if_needed`
+  `no_active_rules` skip) instead of raising.
 
 ### `train_models_if_needed`
 
@@ -138,21 +148,21 @@ flowchart TB
      ml_training_snapshots`. If the covered week is already at or beyond
      the latest train week, returns `no_new_finished_weeks` without
      retraining.
-  4. Loads the full training frame via
-     `include.nascar.ml.training_targets.load_training_frame` (ordered by
-     `week_id` to keep `TimeSeriesSplit` chronological). Each row carries
-     `series_id` from the snapshot header, `track_id`, and `track_type_id`
-     (canonical primary type from `tracks_track_types`).
-  5. **Per-series, per-scope training loop.** Wraps the per-track /
-     per-track-type / global loops in an outer `group_frame_by_series`
-     iteration so a single retrain pass produces independent model
-     families for each series present in `ml_training_snapshots`. Within
-     each series:
-     - Group rows by `track_id` (track scope) or `track_type_id`
-       (track_type scope); keep buckets with at least
+  4. Reads the feature allowlist from `ml_training_snapshots.feature_keys`
+     on the latest train snapshot for the active rules version (no full-table
+     scan of every row's `features_json`).
+  5. **Per-series, per-scope training loop** with **scoped SQL loads** via
+     `load_training_frame(dfs_scoring_rules_id=..., series_id=..., ...)`.
+     Each `(track_id)` / `(track_type_id)` / global bucket loads only its rows,
+     trains, then drops the frame before the next scope — avoiding a single
+     query with hundreds of snapshot ids and ~24k parsed JSON blobs in memory.
+     Rows are ordered by `week_id` for chronological `TimeSeriesSplit`.
+     Each row carries `series_id`, `track_id`, and `track_type_id`
+     (canonical primary type from `tracks_track_types`). Within each series:
+     - SQL discovers `track_id` / `track_type_id` buckets with at least
        `FS_ML_MIN_TRACK_WEEKS` / `FS_ML_MIN_TYPE_WEEKS` distinct finished
-       weeks. The global scope always sees the full series sub-frame and
-       is gated behind `FS_ML_ENABLE_GLOBAL_FALLBACK`.
+       weeks. Global scope is gated behind `FS_ML_ENABLE_GLOBAL_FALLBACK` and
+       may be capped with `FS_ML_MAX_TRAIN_WEEKS` (most recent N weeks only).
      - For each bucket, build a per-scope feature allowlist from
        `model_scope.features_for_scope`:
        `*_pt_*` + anchors for `track`, `*_tt_<track_type_id>_*` + anchors
@@ -307,6 +317,11 @@ flowchart TB
     predict-time resolution of the legacy global-scope model. Default `1`
     keeps the rollout safe while per-track / per-track-type coverage
     grows.
+  - `FS_ML_MAX_TRAIN_WEEKS` — int, defaults to `0` (no cap). When set to
+    a positive value, global-scope training loads only the N most recent
+    distinct finished `week_id` values for that series. Per-track and
+    per-track-type loads are already smaller and ignore this knob. Use
+    `156` (~4 Cup seasons) or lower if global retrain OOMs on the worker.
 - **Python deps:** `scikit-learn`, `xgboost`, `boruta` (see
   [pyproject.toml](../../pyproject.toml)).
 
@@ -328,6 +343,12 @@ this DAG run once after the aggregate DAG fills in historical
 - **Tuning cost:** RandomizedSearchCV is the dominant CPU cost. Use
   `FS_ML_TUNE_N_ITER`, `FS_ML_TUNE_CV_SPLITS`, or `FS_ML_TUNE_DISABLE` for
   cheaper runs during incident response or local debugging.
+- **Worker memory:** scoped per-track / per-track-type loads are typically
+  modest. Global-scope training over the full Cup history can require **4–8GB+**
+  RAM during Boruta + `RandomizedSearchCV` (×3 targets). If the worker is
+  SIGKILL'd (OOM), set `FS_ML_MAX_TRAIN_WEEKS` (e.g. `52` or `156`), increase
+  Celery/worker memory, or disable global training with
+  `FS_ML_ENABLE_GLOBAL_FALLBACK=0` once per-track models cover most venues.
 - **Backwards compatibility:** if `ml_models.artifact_uri` is `NULL`
   (legacy rows or failed disk writes) `predict_upcoming_week` skips that
   target and emits a `missing_model_for_target` log line.
@@ -341,3 +362,4 @@ this DAG run once after the aggregate DAG fills in historical
 - [tests/unit/test_model_scope.py](../../tests/unit/test_model_scope.py) — feature-allowlist filtering, frame grouping, env-var thresholds.
 - [tests/unit/test_predict_routing.py](../../tests/unit/test_predict_routing.py) — predict-time resolver: series_id → track → track_type → global, including the global-fallback disable flag, missing-artifact skip, and the cross-series isolation guard.
 - [tests/unit/test_scoped_training.py](../../tests/unit/test_scoped_training.py) — confirms `feature_allowlist` keeps track scope on `*_pt_*` features and track_type scope on the matching `*_tt_<id>_*` family.
+- [tests/unit/test_training_targets_load.py](../../tests/unit/test_training_targets_load.py) — filtered `load_training_frame` SQL and scoped train-task loads (no monolithic snapshot-id `IN` list).

@@ -170,7 +170,13 @@ below, the conventions used by every pair are summarized once here:
   canonical `nascar.weeks` + `nascar.tracks` rows (and associated mapping
   tables), using FRCS as the source of truth where they conflict and using
   RR `week_number` / `week_date` + `week_race_name` to reconcile RR disk
-  paths.
+  paths. Track resolution is **mapping-first**: each schedule row resolves
+  `track_id` via `COALESCE(data_sources_tracks.track_id)` for the FRCS and
+  RR source names before inserting new `tracks` rows. Truncated FRCS display
+  names (ending in `…`) fall back to the RR label for canonical name selection;
+  schedule import does not revive soft-deleted `tracks` rows on duplicate name.
+  After `merge_track_ids`, existing `data_sources_tracks.track_id` mappings
+  prevent duplicate venue rows on subsequent imports.
 - **Success callback:** `_emit_cup_schedule_imported_domain_event`.
 - **Outputs:** rows in `nascar.weeks`, `nascar.tracks`, `nascar.seasons`
   (insert / update), and the target-week XCom used by every downstream

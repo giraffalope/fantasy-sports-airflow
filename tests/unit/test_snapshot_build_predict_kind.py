@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+for _name in (
+    "airflow",
+    "airflow.providers",
+    "airflow.providers.mysql",
+    "airflow.providers.mysql.hooks",
+    "airflow.providers.mysql.hooks.mysql",
+):
+    sys.modules.setdefault(_name, MagicMock())
 
 import include.nascar.ml.snapshot_build as snapshot_build
 from include.nascar.ml.snapshot_config import (
@@ -187,3 +197,33 @@ def test_predict_kind_persists_kind_column(mock_hook_cls: MagicMock) -> None:
     assert snapshot_inserts, "expected ml_training_snapshots insert"
     params = snapshot_inserts[0].kwargs.get("parameters") or snapshot_inserts[0].args[1]
     assert SNAPSHOT_KIND_PREDICT in params
+
+
+@patch("include.nascar.ml.snapshot_build.NascarMySqlHook")
+def test_rebuild_same_week_hard_deletes_then_reinserts(mock_hook_cls: MagicMock) -> None:
+    """Reruns must DELETE the prior snapshot; soft-delete would violate the unique key."""
+    hook = _make_hook([_anchor_tuple(finish_position=12)])
+    mock_hook_cls.return_value = hook
+
+    snapshot_build.build_car_driver_training_snapshot(
+        1,
+        100,
+        kind=SNAPSHOT_KIND_TRAIN,
+    )
+    snapshot_build.build_car_driver_training_snapshot(
+        1,
+        100,
+        kind=SNAPSHOT_KIND_TRAIN,
+    )
+
+    run_sqls = [str(call.args[0]) for call in hook.run.mock_calls]
+    delete_sqls = [
+        s for s in run_sqls if "DELETE FROM nascar.ml_training_snapshots" in s
+    ]
+    assert len(delete_sqls) == 2
+    assert not any("SET deleted_at" in s for s in run_sqls)
+
+    snapshot_inserts = [
+        s for s in run_sqls if "INSERT INTO nascar.ml_training_snapshots" in s
+    ]
+    assert len(snapshot_inserts) == 2

@@ -108,8 +108,19 @@ SELECT
     COALESCE(frcs.week_number, rr.week_number) AS week_number,
     COALESCE(frcs.week_date, rr.week_date) AS week_date,
     COALESCE(NULLIF(TRIM(frcs.week_track), ''), NULLIF(TRIM(rr.week_track), '')) AS week_track_preferred,
+    CASE
+        WHEN NULLIF(TRIM(frcs.week_track), '') IS NOT NULL
+         AND (
+             TRIM(frcs.week_track) LIKE '%…'
+             OR TRIM(frcs.week_track) LIKE '%...'
+         )
+         AND NULLIF(TRIM(rr.week_track), '') IS NOT NULL
+        THEN TRIM(rr.week_track)
+        ELSE COALESCE(NULLIF(TRIM(frcs.week_track), ''), NULLIF(TRIM(rr.week_track), ''))
+    END AS week_track_canonical,
     COALESCE(frcs.week_track_url, rr.week_track_url) AS week_track_url,
-    COALESCE(NULLIF(TRIM(frcs.week_race_name), ''), NULLIF(TRIM(rr.week_race_name), '')) AS week_race_name
+    COALESCE(NULLIF(TRIM(frcs.week_race_name), ''), NULLIF(TRIM(rr.week_race_name), '')) AS week_race_name,
+    CAST(NULL AS UNSIGNED) AS resolved_track_id
 FROM nascar.tmp_cup_schedule_frcs_{{ table_suffix }} frcs
 LEFT JOIN nascar.tmp_cup_schedule_rr_{{ table_suffix }} rr
     ON rr.week_number = frcs.week_number;
@@ -146,13 +157,129 @@ ON DUPLICATE KEY UPDATE
 
 ---
 
+UPDATE nascar.data_sources_tracks dst
+JOIN nascar.data_sources ds
+    ON ds.id = dst.data_source_id
+    AND ds.name IN ('{{ frcs_source_name }}', '{{ racing_reference_source_name }}')
+    AND ds.deleted_at IS NULL
+JOIN nascar.tracks t
+    ON TRIM(t.name) = TRIM(dst.name)
+    AND t.deleted_at IS NULL
+SET
+    dst.track_id = t.id,
+    dst.deleted_at = NULL
+WHERE dst.deleted_at IS NULL
+  AND dst.track_id IS NULL
+;
+
+---
+
+UPDATE nascar.data_sources_tracks dst_rr
+JOIN nascar.data_sources ds_rr
+    ON ds_rr.id = dst_rr.data_source_id
+    AND ds_rr.name = '{{ racing_reference_source_name }}'
+    AND ds_rr.deleted_at IS NULL
+JOIN nascar.tmp_cup_schedule_merged_{{ table_suffix }} merged
+    ON TRIM(dst_rr.name) = TRIM(merged.rr_week_track)
+JOIN nascar.data_sources ds_frcs
+    ON ds_frcs.name = '{{ frcs_source_name }}'
+    AND ds_frcs.deleted_at IS NULL
+JOIN nascar.data_sources_tracks dst_frcs
+    ON dst_frcs.data_source_id = ds_frcs.id
+    AND TRIM(dst_frcs.name) = TRIM(merged.frcs_week_track)
+    AND dst_frcs.deleted_at IS NULL
+SET
+    dst_rr.track_id = dst_frcs.track_id,
+    dst_rr.deleted_at = NULL
+WHERE dst_rr.deleted_at IS NULL
+  AND dst_rr.track_id IS NULL
+  AND dst_frcs.track_id IS NOT NULL
+;
+
+---
+
+UPDATE nascar.data_sources_tracks dst_frcs
+JOIN nascar.data_sources ds_frcs
+    ON ds_frcs.id = dst_frcs.data_source_id
+    AND ds_frcs.name = '{{ frcs_source_name }}'
+    AND ds_frcs.deleted_at IS NULL
+JOIN nascar.tmp_cup_schedule_merged_{{ table_suffix }} merged
+    ON TRIM(dst_frcs.name) = TRIM(merged.frcs_week_track)
+JOIN nascar.data_sources ds_rr
+    ON ds_rr.name = '{{ racing_reference_source_name }}'
+    AND ds_rr.deleted_at IS NULL
+JOIN nascar.data_sources_tracks dst_rr
+    ON dst_rr.data_source_id = ds_rr.id
+    AND TRIM(dst_rr.name) = TRIM(merged.rr_week_track)
+    AND dst_rr.deleted_at IS NULL
+SET
+    dst_frcs.track_id = dst_rr.track_id,
+    dst_frcs.deleted_at = NULL
+WHERE dst_frcs.deleted_at IS NULL
+  AND dst_frcs.track_id IS NULL
+  AND dst_rr.track_id IS NOT NULL
+;
+
+---
+
+UPDATE nascar.tmp_cup_schedule_merged_{{ table_suffix }} merged
+JOIN nascar.data_sources ds_frcs
+    ON ds_frcs.name = '{{ frcs_source_name }}'
+    AND ds_frcs.deleted_at IS NULL
+LEFT JOIN nascar.data_sources_tracks dst_frcs
+    ON dst_frcs.data_source_id = ds_frcs.id
+    AND TRIM(dst_frcs.name) = TRIM(merged.frcs_week_track)
+    AND dst_frcs.deleted_at IS NULL
+JOIN nascar.data_sources ds_rr
+    ON ds_rr.name = '{{ racing_reference_source_name }}'
+    AND ds_rr.deleted_at IS NULL
+LEFT JOIN nascar.data_sources_tracks dst_rr
+    ON dst_rr.data_source_id = ds_rr.id
+    AND TRIM(dst_rr.name) = TRIM(merged.rr_week_track)
+    AND dst_rr.deleted_at IS NULL
+SET merged.resolved_track_id = COALESCE(dst_frcs.track_id, dst_rr.track_id)
+;
+
+---
+
 INSERT INTO nascar.tracks (name)
 SELECT DISTINCT
-    TRIM(merged.week_track_preferred) AS name
+    TRIM(merged.week_track_canonical) AS name
 FROM nascar.tmp_cup_schedule_merged_{{ table_suffix }} merged
-WHERE NULLIF(TRIM(merged.week_track_preferred), '') IS NOT NULL
+JOIN nascar.data_sources ds_frcs
+    ON ds_frcs.name = '{{ frcs_source_name }}'
+    AND ds_frcs.deleted_at IS NULL
+LEFT JOIN nascar.data_sources_tracks dst_frcs
+    ON dst_frcs.data_source_id = ds_frcs.id
+    AND TRIM(dst_frcs.name) = TRIM(merged.frcs_week_track)
+    AND dst_frcs.deleted_at IS NULL
+JOIN nascar.data_sources ds_rr
+    ON ds_rr.name = '{{ racing_reference_source_name }}'
+    AND ds_rr.deleted_at IS NULL
+LEFT JOIN nascar.data_sources_tracks dst_rr
+    ON dst_rr.data_source_id = ds_rr.id
+    AND TRIM(dst_rr.name) = TRIM(merged.rr_week_track)
+    AND dst_rr.deleted_at IS NULL
+WHERE merged.resolved_track_id IS NULL
+  AND NULLIF(TRIM(merged.week_track_canonical), '') IS NOT NULL
+  AND COALESCE(dst_frcs.track_id, dst_rr.track_id) IS NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM nascar.data_sources_tracks dst_mapped
+    JOIN nascar.data_sources ds_mapped
+        ON ds_mapped.id = dst_mapped.data_source_id
+        AND ds_mapped.name IN ('{{ frcs_source_name }}', '{{ racing_reference_source_name }}')
+        AND ds_mapped.deleted_at IS NULL
+    WHERE dst_mapped.deleted_at IS NULL
+      AND dst_mapped.track_id IS NOT NULL
+      AND TRIM(dst_mapped.name) IN (
+          TRIM(merged.frcs_week_track),
+          TRIM(merged.rr_week_track),
+          TRIM(merged.week_track_canonical)
+      )
+)
 ON DUPLICATE KEY UPDATE
-    deleted_at = NULL
+    `tracks`.`deleted_at` = `tracks`.`deleted_at`
 ;
 
 ---
@@ -169,6 +296,54 @@ SET
     dst.track_id = t.id,
     dst.deleted_at = NULL
 WHERE dst.deleted_at IS NULL
+  AND dst.track_id IS NULL
+;
+
+---
+
+UPDATE nascar.tmp_cup_schedule_merged_{{ table_suffix }} merged
+JOIN nascar.data_sources ds_frcs
+    ON ds_frcs.name = '{{ frcs_source_name }}'
+    AND ds_frcs.deleted_at IS NULL
+LEFT JOIN nascar.data_sources_tracks dst_frcs
+    ON dst_frcs.data_source_id = ds_frcs.id
+    AND TRIM(dst_frcs.name) = TRIM(merged.frcs_week_track)
+    AND dst_frcs.deleted_at IS NULL
+JOIN nascar.data_sources ds_rr
+    ON ds_rr.name = '{{ racing_reference_source_name }}'
+    AND ds_rr.deleted_at IS NULL
+LEFT JOIN nascar.data_sources_tracks dst_rr
+    ON dst_rr.data_source_id = ds_rr.id
+    AND TRIM(dst_rr.name) = TRIM(merged.rr_week_track)
+    AND dst_rr.deleted_at IS NULL
+SET merged.resolved_track_id = COALESCE(merged.resolved_track_id, dst_frcs.track_id, dst_rr.track_id)
+;
+
+---
+
+UPDATE nascar.tmp_cup_schedule_merged_{{ table_suffix }} merged
+JOIN nascar.tracks t
+    ON TRIM(t.name) = TRIM(merged.week_track_canonical)
+    AND t.deleted_at IS NULL
+SET merged.resolved_track_id = t.id
+WHERE merged.resolved_track_id IS NULL
+  AND NULLIF(TRIM(merged.week_track_canonical), '') IS NOT NULL
+;
+
+---
+
+UPDATE nascar.data_sources_tracks dst
+JOIN nascar.data_sources ds
+    ON ds.id = dst.data_source_id
+    AND ds.name IN ('{{ frcs_source_name }}', '{{ racing_reference_source_name }}')
+    AND ds.deleted_at IS NULL
+JOIN nascar.tmp_cup_schedule_merged_{{ table_suffix }} merged
+    ON TRIM(dst.name) IN (TRIM(merged.frcs_week_track), TRIM(merged.rr_week_track))
+SET
+    dst.track_id = merged.resolved_track_id,
+    dst.deleted_at = NULL
+WHERE dst.deleted_at IS NULL
+  AND merged.resolved_track_id IS NOT NULL
   AND dst.track_id IS NULL
 ;
 
@@ -193,14 +368,14 @@ SELECT
     END AS event_type
 FROM nascar.tmp_cup_schedule_merged_{{ table_suffix }} merged
 JOIN nascar.tracks t
-    ON TRIM(t.name) = TRIM(merged.week_track_preferred)
+    ON t.id = merged.resolved_track_id
     AND t.deleted_at IS NULL
 JOIN nascar.seasons s
     ON s.series_id = {{ series_id }}
     AND s.year = {{ season_year }}
     AND s.deleted_at IS NULL
 WHERE merged.event_number IS NOT NULL
-  AND NULLIF(TRIM(merged.week_track_preferred), '') IS NOT NULL
+  AND merged.resolved_track_id IS NOT NULL
   AND NULLIF(TRIM(merged.week_race_name), '') IS NOT NULL
   AND merged.week_date IS NOT NULL
   AND CAST(merged.event_number AS UNSIGNED) <> 0

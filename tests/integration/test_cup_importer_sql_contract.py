@@ -200,6 +200,12 @@ def test_import_schedule_sql_merges_dual_sources_and_validates_rr_match() -> Non
     assert "ds.name = '{{ frcs_source_name }}'" in sql
     assert "ds.name = '{{ racing_reference_source_name }}'" in sql
     assert "COALESCE(NULLIF(TRIM(frcs.week_track), ''), NULLIF(TRIM(rr.week_track), '')) AS week_track_preferred" in sql
+    assert "week_track_canonical" in sql
+    assert "resolved_track_id" in sql
+    assert "COALESCE(dst_frcs.track_id, dst_rr.track_id)" in sql
+    assert "ON t.id = merged.resolved_track_id" in sql
+    assert "ON DUPLICATE KEY UPDATE\n    `tracks`.`deleted_at` = `tracks`.`deleted_at`" in sql
+    assert "JOIN nascar.tracks t\n    ON TRIM(t.name) = TRIM(merged.week_track_preferred)" not in sql
     assert "INSERT INTO nascar.weeks (season_id, track_id, number, season_number, race_name, scheduled_start, event_type)" in sql
     assert "WHEN CAST(merged.frcs_week_number AS UNSIGNED) IS NULL THEN 'OTHER'" in sql
     assert "WHEN CAST(merged.frcs_week_number AS UNSIGNED) = 0 THEN 'OTHER'" in sql

@@ -196,7 +196,7 @@ def _feature_schema_hash(feature_keys: list[str]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _load_scoring_rules(hook: NascarMySqlHook, dfs_id: int) -> tuple[int, dict[str, Any]]:
+def _active_rules(hook: NascarMySqlHook, dfs_id: int) -> tuple[int, dict[str, Any]] | None:
     rows = hook.get_records(
         """
         SELECT id, rules
@@ -208,8 +208,7 @@ def _load_scoring_rules(hook: NascarMySqlHook, dfs_id: int) -> tuple[int, dict[s
         parameters=(dfs_id,),
     )
     if not rows:
-        raise ValueError(f"No dfs_scoring_rules found for dfs_id={dfs_id}")
-
+        return None
     rules_id, rules_raw = rows[0]
     if isinstance(rules_raw, (bytes, bytearray)):
         rules_raw = rules_raw.decode("utf-8")
@@ -220,6 +219,13 @@ def _load_scoring_rules(hook: NascarMySqlHook, dfs_id: int) -> tuple[int, dict[s
     return int(rules_id), rules
 
 
+def _load_scoring_rules(hook: NascarMySqlHook, dfs_id: int) -> tuple[int, dict[str, Any]]:
+    rules = _active_rules(hook, dfs_id)
+    if rules is None:
+        raise ValueError(f"No dfs_scoring_rules found for dfs_id={dfs_id}")
+    return rules
+
+
 def _delete_existing_snapshot(
     hook: NascarMySqlHook,
     *,
@@ -228,16 +234,21 @@ def _delete_existing_snapshot(
     rules_id: int,
     kind: str,
 ) -> None:
+    """Remove any prior snapshot for this logical key before rebuild.
+
+    Physical delete is required: the unique key on
+    ``(series_id, week_id, grain, kind, dfs_scoring_rules_id)`` does not
+    include ``deleted_at``, so soft-delete would still block INSERT.
+    Child rows cascade via FK (rows, labels, model links, predictions).
+    """
     hook.run(
         """
-        UPDATE nascar.ml_training_snapshots
-        SET deleted_at = UTC_TIMESTAMP()
+        DELETE FROM nascar.ml_training_snapshots
         WHERE series_id = %s
           AND week_id = %s
           AND grain = %s
           AND kind = %s
           AND dfs_scoring_rules_id = %s
-          AND deleted_at IS NULL
         """,
         parameters=(series_id, week_id, GRAIN_CAR_DRIVER, kind, rules_id),
     )
@@ -331,7 +342,14 @@ def build_car_driver_training_snapshot(
         raise ValueError(f"Unknown snapshot kind: {kind!r}; expected one of {sorted(_VALID_KINDS)}")
 
     hook = NascarMySqlHook(mysql_conn_id=mysql_conn_id)
-    rules_id, scoring_rules = _load_scoring_rules(hook, dfs_id)
+    rules = _active_rules(hook, dfs_id)
+    if rules is None:
+        _LOG.warning(
+            "build_car_driver_training_snapshot: no active dfs_scoring_rules for dfs_id=%s",
+            dfs_id,
+        )
+        return None
+    rules_id, scoring_rules = rules
     label_target_keys = target_keys_for_rules(scoring_rules)
 
     if kind == SNAPSHOT_KIND_TRAIN:
@@ -638,6 +656,13 @@ def build_all_week_training_snapshots(
     from include.nascar.enums import NascarSeries
 
     hook = NascarMySqlHook(mysql_conn_id=mysql_conn_id)
+    if _active_rules(hook, DRAFTKINGS_DFS_ID) is None:
+        _LOG.warning(
+            "build_all_week_training_snapshots: no active dfs_scoring_rules for dfs_id=%s",
+            DRAFTKINGS_DFS_ID,
+        )
+        return []
+
     series_id = NascarSeries.CUP.series_id
     weeks = hook.get_records(WEEKS_TO_LOAD_SQL, parameters=(series_id,))
 
@@ -664,6 +689,13 @@ def build_all_week_prediction_snapshots(
     from include.nascar.enums import NascarSeries
 
     hook = NascarMySqlHook(mysql_conn_id=mysql_conn_id)
+    if _active_rules(hook, DRAFTKINGS_DFS_ID) is None:
+        _LOG.warning(
+            "build_all_week_prediction_snapshots: no active dfs_scoring_rules for dfs_id=%s",
+            DRAFTKINGS_DFS_ID,
+        )
+        return []
+
     series_id = NascarSeries.CUP.series_id
     weeks = hook.get_records(_PREDICT_WEEKS_SQL, parameters=(series_id,))
 

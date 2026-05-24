@@ -105,13 +105,17 @@ def test_thresholds_and_global_fallback_env(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("FS_ML_MIN_TRACK_WEEKS", raising=False)
     monkeypatch.delenv("FS_ML_MIN_TYPE_WEEKS", raising=False)
     monkeypatch.delenv("FS_ML_ENABLE_GLOBAL_FALLBACK", raising=False)
+    monkeypatch.delenv("FS_ML_MAX_TRAIN_WEEKS", raising=False)
     assert ms.min_track_weeks() == 3
     assert ms.min_track_type_weeks() == 10
     assert ms.global_fallback_enabled() is True
+    assert ms.max_train_weeks() == 0
 
     monkeypatch.setenv("FS_ML_MIN_TRACK_WEEKS", "5")
     monkeypatch.setenv("FS_ML_MIN_TYPE_WEEKS", "15")
     monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "0")
+    monkeypatch.setenv("FS_ML_MAX_TRAIN_WEEKS", "156")
     assert ms.min_track_weeks() == 5
     assert ms.min_track_type_weeks() == 15
     assert ms.global_fallback_enabled() is False
+    assert ms.max_train_weeks() == 156

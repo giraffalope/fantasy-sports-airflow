@@ -127,7 +127,9 @@ The procedure runs in a transaction: re-points all `track_id` and overlapping
 `week_id` foreign keys to the canonical track, resolves unique-key conflicts
 via delete-then-update, merges `tracks_track_types` bridge rows, then
 soft-deletes the duplicate track. Caller supplies both IDs; there is no
-automatic duplicate discovery.
+automatic duplicate discovery. After merging, the Cup schedule importer
+(`import_schedule`) reuses `data_sources_tracks.track_id` on the next run
+instead of creating a new `tracks` row from the truncated FRCS label.
 
 **Validate after merge:**
 

@@ -56,6 +56,16 @@ def global_fallback_enabled() -> bool:
     return _env_flag("FS_ML_ENABLE_GLOBAL_FALLBACK", True)
 
 
+def max_train_weeks() -> int:
+    """
+    Cap global-scope training to the N most recent distinct finished weeks.
+
+    ``FS_ML_MAX_TRAIN_WEEKS=0`` (default) means no cap. Per-track and per-track-type
+    loads are already bounded by venue/type and do not use this limit.
+    """
+    return _env_int("FS_ML_MAX_TRAIN_WEEKS", 0)
+
+
 # Per-track aggregate sources expose features with a trailing ``_pt`` prefix
 # component (see ``snapshot_config.PREV_TRACK_SOURCES``). The flattened track
 # types families use ``tt_<track_type_id>_<metric>`` as the column suffix
