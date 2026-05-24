@@ -80,11 +80,19 @@ shared behavior is captured once here:
   `dags/sql/nascar.cup.aggregate/X.sql`.
 - **Parameters factory:** `aggregate_load_parameters` (also in
   [include/nascar/cup/aggregate_load.py](../../include/nascar/cup/aggregate_load.py))
-  runs the `WEEKS_TO_LOAD_SQL` query against `nascar_conn` to find every
-  Cup `week_id` with at least one row in `agg_week_results` where
-  `r_finish_position IS NOT NULL`. The factory returns
-  `{"series_id": NascarSeries.CUP.series_id, "weeks": [{"week_id": …}, …]}`
-  which the Jinja-templated SQL files iterate over.
+  runs `WEEKS_TO_AGGREGATE_SQL` against `nascar_conn`. Week discovery is driven
+  by weeks with `race_results` through the current race week (`MAX(week_id)`).
+  **Backfill mode** — when any historical week (before `current_week`) lacks
+  base `agg_week_results` or wave-1 / wave-2 proxy rows (teams, manufacturers,
+  prev-track cars/drivers), every incomplete week through `current_week` is
+  included (cold start loads all weeks 1…N). **Steady-state mode** — once
+  history is complete, only `current_week` is included when derived rows are
+  missing or base `agg_week_results` is newer than downstream (importer still
+  updating the live race). When the list is empty, Jinja emits no `CALL`s. Set
+  `FS_AGG_REBUILD_ALL_WEEKS=1` to use `FINISHED_AGG_WEEKS_SQL` (all finished
+  weeks) for a manual full rebuild.
+  The factory returns `{"series_id": NascarSeries.CUP.series_id, "weeks":
+  [{"week_id": …}, …]}` which the Jinja-templated SQL files iterate over.
 - **MySQL connection:** `nascar_conn`.
 - **Idempotency:** each loader fully replaces rows for the target weeks
   (typically a `DELETE … WHERE week_id IN (...)` followed by an `INSERT …
@@ -112,13 +120,19 @@ shared behavior is captured once here:
   scopes the proc to Cup so a future Xfinity / Truck aggregate DAG can
   reuse the same proc with its own `series_id` without trampling Cup rows.
 - **Stored procedure:** `nascar.load_agg_week_results(p_series_id BIGINT
-  UNSIGNED)` — filters its internal `weeks` CTE on `sr.id = p_series_id`
-  so only rows for the requested series are inserted into
-  `nascar.agg_week_results`.
+  UNSIGNED)` — backfills weeks with `race_results` through the current race
+  week that have no `agg_week_results` rows yet; refreshes **only the current
+  week** when `race_results` are newer than existing agg rows or the week is
+  still in-progress (no finished agg rows). Historical weeks with finished
+  base rows are not re-merged on hourly runs. The proc `DELETE`s existing
+  rows for weeks it is about to re-insert, then runs the existing
+  `INSERT … SELECT`.
 - **Behavior:** rebuilds the per-week per-car_driver row that downstream
   loaders join against. Columns include `r_start_position`, `r_finish_position`,
   `r_place_diff`, `r_total_fastest_laps`, `r_total_laps_led`, and other
-  per-driver per-race counters consumed by the ML pipeline.
+  per-driver per-race counters consumed by the ML pipeline. **Deploy** the
+  updated proc DDL to MariaDB after changing
+  `6019-create_load_agg_week_results_stored_procedure.sql`.
 - **Upstream:** `wait_importer_complete`. **Downstream:** both wave-1 tasks.
 
 ### Wave 1 (parallel after `load_agg_week_results`)
@@ -279,16 +293,19 @@ downstream = `aggregate_done`.
 ## Configuration
 
 - **Airflow connection:** `nascar_conn` (MySQL).
-- **Env vars:** none required. The SQL root resolves via
-  `Path(__file__).resolve().parents[2] / "sql"`, i.e.
+- **Env vars:**
+  - `FS_AGG_REBUILD_ALL_WEEKS` — `0` (default): incremental week list via
+    `WEEKS_TO_AGGREGATE_SQL`. `1` / `true` / `yes` / `on`: reload every
+    finished week (legacy full-history behavior).
+- The SQL root resolves via `Path(__file__).resolve().parents[2] / "sql"`, i.e.
   `dags/sql/nascar.cup.aggregate/`.
 
 ## Backfill variant
 
 None. The aggregate tables are derived from canonical importer data, so
 historical aggregates are rebuilt the next hour after a backfill importer
-run lands new rows in `agg_week_results`. If you need to retrigger a full
-rebuild, clear `wait_importer_complete` for the relevant logical dates.
+run lands new rows in `agg_week_results`. If you need to retrigger a full rebuild, set `FS_AGG_REBUILD_ALL_WEEKS=1`
+on the aggregate DAG run (or redeploy and run after clearing derived tables).
 
 ## Operational notes
 
@@ -304,6 +321,32 @@ rebuild, clear `wait_importer_complete` for the relevant logical dates.
   and the matching SQL file; the test in
   [tests/unit/test_cup_aggregate_dag.py](../../tests/unit/test_cup_aggregate_dag.py)
   pins the total task count.
+
+
+## CG/CGM unique keys (live DB migration)
+
+Wave-2 CG/CGM tables (`agg_week_prev_track_*_cg_*` / `*_cgm_*`) store one row per **entity + car generation** (and model for CGM). If unique keys still use the old generation-only grain (`unique_awptcg*_series_season_week_track_car_gen` without `car_driver_id` / `driver_id` / etc.), `CALL load_agg_week_prev_track_cg_*` fails with `1062 Duplicate entry`.
+
+**Fresh DB:** rebuild `fantasy-sports-db` image so `unique_keys/3046`–`3065` apply.
+
+**Existing MariaDB:**
+
+1. Truncate the 20 CG/CGM aggregate tables (or let procs delete per week after index fix).
+2. For each table, `DROP INDEX` the old unique key, then `ADD UNIQUE KEY` including the entity column before `car_generation_id` (see `fantasy-sports-db/nascar/ddl/unique_keys/3046`–`3065`).
+3. Re-apply stored procedures `6039`–`6058` (`DROP PROCEDURE` + `CREATE` from DDL files).
+4. Re-run `nascar.cup.aggregate` wave-2 CG/CGM tasks.
+
+Example (`agg_week_prev_track_cg_cars_drivers_results`):
+
+```sql
+ALTER TABLE nascar.agg_week_prev_track_cg_cars_drivers_results
+  DROP INDEX unique_awptcgcdr_series_season_week_track_car_gen,
+  ADD UNIQUE KEY unique_awptcgcdr_sswt_cd_cgen (
+    series_id, season_id, week_id, track_id, car_driver_id, car_generation_id
+  );
+```
+
+DDL tests: [`fantasy-sports-db/tests/test_cg_cgm_unique_keys.py`](../../../fantasy-sports-db/tests/test_cg_cgm_unique_keys.py).
 
 ## Related tests
 

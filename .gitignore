@@ -8,6 +8,9 @@ logs
 # Scraped HTML / generated CSV (Docker bind mount; see docker-compose.yaml)
 scraper-data/
 
+# DFS salary CSV drops (Docker bind mount; see docker-compose.yaml)
+dfs-data/
+
 # coverage.py / pytest-cov
 .coverage
 .coverage.*

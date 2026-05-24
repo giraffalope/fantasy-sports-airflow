@@ -65,6 +65,16 @@ PREV_TRACK_SOURCES: tuple[PrevTrackSource, ...] = (
         "cgm_pt",
         "car_generation_model_id",
     ),
+    PrevTrackSource("agg_week_prev_track_cg_cars_drivers_results", "cg_cd_pt", "car_driver_id"),
+    PrevTrackSource("agg_week_prev_track_cgm_cars_drivers_results", "cgm_cd_pt", "car_driver_id"),
+    PrevTrackSource("agg_week_prev_track_cg_drivers_results", "cg_drv_pt", "driver_id"),
+    PrevTrackSource("agg_week_prev_track_cgm_drivers_results", "cgm_drv_pt", "driver_id"),
+    PrevTrackSource("agg_week_prev_track_cg_cars_results", "cg_car_pt", "car_id"),
+    PrevTrackSource("agg_week_prev_track_cgm_cars_results", "cgm_car_pt", "car_id"),
+    PrevTrackSource("agg_week_prev_track_cg_teams_results", "cg_team_pt", "team_id"),
+    PrevTrackSource("agg_week_prev_track_cgm_teams_results", "cgm_team_pt", "team_id"),
+    PrevTrackSource("agg_week_prev_track_cg_manufacturers_results", "cg_mfr_pt", "manufacturer_id"),
+    PrevTrackSource("agg_week_prev_track_cgm_manufacturers_results", "cgm_mfr_pt", "manufacturer_id"),
 )
 
 PREV_TRACK_TYPES_SOURCES: tuple[PrevTrackTypesSource, ...] = (
@@ -94,5 +104,39 @@ PREV_TRACK_TYPES_SOURCES: tuple[PrevTrackTypesSource, ...] = (
         "agg_week_prev_track_types_car_generation_models_results",
         "cgm",
         "car_generation_model_id",
+    ),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_cg_cars_drivers_results",
+        "cg_cd",
+        "car_driver_id",
+    ),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_cgm_cars_drivers_results",
+        "cgm_cd",
+        "car_driver_id",
+    ),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_cg_drivers_results",
+        "cg_drv",
+        "driver_id",
+    ),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_cgm_drivers_results",
+        "cgm_drv",
+        "driver_id",
+    ),
+    PrevTrackTypesSource("agg_week_prev_track_types_cg_cars_results", "cg_car", "car_id"),
+    PrevTrackTypesSource("agg_week_prev_track_types_cgm_cars_results", "cgm_car", "car_id"),
+    PrevTrackTypesSource("agg_week_prev_track_types_cg_teams_results", "cg_team", "team_id"),
+    PrevTrackTypesSource("agg_week_prev_track_types_cgm_teams_results", "cgm_team", "team_id"),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_cg_manufacturers_results",
+        "cg_mfr",
+        "manufacturer_id",
+    ),
+    PrevTrackTypesSource(
+        "agg_week_prev_track_types_cgm_manufacturers_results",
+        "cgm_mfr",
+        "manufacturer_id",
     ),
 )

@@ -18,6 +18,8 @@ flowchart TB
   Importer[nascar.cup.importer]
   Aggregate[nascar.cup.aggregate]
   MachineLearning[nascar.cup.machine_learning]
+  DfsSalary[nascar.cup.dfs.salary_importer]
+  DfsLineup[nascar.cup.dfs.lineup_generator]
 
   FrcsSchedule -->|"wait_upstream_schedule_convert"| FrcsRaceWeek
   RrSchedule -->|"wait_upstream_schedule_convert"| RrRaceWeek
@@ -25,7 +27,11 @@ flowchart TB
   RrRaceWeek -->|"wait_racing_reference_race_week_sync_race_results"| Importer
   Importer -->|"wait_importer_complete"| Aggregate
   Aggregate -->|"wait_aggregate_complete"| MachineLearning
+  MachineLearning -->|"wait_ml_predict_complete"| DfsLineup
 ```
+
+`nascar.cup.dfs.salary_importer` runs hourly in parallel (no sensor edge); drop
+`DKSalaries.csv` under `dfs-data/draftkings/nascar/cup/{year}/{week}/` on the host.
 
 Each prod DAG above has a matching `backfill.<dag_id>` twin chained through
 `backfill.*` sensor targets. The backfill twins share the production task
@@ -43,6 +49,8 @@ and external-sensor targets differ.
 | `nascar.cup.importer` (+ backfill) | [cup.importer.md](./cup.importer.md) | [dags/nascar/cup/importer.py](../../dags/nascar/cup/importer.py) |
 | `nascar.cup.aggregate` | [cup.aggregate.md](./cup.aggregate.md) | [dags/nascar/cup/aggregate.py](../../dags/nascar/cup/aggregate.py) |
 | `nascar.cup.machine_learning` | [cup.machine_learning.md](./cup.machine_learning.md) | [dags/nascar/cup/machine_learning.py](../../dags/nascar/cup/machine_learning.py) |
+| `nascar.cup.dfs.salary_importer` | [cup.dfs.salary_importer.md](./cup.dfs.salary_importer.md) | [dags/nascar/cup/dfs/salary_importer.py](../../dags/nascar/cup/dfs/salary_importer.py) |
+| `nascar.cup.dfs.lineup_generator` | [cup.dfs.lineup_generator.md](./cup.dfs.lineup_generator.md) | [dags/nascar/cup/dfs/lineup_generator.py](../../dags/nascar/cup/dfs/lineup_generator.py) |
 
 ## Shared constants
 

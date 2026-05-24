@@ -652,7 +652,7 @@ def build_all_week_training_snapshots(
     pipeline_version: str | None = None,
 ) -> list[int]:
     """Build train snapshots for every Cup week with finished agg_week_results."""
-    from include.nascar.cup.aggregate_load import WEEKS_TO_LOAD_SQL
+    from include.nascar.cup.aggregate_load import FINISHED_AGG_WEEKS_SQL
     from include.nascar.enums import NascarSeries
 
     hook = NascarMySqlHook(mysql_conn_id=mysql_conn_id)
@@ -664,7 +664,7 @@ def build_all_week_training_snapshots(
         return []
 
     series_id = NascarSeries.CUP.series_id
-    weeks = hook.get_records(WEEKS_TO_LOAD_SQL, parameters=(series_id,))
+    weeks = hook.get_records(FINISHED_AGG_WEEKS_SQL, parameters=(series_id,))
 
     snapshot_ids: list[int] = []
     for _series_id, week_id in weeks:

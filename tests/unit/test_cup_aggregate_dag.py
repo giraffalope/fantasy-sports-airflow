@@ -6,8 +6,10 @@ from unittest.mock import MagicMock, patch
 
 import nascar.cup.aggregate as aggregate_dag
 from include.nascar.cup.aggregate_load import (
+    FINISHED_AGG_WEEKS_SQL,
     WAVE1_LOAD_TASKS,
     WAVE2_PREV_TRACK_LOAD_TASKS,
+    WEEKS_TO_AGGREGATE_SQL,
     aggregate_base_load_parameters,
     aggregate_load_parameters,
 )
@@ -96,7 +98,7 @@ def test_aggregate_base_load_parameters_returns_series_id() -> None:
 
 
 @patch("include.nascar.cup.aggregate_load.NascarMySqlHook")
-def test_aggregate_load_parameters_returns_weeks(mock_hook_cls: MagicMock) -> None:
+def test_aggregate_load_parameters_uses_incremental_sql(mock_hook_cls: MagicMock) -> None:
     mock_hook_cls.return_value.get_records.return_value = [
         (NascarSeries.CUP.series_id, 10),
         (NascarSeries.CUP.series_id, 20),
@@ -108,5 +110,37 @@ def test_aggregate_load_parameters_returns_weeks(mock_hook_cls: MagicMock) -> No
         "series_id": NascarSeries.CUP.series_id,
         "weeks": [{"week_id": 10}, {"week_id": 20}],
     }
-    mock_hook_cls.assert_called_once_with(mysql_conn_id="nascar_conn")
-    mock_hook_cls.return_value.get_records.assert_called_once()
+    sql = mock_hook_cls.return_value.get_records.call_args[0][0]
+    assert sql == WEEKS_TO_AGGREGATE_SQL
+    assert mock_hook_cls.return_value.get_records.call_args[1]["parameters"] == (
+        NascarSeries.CUP.series_id,
+        NascarSeries.CUP.series_id,
+    )
+
+
+@patch("include.nascar.cup.aggregate_load.NascarMySqlHook")
+def test_aggregate_load_parameters_empty_when_nothing_needed(
+    mock_hook_cls: MagicMock,
+) -> None:
+    mock_hook_cls.return_value.get_records.return_value = []
+
+    params = aggregate_load_parameters({})
+
+    assert params == {"series_id": NascarSeries.CUP.series_id, "weeks": []}
+
+
+@patch("include.nascar.cup.aggregate_load.NascarMySqlHook")
+def test_aggregate_load_parameters_rebuild_all_uses_finished_weeks_sql(
+    mock_hook_cls: MagicMock,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FS_AGG_REBUILD_ALL_WEEKS", "1")
+    mock_hook_cls.return_value.get_records.return_value = [
+        (NascarSeries.CUP.series_id, 5),
+    ]
+
+    params = aggregate_load_parameters({})
+
+    assert params["weeks"] == [{"week_id": 5}]
+    sql = mock_hook_cls.return_value.get_records.call_args[0][0]
+    assert sql == FINISHED_AGG_WEEKS_SQL

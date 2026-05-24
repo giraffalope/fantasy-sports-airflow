@@ -4,12 +4,17 @@ Top-level Cup aggregate DAG.
 **Schedule:** hourly (see ``CUP_SCRAPER_PROD_HOURLY_CRON``), aligned with
 ``nascar.cup.importer``.
 
-Each hourly run loads ``agg_week_results`` once, then runs parameterized load
-procedures for every Cup week returned by the weeks query (finished race rows in
-``agg_week_results``). Wave 1 (manufacturers, teams) runs in parallel after the
-base load; wave 2 (prior-track entity, manufacturer, and CG/CGM aggregate tables, 34 parallel tasks) runs after wave 1 completes;
-the terminal ``aggregate_done`` sentinel fans-in from every wave 2 task so downstream
-DAGs (such as ``nascar.cup.machine_learning``) can wait on a single stable task id.
+Each hourly run calls ``load_agg_week_results`` (backfill missing base rows through
+the current race week; refresh only the current week when importer data changes),
+then runs wave-1 / wave-2 loaders in two modes: **backfill** all weeks with
+``race_results`` through ``current_week`` that lack aggregates when history is
+incomplete; **steady-state** only ``current_week`` when history is complete and
+importer data may still be changing. Wave 1 (manufacturers,
+teams) runs in parallel after the base load; wave 2 (prior-track entity,
+manufacturer, and CG/CGM aggregate tables, 34 parallel tasks) runs after wave 1
+completes; the terminal ``aggregate_done`` sentinel fans-in from every wave 2 task
+so downstream DAGs (such as ``nascar.cup.machine_learning``) can wait on a single
+stable task id.
 """
 
 from __future__ import annotations
