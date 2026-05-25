@@ -1,3 +1,14 @@
 #!/bin/sh
+# Rebuild Compose images. Does not remove named volumes (DAG/run state and DB data persist).
+#
+# Usage: ./script/build [docker compose build args...]
+# Then:  ./script/server
+
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(dirname "$0")/.."
+cd "${BASEDIR}"
+
 docker compose rm -f
 docker compose build "$@"

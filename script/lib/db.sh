@@ -58,7 +58,15 @@ db_query_file() {
 }
 
 db_query_sql() {
-    db_compose_exec_mariadb "$DB_NAME" -t -e "$1"
+    # mariadb -e executes only the first statement when multiple are separated by ';'.
+    case "$1" in
+        *';'*)
+            printf '%s\n' "$1" | db_mariadb_base
+            ;;
+        *)
+            db_compose_exec_mariadb "$DB_NAME" -t -e "$1"
+            ;;
+    esac
 }
 
 db_query_stdin() {

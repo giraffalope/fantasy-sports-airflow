@@ -39,6 +39,8 @@
 #                                Default: fantasy-sports-db:latest
 # FS_ENABLE_BACKFILL_DAGS      - When 1/true/yes/on, register backfill.* Cup DAGs in the UI.
 #                                Default: 0 (hidden). Set in .env; passed through to Airflow services.
+# AIRFLOW__CORE__DEFAULT_TIMEZONE - DAG scheduling timezone (default: utc in compose).
+# TZ                          - Container OS timezone for logs (default: UTC in compose).
 # Those configurations are useful mostly in case of standalone testing/running Airflow in test/try-out mode
 #
 # _AIRFLOW_WWW_USER_USERNAME   - Username for the administrator account (if requested).
@@ -71,6 +73,8 @@ x-airflow-common:
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
+    TZ: UTC
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-api-server:8080/execution/'
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret_change_me}
     AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
@@ -82,9 +86,8 @@ x-airflow-common:
     # WARNING: Use _PIP_ADDITIONAL_REQUIREMENTS option ONLY for a quick checks
     # for other purpose (development, test and especially production usage) build/extend Airflow image.
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
-    # The following line can be used to set a custom config file, stored in the local config folder
-    # If you want to use it, outcomment it and replace airflow.cfg with the name of your config file
-    # AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    # Custom config (includes [core] default_timezone = utc); env vars above take precedence.
+    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
     PYTHONPATH: /opt/airflow
     # Provider compat layer still imports deprecated permissions; safe to ignore until upstream moves.
     PYTHONWARNINGS: 'ignore::airflow.exceptions.RemovedInAirflow4Warning'
@@ -92,6 +95,9 @@ x-airflow-common:
     AIRFLOW_CONN_MARIADB_CONN: "mariadb://username:password@mariadb:3306/nascar?charset=utf8mb4&collation=utf8mb4_uca1400_ai_ci"
     AIRFLOW_CONN_NASCAR_CONN: "mariadb://username:password@mariadb:3306/nascar?charset=utf8mb4&collation=utf8mb4_uca1400_ai_ci"
     FS_ENABLE_BACKFILL_DAGS: ${FS_ENABLE_BACKFILL_DAGS:-0}
+    FS_MC_N_SIMULATIONS: ${FS_MC_N_SIMULATIONS:-1000}
+    FS_MC_RANDOM_SEED: ${FS_MC_RANDOM_SEED:-}
+    FS_DK_MC_OBJECTIVE: ${FS_DK_MC_OBJECTIVE:-p50}
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
@@ -342,6 +348,7 @@ services:
     container_name: ${MARIADB_CONTAINER_NAME:-mariadb}
     restart: always
     environment:
+      TZ: UTC
       MARIADB_MYSQL_LOCALHOST_USER: true
       MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:-password}
       MYSQL_DATABASE: ${DATABASE_NAME:-nascar}

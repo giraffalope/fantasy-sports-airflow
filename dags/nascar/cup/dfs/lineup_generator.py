@@ -1,9 +1,10 @@
 """
 Cup DraftKings DFS lineup generator DAG.
 
-**Schedule:** hourly, aligned with ML. Waits for ``predict_upcoming_week`` on
-``nascar.cup.machine_learning``, then builds top-K ILP lineups per strategy when
-predictions and DraftKings salaries exist for the upcoming race.
+**Schedule:** hourly, aligned with ML. Waits for ``validate_simulation_batch``
+on ``nascar.cup.machine_learning.monte_carlo`` (which itself waits on
+``predict_upcoming_week``), then builds top-K ILP lineups per strategy when
+Monte Carlo summaries and DraftKings salaries exist for the upcoming race.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from include.nascar.dfs.lineup_generator_task import generate_draftkings_lineups
 
 DAG_ID = "nascar.cup.dfs.lineup_generator"
 SALARY_IMPORTER_DAG_ID = "nascar.cup.dfs.salary_importer"
+ML_MONTE_CARLO_DAG_ID = "nascar.cup.machine_learning.monte_carlo"
 
 
 with DAG(
@@ -45,10 +47,10 @@ with DAG(
         check_existence=True,
     )
 
-    wait_ml_predict_complete = ExternalTaskSensor(
-        task_id="wait_ml_predict_complete",
-        external_dag_id="nascar.cup.machine_learning",
-        external_task_id="predict_upcoming_week",
+    wait_mc_complete = ExternalTaskSensor(
+        task_id="wait_mc_complete",
+        external_dag_id=ML_MONTE_CARLO_DAG_ID,
+        external_task_id="validate_simulation_batch",
         mode="reschedule",
         poke_interval=CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
         timeout=CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
@@ -60,4 +62,4 @@ with DAG(
         python_callable=generate_draftkings_lineups_task,
     )
 
-    [wait_ml_predict_complete, wait_dk_salaries_complete] >> generate_draftkings_lineups
+    [wait_mc_complete, wait_dk_salaries_complete] >> generate_draftkings_lineups

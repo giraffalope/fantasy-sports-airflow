@@ -1,8 +1,9 @@
-"""Generate DraftKings DFS lineups from ML predictions and imported salaries."""
+"""Generate DraftKings DFS lineups from Monte Carlo simulation summaries and salaries."""
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from airflow_utils.db_cursor import DbCursor
@@ -26,6 +27,37 @@ _STRATEGY_MIN_DIFF = {
     "HIGH_RISK_REWARD": dk_min_diff_high_risk_reward,
 }
 
+# Monte Carlo summary columns the optimizer can target via ``FS_DK_MC_OBJECTIVE``.
+# Each entry is the bare summary column name; ``mean`` is the expectation, ``p50``
+# the median, ``p95`` the upside-aware percentile, etc.
+_MC_OBJECTIVE_COLUMNS: dict[str, str] = {
+    "mean": "mean_dfs_points",
+    "p05": "p05_dfs_points",
+    "p50": "p50_dfs_points",
+    "p95": "p95_dfs_points",
+    "min": "min_dfs_points",
+    "max": "max_dfs_points",
+}
+
+_DEFAULT_MC_OBJECTIVE = "p50"
+
+
+def _mc_objective() -> str:
+    raw = os.environ.get("FS_DK_MC_OBJECTIVE")
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_MC_OBJECTIVE
+    key = raw.strip().lower()
+    if key not in _MC_OBJECTIVE_COLUMNS:
+        _LOG.warning(
+            "Invalid FS_DK_MC_OBJECTIVE=%r; falling back to %s. Valid keys: %s",
+            raw,
+            _DEFAULT_MC_OBJECTIVE,
+            sorted(_MC_OBJECTIVE_COLUMNS),
+        )
+        return _DEFAULT_MC_OBJECTIVE
+    return key
+
+
 _RACE_FOR_WEEK_SQL = """
 SELECT r.id
 FROM nascar.races r
@@ -34,11 +66,13 @@ WHERE r.week_id = %s
 LIMIT 1
 """
 
-_PREDICTION_COUNT_SQL = """
-SELECT COUNT(*)
-FROM nascar.ml_predictions
+_LATEST_MC_BATCH_SQL = """
+SELECT id, n_simulations
+FROM nascar.ml_race_simulation_batches
 WHERE ml_training_snapshot_id = %s
   AND deleted_at IS NULL
+ORDER BY id DESC
+LIMIT 1
 """
 
 _SALARIES_EXIST_SQL = """
@@ -53,23 +87,26 @@ WHERE ds.dfs_id = %s
 LIMIT 1
 """
 
-_PLAYER_POOL_SQL = """
+# {objective_column} is interpolated server-side from ``_mc_objective()`` and
+# validated against ``_MC_OBJECTIVE_COLUMNS`` so no untrusted string ever reaches
+# the query.
+_PLAYER_POOL_SQL_TEMPLATE = """
 SELECT
-    mp.car_driver_id,
+    s.car_driver_id,
     ds.salary,
     ds.dfs_driver_id,
-    mp.predicted_dfs_points
-FROM nascar.ml_predictions mp
+    s.{objective_column} AS projected_points
+FROM nascar.ml_race_simulation_driver_summaries s
 JOIN nascar.dfs_salaries ds
-  ON ds.car_driver_id = mp.car_driver_id
+  ON ds.car_driver_id = s.car_driver_id
  AND ds.dfs_id = %s
  AND ds.deleted_at IS NULL
 JOIN nascar.races r
   ON r.id = ds.race_id
  AND r.week_id = %s
  AND r.deleted_at IS NULL
-WHERE mp.ml_training_snapshot_id = %s
-  AND mp.deleted_at IS NULL
+WHERE s.ml_race_simulation_batch_id = %s
+  AND s.deleted_at IS NULL
 """
 
 
@@ -80,27 +117,56 @@ def _race_id_for_week(hook: NascarMySqlHook, week_id: int) -> int | None:
     return int(rows[0][0])
 
 
+def _latest_mc_batch(
+    hook: NascarMySqlHook, snapshot_id: int
+) -> tuple[int, int] | None:
+    """Return ``(batch_id, n_simulations)`` for the most recent active MC batch."""
+    rows = hook.get_records(_LATEST_MC_BATCH_SQL, parameters=(snapshot_id,))
+    if not rows:
+        return None
+    return int(rows[0][0]), int(rows[0][1])
+
+
 def _load_player_pool(
     hook: NascarMySqlHook,
     *,
-    snapshot_id: int,
+    mc_batch_id: int,
     week_id: int,
+    objective_column: str,
 ) -> list[LineupPlayer]:
+    sql = _PLAYER_POOL_SQL_TEMPLATE.format(objective_column=objective_column)
     rows = hook.get_records(
-        _PLAYER_POOL_SQL,
-        parameters=(DRAFTKINGS_DFS_ID, week_id, snapshot_id),
+        sql,
+        parameters=(DRAFTKINGS_DFS_ID, week_id, mc_batch_id),
     )
     players: list[LineupPlayer] = []
-    for car_driver_id, salary, dfs_driver_id, predicted_points in rows:
+    for car_driver_id, salary, dfs_driver_id, projected_points in rows:
         players.append(
             LineupPlayer(
                 car_driver_id=int(car_driver_id),
                 salary=int(salary),
-                projected_points=float(predicted_points),
+                projected_points=float(projected_points),
                 dfs_driver_id=int(dfs_driver_id) if dfs_driver_id is not None else None,
             )
         )
     return players
+
+
+def _strategy_id_by_name(cursor: DbCursor, name: str) -> int:
+    cursor.execute(
+        """
+        SELECT id
+        FROM nascar.dfs_strategies
+        WHERE name = %s
+          AND deleted_at IS NULL
+        LIMIT 1
+        """,
+        (name,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise RuntimeError(f"dfs_strategies row not found for name={name!r}")
+    return int(row[0])
 
 
 def _insert_lineup_on_cursor(
@@ -108,7 +174,7 @@ def _insert_lineup_on_cursor(
     *,
     dfs_id: int,
     race_id: int,
-    strategy: str,
+    dfs_strategy_id: int,
     players: list[LineupPlayer],
     indices: list[int],
 ) -> int:
@@ -119,14 +185,23 @@ def _insert_lineup_on_cursor(
     cursor.execute(
         """
         INSERT INTO nascar.dfs_race_lineups (
-            dfs_id, race_id, strategy, projected_points_total, salary_total
-        ) VALUES (%s, %s, %s, %s, %s)
+            dfs_id, race_id, projected_points_total, salary_total
+        ) VALUES (%s, %s, %s, %s)
         """,
-        (dfs_id, race_id, strategy, projected_total, salary_total),
+        (dfs_id, race_id, projected_total, salary_total),
     )
     lineup_id = int(cursor.lastrowid)
     if not lineup_id:
         raise RuntimeError("INSERT dfs_race_lineups did not return an auto-increment id")
+
+    cursor.execute(
+        """
+        INSERT INTO nascar.dfs_strategies_race_lineups (
+            dfs_strategy_id, dfs_race_lineup_id
+        ) VALUES (%s, %s)
+        """,
+        (dfs_strategy_id, lineup_id),
+    )
 
     child_rows = [
         (
@@ -164,14 +239,22 @@ def _persist_strategy_lineups(
     lineups: list[list[int]],
 ) -> int:
     def _write(_conn: object, cursor: DbCursor) -> None:
+        dfs_strategy_id = _strategy_id_by_name(cursor, strategy)
         cursor.execute(
             """
-            UPDATE nascar.dfs_race_lineups
-            SET deleted_at = UTC_TIMESTAMP()
-            WHERE dfs_id = %s
-              AND race_id = %s
-              AND strategy = %s
-              AND deleted_at IS NULL
+            UPDATE nascar.dfs_race_lineups drl
+            JOIN nascar.dfs_strategies_race_lineups dsrl
+                ON dsrl.dfs_race_lineup_id = drl.id
+                AND dsrl.deleted_at IS NULL
+            JOIN nascar.dfs_strategies ds
+                ON ds.id = dsrl.dfs_strategy_id
+                AND ds.deleted_at IS NULL
+            SET drl.deleted_at = UTC_TIMESTAMP(),
+                dsrl.deleted_at = UTC_TIMESTAMP()
+            WHERE drl.dfs_id = %s
+              AND drl.race_id = %s
+              AND ds.name = %s
+              AND drl.deleted_at IS NULL
             """,
             (dfs_id, race_id, strategy),
         )
@@ -180,7 +263,7 @@ def _persist_strategy_lineups(
                 cursor,
                 dfs_id=dfs_id,
                 race_id=race_id,
-                strategy=strategy,
+                dfs_strategy_id=dfs_strategy_id,
                 players=players,
                 indices=indices,
             )
@@ -205,17 +288,14 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
         _LOG.warning("generate_draftkings_lineups: skipped reason=no_predict_snapshot")
         return {"skipped": True, "reason": "no_predict_snapshot"}
 
-    pred_rows = hook.get_records(
-        _PREDICTION_COUNT_SQL,
-        parameters=(snapshot["id"],),
-    )
-    prediction_count = int(pred_rows[0][0]) if pred_rows else 0
-    if prediction_count <= 0:
+    mc_batch = _latest_mc_batch(hook, snapshot["id"])
+    if mc_batch is None:
         _LOG.warning(
-            "generate_draftkings_lineups: skipped reason=no_ml_predictions snapshot_id=%s",
+            "generate_draftkings_lineups: skipped reason=no_mc_summaries snapshot_id=%s",
             snapshot["id"],
         )
-        return {"skipped": True, "reason": "no_ml_predictions", "snapshot_id": snapshot["id"]}
+        return {"skipped": True, "reason": "no_mc_summaries", "snapshot_id": snapshot["id"]}
+    mc_batch_id, mc_n_simulations = mc_batch
 
     week_id = snapshot["week_id"]
     race_id = _race_id_for_week(hook, week_id)
@@ -238,7 +318,14 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
         )
         return {"skipped": True, "reason": "no_dk_salaries", "week_id": week_id, "race_id": race_id}
 
-    players = _load_player_pool(hook, snapshot_id=snapshot["id"], week_id=week_id)
+    objective = _mc_objective()
+    objective_column = _MC_OBJECTIVE_COLUMNS[objective]
+    players = _load_player_pool(
+        hook,
+        mc_batch_id=mc_batch_id,
+        week_id=week_id,
+        objective_column=objective_column,
+    )
     if len(players) < dk_lineup_size():
         _LOG.warning(
             "generate_draftkings_lineups: skipped reason=insufficient_player_pool "
@@ -305,6 +392,9 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
             "lineup_size": lineup_size,
             "salary_cap": salary_cap,
             "top_k": top_k,
+            "mc_batch_id": mc_batch_id,
+            "mc_n_simulations": mc_n_simulations,
+            "mc_objective": objective,
             "lineups_inserted": inserted_by_strategy,
         }
 
@@ -317,5 +407,8 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
         "lineup_size": lineup_size,
         "salary_cap": salary_cap,
         "top_k": top_k,
+        "mc_batch_id": mc_batch_id,
+        "mc_n_simulations": mc_n_simulations,
+        "mc_objective": objective,
         "lineups_inserted": inserted_by_strategy,
     }

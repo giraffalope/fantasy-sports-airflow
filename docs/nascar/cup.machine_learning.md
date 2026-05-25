@@ -69,8 +69,15 @@ Total tasks: **4** (1 sensor + 3 Python tasks). Walk-forward backtest is
   `nascar.cup.aggregate.aggregate_done` for the same logical date
   (`mode=reschedule`, `poke_interval=30s`,
   `timeout=CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT` = 6h, `check_existence=True`).
-- **Downstream:** none. `ml_predictions` and `ml_model_evaluations` are
-  consumed by downstream BI / lineup tooling outside Airflow.
+- **Downstream:**
+  [`nascar.cup.machine_learning.monte_carlo`](./cup.machine_learning.monte_carlo.md)
+  sensors `predict_upcoming_week`, simulates ≥ 1,000 race outcomes per driver
+  from calibrated prediction uncertainty, and persists
+  `ml_race_simulation_*` summaries that
+  [`nascar.cup.dfs.lineup_generator`](./cup.dfs.lineup_generator.md) consumes
+  in place of raw `ml_predictions` point estimates.
+  [`nascar.cup.machine_learning.backtest`](./cup.machine_learning.backtest.md)
+  also sensors `predict_upcoming_week` to schedule walk-forward evaluation.
 
 ## Task graph
 

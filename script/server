@@ -1,4 +1,11 @@
 #!/bin/sh
+# Start the local Compose stack without rebuilding images.
+# DAG pause state, run history, and DB data persist in named volumes unless --fresh.
+#
+# Usage:
+#   ./script/server          # stop containers (keep volumes), then up
+#   ./script/server --fresh  # docker compose down -v, then up (wipes postgres + mariadb volumes)
+#   ./script/server --help
 
 set -e
 [ -z "${DEBUG}" ] || set -x
@@ -6,13 +13,39 @@ set -e
 BASEDIR="$(dirname "$0")/.."
 cd "${BASEDIR}"
 
-# COMPOSE_FILES="-f docker-compose.yml -f docker-compose-dev.yml"
-# COMPOSE_FILES="-f docker-compose-dev.yml"
 COMPOSE_FILES=""
+
+usage() {
+    cat <<'EOF'
+Usage: ./script/server [--fresh] [--help]
+
+  Start containers with docker compose up (no image rebuild).
+  Named volumes keep Airflow metadata (postgres-db-volume) and NASCAR data
+  (maria-db-volume) across restarts.
+
+  --fresh   Remove volumes on shutdown before up (full reset; first-time init).
+  --help    Show this message.
+
+  Rebuild images: ./script/build then ./script/server
+EOF
+}
+
+FRESH=0
+for arg in "$@"; do
+    case "$arg" in
+        --fresh) FRESH=1 ;;
+        --help|-h) usage; exit 0 ;;
+        *)
+            echo "Unknown option: $arg" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
 
 cleanup() {
     echo "Stopping containers..."
-    docker compose down --remove-orphans
+    docker compose $COMPOSE_FILES down --remove-orphans
     exit 0
 }
 
@@ -20,14 +53,17 @@ main() {
     trap cleanup INT TERM
 
     ASCII_ART_FILE="script/utils/ascii-art.txt"
-    cat $BASEDIR/$ASCII_ART_FILE
-    # docker compose $COMPOSE_FILES down
-    docker compose $COMPOSE_FILES down --volumes --remove-orphans
-    docker compose --profile init up airflow-init
-    # yes | docker compose rm airflow-init
-    docker compose $COMPOSE_FILES --profile development up --force-recreate
-    wait $!
-}
+    cat "$BASEDIR/$ASCII_ART_FILE"
 
+    if [ "$FRESH" -eq 1 ]; then
+        echo "Removing containers and named volumes (postgres-db-volume, maria-db-volume)..."
+        docker compose $COMPOSE_FILES down --volumes --remove-orphans
+    else
+        docker compose $COMPOSE_FILES down --remove-orphans
+    fi
+
+    # airflow-init runs automatically via depends_on when the metadata DB is new or was wiped.
+    docker compose $COMPOSE_FILES up
+}
 
 main

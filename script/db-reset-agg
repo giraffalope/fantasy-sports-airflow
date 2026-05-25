@@ -1,0 +1,53 @@
+#!/bin/sh
+# Truncate all nascar.agg_* and ml_* tables via stored procedures (destructive).
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$BASEDIR"
+
+usage() {
+    cat <<'EOF'
+Truncate all aggregate and ML output tables on the Compose mariadb service.
+
+Runs:
+  CALL nascar.truncate_aggregations();
+  CALL nascar.truncate_machine_learning();
+
+Requires the stack to be running (./script/server). Does not touch core NASCAR
+tables (weeks, race_results, etc.). Destructive — use only when you intend to
+clear agg_* and ml_* data.
+
+Usage:
+  ./script/db-reset-agg
+  ./script/db-reset-agg --help
+
+Options:
+  -h, --help    Show this help
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+echo "Truncating agg_* and ml_* tables on Compose mariadb..."
+
+# Inline db-query uses mariadb -e, which may not run every statement in a semicolon-separated
+# string reliably for CALL. Pipe both procedures on stdin (db_mariadb_base / batch mode).
+printf '%s\n' \
+    'CALL nascar.truncate_aggregations();' \
+    'CALL nascar.truncate_machine_learning();' \
+    | "$BASEDIR/script/db-query"
+
+echo "Done."

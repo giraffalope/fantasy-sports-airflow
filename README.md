@@ -32,6 +32,23 @@ The MariaDB **nascar** schema, stored procedures, and forward migrations live in
 
 Python dependencies and versions are declared in `pyproject.toml` and locked with `uv` (`uv.lock`). The runtime image is defined in `Dockerfile`; local full-stack orchestration is in `docker-compose.yaml`.
 
+## Time zones
+
+The Docker stack sets **`AIRFLOW__CORE__DEFAULT_TIMEZONE=utc`** and **`TZ=UTC`** on all Airflow services (see [`config/airflow.cfg`](config/airflow.cfg)). DAG logical dates and server logs use UTC.
+
+In the Airflow Web UI, open the **clock** menu (top right) and choose **UTC**, not **Local**, so grids and task timestamps match the server. That UI preference is stored per browser.
+
+## Local stack persistence
+
+Compose keeps two named volumes (see `docker-compose.yaml`):
+
+| Volume | Service | What persists |
+|--------|---------|----------------|
+| `postgres-db-volume` | `postgres` | Airflow metadata: DAG pause/unpause, run history, task instances, connections stored in the metastore |
+| `maria-db-volume` | `mariadb` | NASCAR schema data and migration ledger |
+
+**`./script/server`** stops containers but **does not** remove these volumes, so DAG and DB state survive restarts. **`./script/build`** only rebuilds images; volumes are unchanged. Use **`./script/server --fresh`** when you intentionally want an empty Airflow DB and MariaDB (same effect as the old default `down --volumes` behavior).
+
 ## Prerequisites
 
 - **Docker** and **Docker Compose** for the Airflow + database environment
@@ -96,8 +113,8 @@ These scripts are thin wrappers run from the **repository root** (they `cd` to t
 | Script | Role |
 |--------|------|
 | `script/setup` | Ensures **uv** is available, installs the Python version from `.python-version` via **pyenv**, then runs **`uv sync`** for this project (with Linux-specific logic to skip `mysqlclient` when headers are missing). Use once per clone or when dependencies change. |
-| `script/build` | Runs **`docker compose build`** (after `docker compose rm -f`). Pass through extra args to `docker compose build` if needed. |
-| `script/server` | Tears down volumes, runs **`airflow-init`**, then brings the stack up with **`docker compose --profile development up`**. Adjust **`COMPOSE_FILES`** or profiles inside the script if your Compose file uses different service profiles. |
+| `script/build` | Runs **`docker compose build`** (after `docker compose rm -f`). Does **not** delete named volumes. Pass extra args through to **`docker compose build`** if needed. |
+| `script/server` | Stops containers (volumes kept by default), then **`docker compose up`** (no rebuild). **`--fresh`** runs **`down --volumes`** first to wipe **`postgres-db-volume`** (Airflow metadata: DAG pause, runs) and **`maria-db-volume`** (NASCAR data). After **`./script/build`**, run **`./script/server`** to pick up new images. |
 | `script/clear-db` | Removes local **`db/data/`** and **`db/test-data`**, and tries to remove old MariaDB-related Docker images. Uses **`sudo`** for filesystem cleanup; use only when you intend to wipe local DB state. |
 | `script/test` | Builds **`Dockerfile.unit-tests`** and runs **pytest** in a container for **`tests/unit`**, **`tests/integration`**, or both. Supports **`--unit`**, **`--integration`**, and **`--help`**. Set **`UNIT_TESTS_IMAGE`** to override the image tag. |
 | `script/lint` | Runs **[Ruff](https://docs.astral.sh/ruff/)** **`check`** then **`format --check`** on **`dags/`**, **`include/`**, **`airflow_utils/`**, and **`tests/`** (requires **`uv`** and dev deps from **`script/setup`**). Use **`./script/lint --fix`** to apply safe auto-fixes; **`./script/lint --help`** for usage. |
@@ -107,6 +124,7 @@ These scripts are thin wrappers run from the **repository root** (they `cd` to t
 | `script/update` | Runs **`uv lock --upgrade`** then **`uv sync`** to refresh dependencies (optional **`--upgrade-package`** args). See **`./script/update --help`**. |
 | `script/db-migrate` | Applies one ledger-tracked migration SQL file to the Compose **mariadb** service (paths usually under sibling **fantasy-sports-db**). Requires **`./script/server`**. |
 | `script/db-query` | Runs ad-hoc SQL against the same Compose **mariadb** service (file, argument, or stdin). |
+| `script/db-reset-agg` | Truncates all **`agg_*`** and **`ml_*`** tables via **`truncate_aggregations`** and **`truncate_machine_learning`** (destructive; dev DB only when intended). |
 | `script/db-backup` / `script/db-restore` | Backup/restore the Compose MariaDB volume. Use **`./script/db-backup --sync`** to replace the seed snapshot in sibling **fantasy-sports-db** (`9000-load_nascar_database_snapshot.sql.gz`). |
 
 When adding a new workflow, prefer a new executable under `script/` with a short header comment describing usage and assumptions (paths, profiles, env vars).
