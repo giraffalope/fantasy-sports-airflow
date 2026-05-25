@@ -34,6 +34,10 @@ GRAIN_COLUMNS = frozenset(
 
 TIME_COLUMN_SUFFIXES = ("_time",)
 
+# Same-week pre-race columns from ``agg_week_results`` (not lagged prev-track history).
+ANCHOR_PRELOCK_EXPLICIT_COLUMNS: tuple[str, ...] = ("r_start_position",)
+ANCHOR_PRELOCK_PREFIXES: tuple[str, ...] = ("q_", "pt_", "pf_")
+
 
 @dataclass(frozen=True)
 class PrevTrackSource:

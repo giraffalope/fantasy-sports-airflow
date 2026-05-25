@@ -87,18 +87,15 @@ def test_lineup_import_sql_does_not_delete_races() -> None:
     assert "DELETE FROM nascar.races" not in lineup_sql
 
 
-def test_race_import_sql_does_not_delete_lineup_only_race_results() -> None:
+def test_race_import_sql_deletes_lineup_shells_and_staged_drivers_before_insert() -> None:
     race_sql = _sql_text("import_race_staging_into_db.sql")
     assert "total_laps_completed IS NULL" in race_sql
-    assert "finish_position IS NULL" in race_sql
-    assert (
-        "DELETE rr\nFROM nascar.race_results rr\nINNER JOIN nascar.races r\n"
-        "    ON r.id = rr.race_id\nWHERE r.week_id = {{ week_id }}\n"
-        "    AND r.deleted_at IS NULL\n"
-        "    AND rr.deleted_at IS NULL\n"
-        "    AND rr.total_laps_completed IS NULL\n"
-        "    AND rr.finish_position IS NULL"
-    ) in race_sql
+    assert "TRIM(rr.finish_position) = ''" in race_sql
+    assert "tmp_race_{{ week_id }}_{{ table_suffix }}" in race_sql
+    assert "incoming.car_driver_id" in race_sql
+    assert "ON DUPLICATE KEY UPDATE" in race_sql
+    assert "start_position = VALUES(start_position)" in race_sql
+    assert "finish_position = VALUES(finish_position)" in race_sql
 
 
 def test_schedule_import_sql_enforces_rr_frcs_guard() -> None:

@@ -123,8 +123,7 @@ SET t.race_id = r.id;
 
 ---
 
--- Re-runs: remove prior race-only shells (no finish stats). Lineup-only rows from
--- ``import_lineup`` keep ``total_laps_completed IS NULL`` and are not deleted here.
+-- Re-runs: remove lineup-only shells and any prior row for drivers in this import.
 DELETE rr
 FROM nascar.race_results rr
 INNER JOIN nascar.races r
@@ -133,7 +132,33 @@ WHERE r.week_id = {{ week_id }}
     AND r.deleted_at IS NULL
     AND rr.deleted_at IS NULL
     AND rr.total_laps_completed IS NULL
-    AND rr.finish_position IS NULL
+    AND (
+        rr.finish_position IS NULL
+        OR TRIM(rr.finish_position) = ''
+    )
+;
+
+---
+
+DELETE rr
+FROM nascar.race_results rr
+INNER JOIN nascar.races r
+    ON r.id = rr.race_id
+INNER JOIN (
+    SELECT DISTINCT
+        t.race_id,
+        t.car_driver_id
+    FROM nascar.tmp_race_{{ week_id }}_{{ table_suffix }} t
+    WHERE t.race_id IS NOT NULL
+        AND t.car_driver_id IS NOT NULL
+        AND COALESCE(t.finish, t.position) IS NOT NULL
+        AND TRIM(COALESCE(t.finish, t.position)) != ''
+) incoming
+    ON rr.race_id = incoming.race_id
+    AND rr.car_driver_id = incoming.car_driver_id
+WHERE r.week_id = {{ week_id }}
+    AND r.deleted_at IS NULL
+    AND rr.deleted_at IS NULL
 ;
 
 ---
@@ -212,4 +237,20 @@ FROM (
     ) by_driver
     WHERE by_driver.rn_driver = 1
 ) by_finish
-WHERE by_finish.rn_finish = 1;
+WHERE by_finish.rn_finish = 1
+ON DUPLICATE KEY UPDATE
+    start_position = VALUES(start_position),
+    finish_position = VALUES(finish_position),
+    best_position = VALUES(best_position),
+    worst_position = VALUES(worst_position),
+    average_position = VALUES(average_position),
+    green_flag_passes = VALUES(green_flag_passes),
+    green_flag_times_passed = VALUES(green_flag_times_passed),
+    quality_passes = VALUES(quality_passes),
+    total_fastest_laps = VALUES(total_fastest_laps),
+    total_top_15_laps = VALUES(total_top_15_laps),
+    total_laps_led = VALUES(total_laps_led),
+    total_laps_completed = VALUES(total_laps_completed),
+    driver_rating = VALUES(driver_rating),
+    car_status = VALUES(car_status)
+;

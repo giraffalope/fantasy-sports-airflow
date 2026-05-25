@@ -23,13 +23,28 @@ from include.nascar.ml.model_scope import (
     SCOPE_GLOBAL,
     SCOPE_TRACK,
     SCOPE_TRACK_TYPE,
+    SCOPE_TRACK_TYPE_BLEND,
     global_fallback_enabled,
+    is_cold_track,
+    min_track_weeks,
+    track_type_ids_for_track,
 )
 from include.nascar.ml.scoring import compute_dfs_points_from_targets
-from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID, SNAPSHOT_KIND_PREDICT
+from include.nascar.ml.snapshot_config import (
+    DRAFTKINGS_DFS_ID,
+    SNAPSHOT_KIND_PREDICT,
+    SNAPSHOT_KIND_TRAIN,
+)
+from include.nascar.ml.feature_matrix import build_feature_matrix
 from include.nascar.ml.xgb_train_pipeline import DEFAULT_TARGETS, PRIMARY_TARGET
 
 _LOG = logging.getLogger(__name__)
+
+# When a non-primary target model is missing, use these stat defaults at scoring time.
+_FALLBACK_TARGET_DEFAULTS: dict[str, float] = {
+    "r_total_fastest_laps": 0.0,
+    "r_total_laps_led": 0.0,
+}
 
 
 def _parse_json(raw: Any) -> Any:
@@ -217,17 +232,26 @@ def _resolve_model_for_target(
     surface the skip. The series filter applies at every step, so Cup / Xfinity
     / Truck never share artifacts.
     """
-    for scope in (SCOPE_TRACK, SCOPE_TRACK_TYPE):
-        entry = _scope_lookup(
-            hook,
-            target=target,
-            series_id=series_id,
-            scope=scope,
-            track_id=track_id,
-            track_type_id=track_type_id,
-        )
-        if entry is not None and entry.get("artifact_uri"):
-            return entry
+    entry = _scope_lookup(
+        hook,
+        target=target,
+        series_id=series_id,
+        scope=SCOPE_TRACK,
+        track_id=track_id,
+        track_type_id=track_type_id,
+    )
+    if entry is not None and entry.get("artifact_uri"):
+        return entry
+    entry = _scope_lookup(
+        hook,
+        target=target,
+        series_id=series_id,
+        scope=SCOPE_TRACK_TYPE,
+        track_id=track_id,
+        track_type_id=track_type_id,
+    )
+    if entry is not None and entry.get("artifact_uri"):
+        return entry
     if global_fallback_enabled():
         entry = _scope_lookup(
             hook,
@@ -242,20 +266,162 @@ def _resolve_model_for_target(
     return None
 
 
-def _build_feature_matrix(
+def _predict_with_model(
     rows: list[dict[str, Any]],
-    selected_features: list[str],
+    model_entry: dict[str, Any],
+    *,
+    booster_cls: type,
 ) -> np.ndarray:
-    matrix = np.zeros((len(rows), len(selected_features)), dtype=float)
-    for i, row in enumerate(rows):
-        features = row.get("features") or {}
-        for j, name in enumerate(selected_features):
-            value = features.get(name)
-            if value is None:
-                matrix[i, j] = 0.0
-            else:
-                matrix[i, j] = float(value)
-    return np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    booster = booster_cls()
+    booster.load_model(model_entry["artifact_uri"])
+    features = build_feature_matrix(rows, model_entry["selected_features"])
+    return booster.predict(features)
+
+
+def _predict_track_type_blend(
+    hook: NascarMySqlHook,
+    *,
+    target: str,
+    series_id: int,
+    track_id: int,
+    rows: list[dict[str, Any]],
+    booster_cls: type,
+) -> tuple[np.ndarray | None, dict[str, Any] | None, int | None]:
+    """Average per-driver predictions across every usable track_type model for ``track_id``."""
+    type_ids = track_type_ids_for_track(hook, track_id)
+    if not type_ids:
+        return None, None, None
+
+    per_type_preds: list[np.ndarray] = []
+    contributor_ids: list[int] = []
+    used_type_ids: list[int] = []
+    for type_id in type_ids:
+        entry = _scope_lookup(
+            hook,
+            target=target,
+            series_id=series_id,
+            scope=SCOPE_TRACK_TYPE,
+            track_id=None,
+            track_type_id=type_id,
+        )
+        if entry is None or not entry.get("artifact_uri"):
+            continue
+        per_type_preds.append(_predict_with_model(rows, entry, booster_cls=booster_cls))
+        contributor_ids.append(int(entry["id"]))
+        used_type_ids.append(type_id)
+
+    if not per_type_preds:
+        return None, None, None
+
+    blended = np.mean(np.stack(per_type_preds, axis=0), axis=0)
+    meta = {
+        "series_id": series_id,
+        "model_scope": SCOPE_TRACK_TYPE_BLEND,
+        "track_id": track_id,
+        "track_type_id": None,
+        "track_type_ids": used_type_ids,
+        "n_models": len(used_type_ids),
+        "model_ids": contributor_ids,
+    }
+    return blended, meta, min(contributor_ids)
+
+
+def _predict_values_for_target(
+    hook: NascarMySqlHook,
+    *,
+    target: str,
+    series_id: int,
+    track_id: int | None,
+    track_type_id: int | None,
+    rules_id: int,
+    rows: list[dict[str, Any]],
+    booster_cls: type,
+) -> tuple[np.ndarray | None, dict[str, Any] | None, int | None]:
+    """
+    Resolve routing and return predictions for one target.
+
+    Cold tracks (fewer than ``FS_ML_MIN_TRACK_WEEKS`` finished weeks at ``track_id``)
+    without a track model average all mapped track_type models; warm tracks use
+    ``track -> track_type -> global``.
+    """
+    track_entry = _scope_lookup(
+        hook,
+        target=target,
+        series_id=series_id,
+        scope=SCOPE_TRACK,
+        track_id=track_id,
+        track_type_id=track_type_id,
+    )
+    if track_entry is not None and track_entry.get("artifact_uri"):
+        preds = _predict_with_model(rows, track_entry, booster_cls=booster_cls)
+        meta = {
+            "series_id": track_entry["series_id"],
+            "model_scope": track_entry["model_scope"],
+            "track_id": track_entry["track_id"],
+            "track_type_id": track_entry["track_type_id"],
+        }
+        return preds, meta, int(track_entry["id"])
+
+    cold = (
+        track_id is not None
+        and is_cold_track(
+            hook,
+            rules_id,
+            series_id,
+            int(track_id),
+            train_kind=SNAPSHOT_KIND_TRAIN,
+        )
+    )
+    if cold and track_id is not None:
+        blended, meta, model_id = _predict_track_type_blend(
+            hook,
+            target=target,
+            series_id=series_id,
+            track_id=int(track_id),
+            rows=rows,
+            booster_cls=booster_cls,
+        )
+        if blended is not None and meta is not None and model_id is not None:
+            return blended, meta, model_id
+
+    type_entry = _scope_lookup(
+        hook,
+        target=target,
+        series_id=series_id,
+        scope=SCOPE_TRACK_TYPE,
+        track_id=track_id,
+        track_type_id=track_type_id,
+    )
+    if type_entry is not None and type_entry.get("artifact_uri"):
+        preds = _predict_with_model(rows, type_entry, booster_cls=booster_cls)
+        meta = {
+            "series_id": type_entry["series_id"],
+            "model_scope": type_entry["model_scope"],
+            "track_id": type_entry["track_id"],
+            "track_type_id": type_entry["track_type_id"],
+        }
+        return preds, meta, int(type_entry["id"])
+
+    if global_fallback_enabled():
+        global_entry = _scope_lookup(
+            hook,
+            target=target,
+            series_id=series_id,
+            scope=SCOPE_GLOBAL,
+            track_id=None,
+            track_type_id=None,
+        )
+        if global_entry is not None and global_entry.get("artifact_uri"):
+            preds = _predict_with_model(rows, global_entry, booster_cls=booster_cls)
+            meta = {
+                "series_id": global_entry["series_id"],
+                "model_scope": global_entry["model_scope"],
+                "track_id": global_entry["track_id"],
+                "track_type_id": global_entry["track_type_id"],
+            }
+            return preds, meta, int(global_entry["id"])
+
+    return None, None, None
 
 
 def _soft_delete_existing_predictions(
@@ -333,47 +499,76 @@ def predict_upcoming_week_task(**_context: object) -> dict[str, Any]:
     target_predictions: dict[str, np.ndarray] = {}
     model_ids: dict[str, int] = {}
     resolved_scopes: dict[str, dict[str, Any]] = {}
+    fallback_targets: list[str] = []
+    cold_track = (
+        snapshot["track_id"] is not None
+        and is_cold_track(
+            hook,
+            rules_id,
+            snapshot["series_id"],
+            int(snapshot["track_id"]),
+            train_kind=SNAPSHOT_KIND_TRAIN,
+        )
+    )
+
     for target in DEFAULT_TARGETS:
-        model_entry = _resolve_model_for_target(
+        preds, resolved_meta, model_id = _predict_values_for_target(
             hook,
             target=target,
             series_id=snapshot["series_id"],
             track_id=snapshot["track_id"],
             track_type_id=snapshot["track_type_id"],
+            rules_id=rules_id,
+            rows=rows,
+            booster_cls=XGBRegressor,
         )
-        if model_entry is None:
+        if preds is None or model_id is None or resolved_meta is None:
+            if target == PRIMARY_TARGET:
+                _LOG.warning(
+                    "predict_upcoming_week_task: no trained model for primary target=%s; aborting",
+                    target,
+                )
+                return {"skipped": f"no_model_for_target:{target}"}
+            default_value = _FALLBACK_TARGET_DEFAULTS.get(target, 0.0)
+            target_predictions[target] = np.full(len(rows), default_value, dtype=float)
+            fallback_targets.append(target)
             _LOG.warning(
-                "predict_upcoming_week_task: no trained model for target=%s "
-                "(series_id=%s, track_id=%s, track_type_id=%s); aborting",
+                "predict_upcoming_week_task: no model for target=%s; using default=%s",
                 target,
-                snapshot["series_id"],
-                snapshot["track_id"],
-                snapshot["track_type_id"],
+                default_value,
             )
-            return {"skipped": f"no_model_for_target:{target}"}
-        booster = XGBRegressor()
-        booster.load_model(model_entry["artifact_uri"])
-        X = _build_feature_matrix(rows, model_entry["selected_features"])
-        target_predictions[target] = booster.predict(X)
-        model_ids[target] = model_entry["id"]
-        resolved_scopes[target] = {
-            "series_id": model_entry["series_id"],
-            "model_scope": model_entry["model_scope"],
-            "track_id": model_entry["track_id"],
-            "track_type_id": model_entry["track_type_id"],
-        }
-        _LOG.info(
-            "predict_upcoming_week_task: resolved target=%s -> model_id=%s "
-            "series_id=%s scope=%s track_id=%s track_type_id=%s",
-            target,
-            model_entry["id"],
-            model_entry["series_id"],
-            model_entry["model_scope"],
-            model_entry["track_id"],
-            model_entry["track_type_id"],
-        )
+            continue
+        target_predictions[target] = preds
+        model_ids[target] = model_id
+        resolved_scopes[target] = resolved_meta
+        if resolved_meta.get("model_scope") == SCOPE_TRACK_TYPE_BLEND:
+            _LOG.info(
+                "predict_upcoming_week_task: resolved target=%s -> model_id=%s "
+                "series_id=%s scope=%s track_id=%s track_type_ids=%s n_models=%s",
+                target,
+                model_id,
+                resolved_meta["series_id"],
+                resolved_meta["model_scope"],
+                resolved_meta.get("track_id"),
+                resolved_meta.get("track_type_ids"),
+                resolved_meta.get("n_models"),
+            )
+        else:
+            _LOG.info(
+                "predict_upcoming_week_task: resolved target=%s -> model_id=%s "
+                "series_id=%s scope=%s track_id=%s track_type_id=%s",
+                target,
+                model_id,
+                resolved_meta["series_id"],
+                resolved_meta["model_scope"],
+                resolved_meta.get("track_id"),
+                resolved_meta.get("track_type_id"),
+            )
 
-    primary_model_id = model_ids.get(PRIMARY_TARGET) or next(iter(model_ids.values()))
+    if PRIMARY_TARGET not in model_ids:
+        return {"skipped": f"no_model_for_target:{PRIMARY_TARGET}"}
+
+    primary_model_id = model_ids[PRIMARY_TARGET]
     insert_params: list[tuple[Any, ...]] = []
     for i, row in enumerate(rows):
         predicted_targets = {
@@ -438,8 +633,11 @@ def predict_upcoming_week_task(**_context: object) -> dict[str, Any]:
         "week_id": snapshot["week_id"],
         "track_id": snapshot["track_id"],
         "track_type_id": snapshot["track_type_id"],
+        "cold_track": cold_track,
+        "min_track_weeks": min_track_weeks(),
         "primary_model_id": primary_model_id,
         "model_ids": model_ids,
         "resolved_scopes": resolved_scopes,
+        "fallback_targets": fallback_targets,
         "predictions_inserted": inserted,
     }

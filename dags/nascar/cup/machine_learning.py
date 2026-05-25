@@ -28,6 +28,7 @@ from nascar.cup.scraper.dag_factories import (
     CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
 )
 
+from include.nascar.ml.backtest_task import run_ml_backtest_task
 from include.nascar.ml.predict_task import predict_upcoming_week_task
 from include.nascar.ml.train_task import train_models_if_needed_task
 from include.nascar.ml.training_snapshot_task import build_ml_training_snapshots_task
@@ -69,9 +70,15 @@ with DAG(
         python_callable=predict_upcoming_week_task,
     )
 
+    run_ml_backtest = PythonOperator(
+        task_id="run_ml_backtest",
+        python_callable=run_ml_backtest_task,
+    )
+
     (
         wait_aggregate_complete
         >> build_ml_training_snapshots
         >> train_models_if_needed
         >> predict_upcoming_week
+        >> run_ml_backtest
     )

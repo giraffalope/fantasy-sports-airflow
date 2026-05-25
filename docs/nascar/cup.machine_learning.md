@@ -34,15 +34,19 @@ the DraftKings slate. Concretely:
     finished weeks (default `3`). Features restricted to the per-track
     family (`*_pt_*`) plus anchor columns (`r_start_position`, etc.).
   - `track_type` — one model per `track_type_id` with at least
-    `FS_ML_MIN_TYPE_WEEKS` finished weeks (default `10`). Features
-    restricted to that type's `*_tt_<track_type_id>_*` columns plus
+    `FS_ML_MIN_TYPE_WEEKS` finished weeks (default `3`, same as per-track).
+    Features restricted to that type's `*_tt_<track_type_id>_*` columns plus
     anchors. Used as the cold-start fallback for tracks lacking enough
     history.
   - `global` — legacy single-frame model per series. Trained whenever
     `FS_ML_ENABLE_GLOBAL_FALLBACK=1` (default).
-- **Predicting:** resolve a model per target via the routing chain
-  `series_id -> track -> track_type -> global` (see
-  [include/nascar/ml/model_scope.py](../../include/nascar/ml/model_scope.py)),
+- **Predicting:** resolve a model per target via
+  `track -> track_type_blend (cold tracks) -> track_type -> global` (see
+  [include/nascar/ml/model_scope.py](../../include/nascar/ml/model_scope.py)).
+  Venues with fewer than `FS_ML_MIN_TRACK_WEEKS` finished weeks at
+  `track_id` average predictions across every `track_type_id` mapped in
+  `tracks_track_types` (FRCS groupings in
+  [`data/nascar_tracks_groupings.csv`](../../data/nascar_tracks_groupings.csv)).
   blend the per-target predictions into DraftKings points via
   `nascar.dfs_scoring_rules`, and upsert into `ml_predictions`.
 
@@ -56,7 +60,7 @@ the DraftKings slate. Concretely:
 | `catchup` | `False` |
 | `max_active_runs` | `1` |
 
-Total tasks: **4** (1 sensor + 3 Python tasks).
+Total tasks: **5** (1 sensor + 4 Python tasks).
 
 ## Upstream and downstream wiring
 
@@ -74,6 +78,7 @@ flowchart TB
   wait_aggregate_complete --> build_ml_training_snapshots
   build_ml_training_snapshots --> train_models_if_needed
   train_models_if_needed --> predict_upcoming_week
+  predict_upcoming_week --> run_ml_backtest
 ```
 
 ## Tasks
@@ -113,7 +118,10 @@ flowchart TB
   separate.
 - **Inputs:** `agg_week_results` plus the prior-track / track-types
   aggregate tables in [snapshot_config.py](../../include/nascar/ml/snapshot_config.py)
-  (`PREV_TRACK_SOURCES`, `PREV_TRACK_TYPES_SOURCES`); active
+  (`PREV_TRACK_SOURCES`, `PREV_TRACK_TYPES_SOURCES`). For the snapshot week,
+  same-week **pre-lock** columns (`r_start_position`, `q_*`, `pt_*`, `pf_*`
+  from `agg_week_results`) are copied into anchor features when present;
+  lag features from prior weeks are unchanged. Active
   `nascar.dfs_scoring_rules` row for DraftKings (`dfs_id=1`). Reference data
   is seeded on DB init via
   [`9001-insert_dfs_seed.sql`](../../../fantasy-sports-db/nascar/seed/9001-insert_dfs_seed.sql)
@@ -153,14 +161,14 @@ flowchart TB
      Skips with `predict_ready` when the **first** scope in that chain
      already exists and is trained through `latest_train_week` (per-scope
      `MAX(week_id)` via `ml_model_training_snapshots`, not a global max
-     across all venues).
+     across all venues). When predict is not ready, retrains **every** scope
+     in the chain that is missing or stale (not only the first).
   5. Reads the feature allowlist from `ml_training_snapshots.feature_keys`
      on the latest train snapshot for the active rules version (no full-table
      scan of every row's `features_json`).
   6. **Incremental refresh** for the current week's venue only: resolves
      `track_id` / `track_type_id` from `v_series_current_week` + `weeks`, then
-     trains the **first** scope in the predict chain that is missing or stale
-     (typically one scope per series per run). Cold tracks (below
+     trains each scope in the predict chain that is missing or stale. Cold tracks (below
      `FS_ML_MIN_TRACK_WEEKS`) are omitted from the chain; predict falls
      through to track_type / global. Scoped SQL loads via
      `load_training_frame`; rows are ordered by `week_id` for
@@ -209,25 +217,30 @@ flowchart TB
      The snapshot lookup joins `tracks_track_types` so the snapshot dict
      carries `series_id`, `track_id`, and the canonical `track_type_id`.
      If no predict snapshot exists, returns `no_predict_snapshot`.
-  3. For each target in `DEFAULT_TARGETS`, walks the scope routing chain
-     in `_resolve_model_for_target`. The snapshot's `series_id` is the
+  3. For each target in `DEFAULT_TARGETS`, `_predict_values_for_target`
+     applies the routing chain below. The snapshot's `series_id` is the
      outermost filter on every `_scope_lookup` so a Cup model never
      resolves for an Xfinity / Truck predict snapshot at the same
      physical track:
 
      ```mermaid
      flowchart TB
-       Snap["predict snapshot (series_id, track_id, track_type_id)"]
-       HasTrack{"track model for (series_id, track_id)?"}
-       HasType{"track_type model for (series_id, track_type_id)?"}
-       HasGlobal{"FS_ML_ENABLE_GLOBAL_FALLBACK and global model for series_id?"}
+       Snap["predict snapshot track_id"]
+       HasTrack{"track model for series_id + track_id?"}
+       Cold{"finished weeks at track < FS_ML_MIN_TRACK_WEEKS?"}
+       Blend["track_type_blend: avg all tracks_track_types models"]
+       HasType{"track_type model for snapshot track_type_id?"}
+       HasGlobal{"FS_ML_ENABLE_GLOBAL_FALLBACK?"}
        TrackModel["use track model"]
-       TypeModel["use track_type model"]
-       GlobalModel["use series global model"]
-       Skip["return no_model_for_target"]
+       TypeModel["use single track_type model"]
+       GlobalModel["use global model"]
+       Skip["no_model_for_target"]
        Snap --> HasTrack
        HasTrack -- yes --> TrackModel
-       HasTrack -- no --> HasType
+       HasTrack -- no --> Cold
+       Cold -- yes --> Blend
+       Cold -- no --> HasType
+       Blend -->|no type models| HasGlobal
        HasType -- yes --> TypeModel
        HasType -- no --> HasGlobal
        HasGlobal -- yes --> GlobalModel
@@ -235,7 +248,9 @@ flowchart TB
      ```
 
      A model entry is considered usable only if it has a non-null
-     `artifact_uri`. There is no cross-series fallback by design.
+     `artifact_uri`. Cold-track blend skips types with no trained model and
+     averages the rest; if none resolve, predict falls through to global.
+     There is no cross-series fallback by design.
   4. Loads the on-disk artifact and scores the prediction snapshot's
      `ml_training_rows`.
   5. Combines the per-target predictions into a `predicted_targets_json`
@@ -253,11 +268,27 @@ flowchart TB
   metadata including `series_id` and whether the track, track_type, or
   global model was chosen), the snapshot id, and the number of rows
   scored.
-- **Upstream:** `train_models_if_needed`. **Downstream:** none in this DAG.
-- **Failure notes:** if even the global fallback is missing (or disabled)
-  the task short-circuits with `no_model_for_target:<target>`. Per-target
+- **Failure notes:** missing **primary** target model (`r_finish_position`)
+  short-circuits the task. Secondary targets (`r_laps_led`,
+  `r_fastest_laps`) use zero defaults when no model resolves. Per-target
   scope decisions are logged so it is easy to see which model was actually
   used for each prediction.
+- **Upstream:** `train_models_if_needed`. **Downstream:** `run_ml_backtest`.
+
+### `run_ml_backtest`
+
+- **Operator:** `PythonOperator`.
+- **Callable:** `run_ml_backtest_task` in
+  [include/nascar/ml/backtest_task.py](../../include/nascar/ml/backtest_task.py).
+- **Behavior:** when `FS_ML_RUN_BACKTEST` is set, runs
+  `run_walk_forward_backtest` in
+  [include/nascar/ml/backtest.py](../../include/nascar/ml/backtest.py)
+  over the most recent `FS_ML_BACKTEST_MAX_WEEKS` finished train weeks.
+  Each eval week trains on prior weeks with the same scope heuristic as
+  production, scores holdout DFS-point MAE/RMSE/Spearman, and logs an
+  overall summary. When the env var is unset, returns `skipped=true` so
+  hourly runs stay cheap.
+- **Upstream:** `predict_upcoming_week`. **Downstream:** none.
 
 ## Data sources and sinks
 
@@ -278,8 +309,9 @@ flowchart TB
   - `ml_models` — one row per (target, training cohort) pair.
   - `ml_model_training_snapshots` — link table covering every snapshot the
     model trained on.
-  - `ml_model_evaluations` — per-model `mae` rows + a primary-model
-    `dfs_points_mae` row per training run.
+  - `ml_model_evaluations` — per-model `mae` rows plus holdout cohort
+    `dfs_points_mae`, `dfs_points_rmse`, and `dfs_points_spearman` when the
+    holdout set is non-empty.
   - `ml_predictions` — per car-driver per snapshot prediction with
     `predicted_targets_json` and `predicted_dfs_points`.
 - **Writes (filesystem):** XGBoost JSON artifacts under
@@ -305,9 +337,10 @@ flowchart TB
   - `FS_ML_MIN_TRACK_WEEKS` — int, defaults to `3`. Minimum distinct
     finished Cup weeks at a `track_id` before a track-scoped model is
     trained.
-  - `FS_ML_MIN_TYPE_WEEKS` — int, defaults to `10`. Same idea for the
-    per-track-type fallback. Lower values speed up cold-start coverage at
-    the cost of less stable models.
+  - `FS_ML_MIN_TYPE_WEEKS` — int, defaults to `3` (aligned with
+    `FS_ML_MIN_TRACK_WEEKS`). Same idea for the per-track-type fallback.
+    Lower values speed up cold-start coverage at the cost of less stable
+    models.
   - `FS_ML_ENABLE_GLOBAL_FALLBACK` — `0` disables both training **and**
     predict-time resolution of the legacy global-scope model. Default `1`
     keeps the rollout safe while per-track / per-track-type coverage
@@ -317,6 +350,15 @@ flowchart TB
     distinct finished `week_id` values for that series. Per-track and
     per-track-type loads are already smaller and ignore this knob. Use
     `156` (~4 Cup seasons) or lower if global retrain OOMs on the worker.
+  - `FS_AGG_REBUILD_WEEK_IDS` — comma-separated `week_id` values merged
+    into the aggregate DAG week load list (see `nascar.cup.aggregate`).
+  - `FS_ML_REBUILD_WEEK_IDS` — comma-separated `week_id` values merged
+    into the ML snapshot builder's finished-week list for one-off rebuilds.
+  - `FS_ML_RUN_BACKTEST` — when `1` / `true` / `yes` / `on`, the
+    `run_ml_backtest` task executes a walk-forward backtest over recent
+    finished weeks; otherwise the task no-ops with `skipped=true`.
+  - `FS_ML_BACKTEST_MAX_WEEKS` — int, defaults to `12`. Caps how many of
+    the most recent finished weeks participate in the walk-forward loop.
 - **Python deps:** `scikit-learn`, `xgboost`, `boruta` (see
   [pyproject.toml](../../pyproject.toml)).
 

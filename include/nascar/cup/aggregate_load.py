@@ -137,6 +137,19 @@ def _rebuild_all_weeks_enabled() -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _rebuild_week_ids_from_env() -> set[int]:
+    """Optional comma-separated week ids to force agg wave reload (e.g. after importer backfill)."""
+    raw = os.environ.get("FS_AGG_REBUILD_WEEK_IDS", "").strip()
+    if not raw:
+        return set()
+    ids: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            ids.add(int(part))
+    return ids
+
+
 def aggregate_load_parameters(
     context: Mapping[str, Any],
     *,
@@ -155,7 +168,9 @@ def aggregate_load_parameters(
         parameters = (series_id, series_id)
         mode = "incremental"
     rows = hook.get_records(sql, parameters=parameters)
-    weeks = [{"week_id": int(week_id)} for _series_id, week_id in rows]
+    week_ids = {int(week_id) for _series_id, week_id in rows}
+    week_ids |= _rebuild_week_ids_from_env()
+    weeks = [{"week_id": week_id} for week_id in sorted(week_ids)]
     _LOG.info(
         "aggregate_load_parameters task_id=%s series_id=%s mode=%s weeks_to_load=%s",
         task_id,

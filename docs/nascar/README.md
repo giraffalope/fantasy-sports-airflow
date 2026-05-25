@@ -7,6 +7,10 @@ production DAG plus (for everything except `aggregate` and
 backfill variant is documented in a dedicated section of the same file rather
 than duplicating the task graph.
 
+## Schema and migrations
+
+Canonical MariaDB DDL and forward migrations live in the sibling [**fantasy-sports-db**](../../../fantasy-sports-db/) repository. See [`nascar/migrations/README.md`](../../../fantasy-sports-db/nascar/migrations/README.md) and apply files with [`./script/db-migrate`](../../../script/db-migrate) from this repo (Compose **mariadb**). The aggregate DAG calls `load_agg_week_teams_results` and `load_agg_week_manufacturers_results`; procedure changes require a DB migration on existing databases, not only an Airflow deploy.
+
 ## Cross-DAG flow
 
 ```mermaid

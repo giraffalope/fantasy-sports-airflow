@@ -144,11 +144,17 @@ Both fan out to every wave-2 task.
 - **Target table:** `nascar.agg_week_manufacturers_results` — per-week
   manufacturer-level aggregates (rolled up across drivers / cars for that
   manufacturer that week).
+- **Idempotency:** procedure deletes all rows for `(series_id, week_id)`
+  (including soft-deleted rows) before `INSERT`, so the current week can be
+  reloaded every hourly run without unique-key conflicts. Same pattern as
+  wave-2 loaders.
 - **Upstream:** `load_agg_week_results`. **Downstream:** all wave-2 tasks.
 
 #### `load_agg_week_teams_results`
 - **Target table:** `nascar.agg_week_teams_results` — per-week team-level
   aggregates.
+- **Idempotency:** procedure deletes all rows for `(series_id, week_id)`
+  before `INSERT` (see `load_agg_week_manufacturers_results` above).
 - **Upstream:** `load_agg_week_results`. **Downstream:** all wave-2 tasks.
 
 ### Wave 2 (34 parallel loads after wave 1)
@@ -309,6 +315,7 @@ on the aggregate DAG run (or redeploy and run after clearing derived tables).
 
 ## Operational notes
 
+- **Wave-1 procedures on existing DBs:** after changing `load_agg_week_teams_results` or `load_agg_week_manufacturers_results`, apply migration [`20260525120000_wave1_agg_delete_before_insert_procedures.sql`](../../../fantasy-sports-db/nascar/migrations/20260525120000_wave1_agg_delete_before_insert_procedures.sql) via [`./script/db-migrate`](../../../script/db-migrate) (see [`nascar/migrations/README.md`](../../../fantasy-sports-db/nascar/migrations/README.md)).
 - 36 SQL load tasks plus 1 base load run concurrently within the per-DAG
   limits. The MySQL connection pool needs enough headroom (default Airflow
   `worker_concurrency` × `nascar_conn` pool size). If load tasks queue

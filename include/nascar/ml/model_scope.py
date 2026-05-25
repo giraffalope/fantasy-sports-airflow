@@ -21,6 +21,7 @@ from typing import Any
 
 SCOPE_TRACK = "track"
 SCOPE_TRACK_TYPE = "track_type"
+SCOPE_TRACK_TYPE_BLEND = "track_type_blend"
 SCOPE_GLOBAL = "global"
 ALL_SCOPES: tuple[str, ...] = (SCOPE_TRACK, SCOPE_TRACK_TYPE, SCOPE_GLOBAL)
 
@@ -49,7 +50,7 @@ def min_track_weeks() -> int:
 
 def min_track_type_weeks() -> int:
     """Minimum distinct finished weeks across a track type before we train its model."""
-    return _env_int("FS_ML_MIN_TYPE_WEEKS", 10)
+    return _env_int("FS_ML_MIN_TYPE_WEEKS", 3)
 
 
 def global_fallback_enabled() -> bool:
@@ -172,3 +173,65 @@ def group_frame_by_track_type(
 
 def distinct_week_count(rows: list[dict[str, Any]]) -> int:
     return len({int(row["week_id"]) for row in rows if row.get("week_id") is not None})
+
+
+def track_type_ids_for_track(hook: Any, track_id: int) -> list[int]:
+    """Distinct ``track_type_id`` values mapped to ``track_id`` in ``tracks_track_types``."""
+    rows = hook.get_records(
+        """
+        SELECT DISTINCT track_type_id
+        FROM nascar.tracks_track_types
+        WHERE track_id = %s
+          AND deleted_at IS NULL
+        ORDER BY track_type_id ASC
+        """,
+        parameters=(int(track_id),),
+    )
+    return [int(row[0]) for row in rows]
+
+
+def track_meets_threshold(
+    hook: Any,
+    rules_id: int,
+    series_id: int,
+    track_id: int,
+    min_weeks: int,
+    *,
+    train_kind: str,
+) -> bool:
+    """True when ``track_id`` has at least ``min_weeks`` distinct finished train snapshots."""
+    rows = hook.get_records(
+        """
+        SELECT 1
+        FROM nascar.ml_training_snapshots s
+        WHERE s.kind = %s
+          AND s.dfs_scoring_rules_id = %s
+          AND s.series_id = %s
+          AND s.track_id = %s
+          AND s.deleted_at IS NULL
+        GROUP BY s.track_id
+        HAVING COUNT(DISTINCT s.week_id) >= %s
+        LIMIT 1
+        """,
+        parameters=(train_kind, rules_id, series_id, track_id, min_weeks),
+    )
+    return bool(rows)
+
+
+def is_cold_track(
+    hook: Any,
+    rules_id: int,
+    series_id: int,
+    track_id: int,
+    *,
+    train_kind: str,
+) -> bool:
+    """True when the venue lacks enough finished weeks for a track-scoped model."""
+    return not track_meets_threshold(
+        hook,
+        rules_id,
+        series_id,
+        track_id,
+        min_track_weeks(),
+        train_kind=train_kind,
+    )

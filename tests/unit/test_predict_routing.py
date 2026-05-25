@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from include.nascar.ml import predict_task
@@ -18,6 +19,7 @@ from include.nascar.ml.model_scope import (
     SCOPE_GLOBAL,
     SCOPE_TRACK,
     SCOPE_TRACK_TYPE,
+    SCOPE_TRACK_TYPE_BLEND,
 )
 
 # Default Cup series id used by most fixtures.
@@ -317,3 +319,149 @@ def test_resolver_uses_series_specific_model_when_available(
     assert xfinity is not None
     assert xfinity["id"] == 211
     assert xfinity["series_id"] == 2
+
+
+def test_cold_track_blend_averages_type_model_predictions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
+    hook = _make_hook(
+        {
+            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 3): {
+                "id": 22,
+                "artifact_uri": "/tmp/type3.json",
+                "model_scope": SCOPE_TRACK_TYPE,
+                "track_type_id": 3,
+            },
+            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 5): {
+                "id": 25,
+                "artifact_uri": "/tmp/type5.json",
+                "model_scope": SCOPE_TRACK_TYPE,
+                "track_type_id": 5,
+            },
+        }
+    )
+    rows = [
+        {"car_driver_id": 1, "features": {"a": 1.0}},
+        {"car_driver_id": 2, "features": {"a": 2.0}},
+    ]
+
+    monkeypatch.setattr(predict_task, "is_cold_track", lambda *a, **k: True)
+    monkeypatch.setattr(predict_task, "track_type_ids_for_track", lambda _h, _t: [3, 5])
+
+    def _fake_predict(
+        _rows: list[dict[str, Any]],
+        entry: dict[str, Any],
+        *,
+        booster_cls: type,
+    ) -> np.ndarray:
+        if entry["id"] == 22:
+            return np.array([10.0, 12.0])
+        return np.array([20.0, 24.0])
+
+    monkeypatch.setattr(predict_task, "_predict_with_model", _fake_predict)
+
+    preds, meta, model_id = predict_task._predict_values_for_target(
+        hook,
+        target="r_finish_position",
+        series_id=_CUP_SERIES_ID,
+        track_id=99,
+        track_type_id=3,
+        rules_id=7,
+        rows=rows,
+        booster_cls=MagicMock,
+    )
+    assert preds is not None
+    np.testing.assert_allclose(preds, [15.0, 18.0])
+    assert meta is not None
+    assert meta["model_scope"] == SCOPE_TRACK_TYPE_BLEND
+    assert meta["track_type_ids"] == [3, 5]
+    assert meta["n_models"] == 2
+    assert model_id == 22
+
+
+def test_warm_track_without_track_model_uses_single_track_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
+    hook = _make_hook(
+        {
+            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 3): {
+                "id": 22,
+                "artifact_uri": "/tmp/type.json",
+                "model_scope": SCOPE_TRACK_TYPE,
+                "track_type_id": 3,
+            },
+            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 5): {
+                "id": 25,
+                "artifact_uri": "/tmp/type5.json",
+                "model_scope": SCOPE_TRACK_TYPE,
+                "track_type_id": 5,
+            },
+        }
+    )
+    rows = [{"car_driver_id": 1, "features": {}}]
+
+    monkeypatch.setattr(predict_task, "is_cold_track", lambda *a, **k: False)
+    monkeypatch.setattr(
+        predict_task,
+        "_predict_with_model",
+        lambda _rows, _entry, booster_cls: np.array([7.0]),
+    )
+
+    preds, meta, model_id = predict_task._predict_values_for_target(
+        hook,
+        target="r_finish_position",
+        series_id=_CUP_SERIES_ID,
+        track_id=99,
+        track_type_id=3,
+        rules_id=7,
+        rows=rows,
+        booster_cls=MagicMock,
+    )
+    assert preds is not None
+    assert float(preds[0]) == 7.0
+    assert meta is not None
+    assert meta["model_scope"] == SCOPE_TRACK_TYPE
+    assert meta["track_type_id"] == 3
+    assert model_id == 22
+
+
+def test_cold_track_blend_falls_back_to_global_when_no_type_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
+    hook = _make_hook(
+        {
+            ("r_finish_position", _CUP_SERIES_ID, SCOPE_GLOBAL, None): {
+                "id": 33,
+                "artifact_uri": "/tmp/global.json",
+                "model_scope": SCOPE_GLOBAL,
+            },
+        }
+    )
+    rows = [{"car_driver_id": 1, "features": {}}]
+
+    monkeypatch.setattr(predict_task, "is_cold_track", lambda *a, **k: True)
+    monkeypatch.setattr(predict_task, "track_type_ids_for_track", lambda _h, _t: [3, 5])
+    monkeypatch.setattr(
+        predict_task,
+        "_predict_with_model",
+        lambda _rows, _entry, booster_cls: np.array([42.0]),
+    )
+
+    preds, meta, model_id = predict_task._predict_values_for_target(
+        hook,
+        target="r_finish_position",
+        series_id=_CUP_SERIES_ID,
+        track_id=99,
+        track_type_id=3,
+        rules_id=7,
+        rows=rows,
+        booster_cls=MagicMock,
+    )
+    assert preds is not None
+    assert float(preds[0]) == 42.0
+    assert meta is not None
+    assert meta["model_scope"] == SCOPE_GLOBAL
+    assert model_id == 33

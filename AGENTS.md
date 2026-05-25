@@ -15,6 +15,18 @@ Focused rules live in [`.cursor/rules/`](./.cursor/rules/). They auto-attach by 
 | `nascar-mysql-writes.mdc` | `include/`, `airflow_utils/` — `NascarMySqlHook`, transactions, unique-key reloads |
 | `integration-tests.mdc` | `tests/integration/**/*.py` — `@pytest.mark.integration`, `AIRFLOW_CONN_NASCAR_CONN` |
 
+## Database schema and migrations
+
+Schema DDL, seeds, and ledger-tracked migrations live in the sibling [**fantasy-sports-db**](../fantasy-sports-db/) repo. Read [`fantasy-sports-db/AGENTS.md`](../fantasy-sports-db/AGENTS.md) and [`fantasy-sports-db/CONTRIBUTING.md`](../fantasy-sports-db/CONTRIBUTING.md) before editing tables, views, triggers, stored procedures, or seeds.
+
+Workflow for DB routine changes:
+
+1. Update canonical SQL under `fantasy-sports-db/nascar/ddl/`.
+2. Add `nascar/migrations/YYYYMMDDTHHMMSS_description.sql` (self-contained SQL; procedures need full `DROP` + `CREATE` bodies).
+3. Apply on the Airflow stack MariaDB: `./script/db-migrate ../fantasy-sports-db/nascar/migrations/<file>.sql` (Compose **mariadb** service; records basename in `nascar.schema_migrations`).
+
+Do **not** change a `CALL nascar.*` target only in this repo — mirror the procedure in **fantasy-sports-db** and migrate before expecting DAG fixes on an existing database.
+
 ## Canonical Process Docs
 
 For importer DAG process details (including `nascar.cup.importer`,

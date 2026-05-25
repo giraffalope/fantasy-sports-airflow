@@ -1,0 +1,88 @@
+#!/bin/sh
+# Apply a single ledger-tracked migration file to the Compose mariadb service.
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=script/lib/db.sh
+. "$BASEDIR/script/lib/db.sh"
+
+usage() {
+    cat <<'EOF'
+Apply one migration file and record it in nascar.schema_migrations.
+
+Targets the Airflow stack MariaDB (docker compose service "mariadb"), the same
+database Airflow uses via nascar_conn. Migration SQL files live in fantasy-sports-db.
+
+Usage:
+  ./script/db-migrate ../fantasy-sports-db/nascar/migrations/20260525120000_description.sql
+
+The file basename must not already exist in the ledger. SQL runs without a pager
+(batch mode). Use ./script/db-query for ad-hoc SQL.
+
+Options:
+  -h, --help    Show this help
+EOF
+}
+
+migration_path=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+        *)
+            if [ -n "$migration_path" ]; then
+                echo "Only one migration file is allowed." >&2
+                exit 1
+            fi
+            migration_path="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$migration_path" ]; then
+    echo "Missing migration file path." >&2
+    usage >&2
+    exit 1
+fi
+
+if [ ! -f "$migration_path" ]; then
+    echo "Migration file not found: $migration_path" >&2
+    exit 1
+fi
+
+DB_REPO_ROOT="$BASEDIR"
+db_load_env
+db_require_container
+
+migration_name="$(basename "$migration_path")"
+checksum="$(db_migration_checksum "$migration_path")"
+
+db_ensure_schema_migrations_table
+
+if db_migration_is_applied "$migration_name"; then
+    _escaped="$(db_escape_sql_literal "$migration_name")"
+    existing_checksum="$(db_query_scalar "SELECT checksum FROM nascar.schema_migrations WHERE filename = '${_escaped}' LIMIT 1")"
+    if [ -n "$existing_checksum" ] && [ "$existing_checksum" != "$checksum" ]; then
+        echo "Migration already applied with a different checksum: $migration_name" >&2
+        echo "  ledger: $existing_checksum" >&2
+        echo "  file:   $checksum" >&2
+        exit 1
+    fi
+    echo "Migration already applied: $migration_name" >&2
+    exit 1
+fi
+
+echo "Applying migration: $migration_name"
+db_exec_file "$migration_path"
+db_migration_record_applied "$migration_name" "$checksum"
+echo "Recorded in nascar.schema_migrations: $migration_name"

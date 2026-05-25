@@ -87,6 +87,21 @@ uv run pytest tests/unit/test_<feature>.py \
 AI agents should follow the detailed workflow in [`AGENTS.md`](./AGENTS.md)
 (sections **Test Coverage for Agent Changes** and **Change-Coupling Rules**).
 
+## Database changes (`fantasy-sports-db`)
+
+| Change type | Repository | Deploy to running DB |
+| --- | --- | --- |
+| Importer/aggregate **SQL templates** in `dags/sql/` | `fantasy-sports-airflow` (this repo) | Redeploy Airflow / refresh DAGs |
+| **Stored procedures**, views, tables, triggers, functions | [`fantasy-sports-db`](../fantasy-sports-db/) | Add migration under `nascar/migrations/`, then [`./script/db-migrate`](./script/db-migrate) with path to that file (targets Compose **mariadb**) |
+| Seeds / reference data | `fantasy-sports-db/nascar/seed/` | DB repo seed/sync docs ([`nascar/seed/README.md`](../fantasy-sports-db/nascar/seed/README.md)) |
+
+Importer SQL in `dags/sql/` is **not** applied via the migration ledger. Only objects in the MariaDB catalog (procedures the DAGs `CALL`, views, etc.) require a DB-repo migration.
+
+PR checklist addition when Airflow work depends on new or changed DB routines:
+
+- [ ] Linked migration filename in `fantasy-sports-db/nascar/migrations/`.
+- [ ] Confirmed `./script/db-migrate` was run on the target DB (or noted a fresh volume rebuild from current DDL).
+
 ## SQL and DAG Change Guidance
 
 For importer and staging SQL:
@@ -163,6 +178,7 @@ Suggested PR checklist:
 - [ ] Relevant tests pass.
 - [ ] Unit tests added/updated for changed Python modules; touched modules near 100% coverage.
 - [ ] DAG/SQL contract tests updated when needed.
+- [ ] DB migration applied or N/A (see **Database changes** above).
 - [ ] No unrelated file churn.
 
 ## Troubleshooting Quick Reference

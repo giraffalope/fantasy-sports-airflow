@@ -86,7 +86,7 @@ def test_predict_ready_when_first_scope_current() -> None:
         assert _predict_ready(hook, 7, 1, chain, 200) is True
 
 
-def test_scopes_needing_refresh_returns_first_stale_only() -> None:
+def test_scopes_needing_refresh_returns_all_stale_scopes() -> None:
     hook = MagicMock()
     chain = [
         ScopeSpec(SCOPE_TRACK, 10, None),
@@ -103,7 +103,7 @@ def test_scopes_needing_refresh_returns_first_stale_only() -> None:
         ),
     ):
         needing = _scopes_needing_refresh(hook, 7, 1, chain, 200)
-    assert needing == [ScopeSpec(SCOPE_TRACK, 10, None)]
+    assert needing == chain
 
 
 class TestTrainModelsIncremental:

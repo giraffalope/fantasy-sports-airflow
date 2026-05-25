@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Create a MariaDB backup from the Docker Compose mariadb service.
+# Optional FANTASY_SPORTS_DB_PATH (default: ../fantasy-sports-db) for --sync.
 set -euo pipefail
 
 usage() {
@@ -6,8 +8,8 @@ usage() {
 Create a MariaDB backup from the Docker Compose mariadb service.
 
 Usage:
-  ./script/db-backup
-  ./script/db-backup --tables table1 table2 ...
+  ./script/db-backup [--sync]
+  ./script/db-backup --tables table1 table2 ... [--sync]
 
 Uses root by default (DATABASE_DUMP_USER / DATABASE_DUMP_PASSWORD, falling back to
 DATABASE_ROOT_PASSWORD) so --all-databases includes full data and privileges.
@@ -18,6 +20,11 @@ Default mode dumps full instance schema+data (--all-databases).
 --tables mode dumps data-only rows for selected tables from DATABASE_NAME
 (default: nascar). It passes --no-create-db and --no-create-info so output does
 not recreate databases or tables, and excludes routines/events/triggers.
+
+--sync  After backup, remove the existing seed snapshot and move this dump to
+        FANTASY_SPORTS_DB_PATH/nascar/seed/9000-load_nascar_database_snapshot.sql.gz
+        (default FANTASY_SPORTS_DB_PATH: ../fantasy-sports-db). Partial --tables
+        dumps may not be suitable for Docker init seed 9000.
 EOF
 }
 
@@ -27,22 +34,42 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 MODE="full"
-TABLES=()
+SYNC=false
+REMAINING=()
 
-if [[ $# -gt 0 ]]; then
-  if [[ "${1:-}" == "--tables" ]]; then
-    MODE="tables"
-    shift
-    if [[ $# -eq 0 ]]; then
-      echo "Error: --tables requires at least one table name." >&2
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --sync)
+      SYNC=true
+      shift
+      ;;
+    --tables)
+      MODE="tables"
+      shift
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
       usage >&2
       exit 1
-    fi
-    TABLES=("$@")
-  else
+      ;;
+    *)
+      REMAINING+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ "$MODE" == "tables" ]]; then
+  if [[ ${#REMAINING[@]} -eq 0 ]]; then
+    echo "Error: --tables requires at least one table name." >&2
     usage >&2
     exit 1
   fi
+  TABLES=("${REMAINING[@]}")
+elif [[ ${#REMAINING[@]} -gt 0 ]]; then
+  echo "Error: unexpected arguments: ${REMAINING[*]}" >&2
+  usage >&2
+  exit 1
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -86,3 +113,23 @@ else
 fi
 
 echo "Backup created: $BACKUP_FILE"
+
+if [[ "$SYNC" == true ]]; then
+  if [[ "$MODE" == "tables" ]]; then
+    echo "Warning: --sync with --tables installs a partial dump as seed 9000; full backups are usual for Docker init." >&2
+  fi
+
+  DB_REPO="${FANTASY_SPORTS_DB_PATH:-$ROOT/../fantasy-sports-db}"
+  SEED_DEST="$DB_REPO/nascar/seed/9000-load_nascar_database_snapshot.sql.gz"
+
+  if [[ ! -d "$DB_REPO" ]]; then
+    echo "Error: fantasy-sports-db repo not found: $DB_REPO" >&2
+    echo "Set FANTASY_SPORTS_DB_PATH to the sibling checkout." >&2
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$SEED_DEST")"
+  rm -f "$SEED_DEST"
+  mv "$BACKUP_FILE" "$SEED_DEST"
+  echo "Synced seed snapshot -> $SEED_DEST ($(du -h "$SEED_DEST" | cut -f1))"
+fi

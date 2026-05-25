@@ -10,6 +10,14 @@ The stack is intended to run in Docker (Airflow with Celery, PostgreSQL, Redis, 
 - [`AGENTS.md`](AGENTS.md): AI agent conventions, validation requirements, and **test coverage expectations** (~100% on touched Python modules).
 - [`.cursor/rules/`](.cursor/rules/): Cursor rules that auto-attach by file type (repo navigation, DAG/SQL guardrails, MySQL writes, tests).
 
+## Database schema (`fantasy-sports-db`)
+
+The MariaDB **nascar** schema, stored procedures, and forward migrations live in the sibling [**fantasy-sports-db**](../fantasy-sports-db/) repository (typically checked out next to this repo).
+
+- **Fresh database:** build and init via the DB repo [`README.md`](../fantasy-sports-db/README.md) (`./script/build`, `./script/server`).
+- **Existing database (Airflow stack):** add a migration file under [`nascar/migrations/`](../fantasy-sports-db/nascar/migrations/), then apply it with [`./script/db-migrate`](./script/db-migrate) against the Compose **mariadb** service (same DB as `nascar_conn`). Example: `./script/db-migrate ../fantasy-sports-db/nascar/migrations/20260525120000_wave1_agg_delete_before_insert_procedures.sql`. See [`CONTRIBUTING.md`](../fantasy-sports-db/CONTRIBUTING.md) and [`nascar/migrations/README.md`](../fantasy-sports-db/nascar/migrations/README.md).
+- **This repo** ships Airflow DAGs and `dags/sql/` templates that **call** DB objects (`CALL nascar.*`). Deploying Python or importer SQL here does not update live procedures until the migration is applied on the database.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -97,5 +105,8 @@ These scripts are thin wrappers run from the **repository root** (they `cd` to t
 | `script/typecheck` | Runs **[mypy](https://mypy.readthedocs.io/)** on **`dags/`**, **`include/`**, and **`airflow_utils/`** (config in **`pyproject.toml`**). See **`./script/typecheck --help`**. |
 | `script/deadcode` | Runs **[Vulture](https://github.com/jendrikseipp/vulture)** to flag likely unused code in the same trees. See **`./script/deadcode --help`**. |
 | `script/update` | Runs **`uv lock --upgrade`** then **`uv sync`** to refresh dependencies (optional **`--upgrade-package`** args). See **`./script/update --help`**. |
+| `script/db-migrate` | Applies one ledger-tracked migration SQL file to the Compose **mariadb** service (paths usually under sibling **fantasy-sports-db**). Requires **`./script/server`**. |
+| `script/db-query` | Runs ad-hoc SQL against the same Compose **mariadb** service (file, argument, or stdin). |
+| `script/db-backup` / `script/db-restore` | Backup/restore the Compose MariaDB volume. Use **`./script/db-backup --sync`** to replace the seed snapshot in sibling **fantasy-sports-db** (`9000-load_nascar_database_snapshot.sql.gz`). |
 
 When adding a new workflow, prefer a new executable under `script/` with a short header comment describing usage and assumptions (paths, profiles, env vars).

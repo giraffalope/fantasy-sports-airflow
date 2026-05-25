@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from include.nascar.ml.feature_matrix import build_feature_matrix, feature_fill_values
 from include.nascar.ml.xgb_boruta import filter_columns, select_features
 from include.nascar.ml.xgb_tuning import tune_xgb
 
@@ -40,22 +41,6 @@ class TrainedTargetModel:
     holdout_predictions: np.ndarray | None
     artifact_path: Path | None = None
     model: Any = field(repr=False, default=None)
-
-
-def _build_feature_matrix(
-    frame: list[dict[str, Any]],
-    feature_names: list[str],
-) -> np.ndarray:
-    rows = np.zeros((len(frame), len(feature_names)), dtype=float)
-    for i, row in enumerate(frame):
-        feats = row.get("features") or {}
-        for j, name in enumerate(feature_names):
-            value = feats.get(name)
-            if value is None:
-                rows[i, j] = 0.0
-            else:
-                rows[i, j] = float(value)
-    return np.nan_to_num(rows, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _build_target_vector(frame: list[dict[str, Any]], target: str) -> np.ndarray:
@@ -121,7 +106,8 @@ def train_models_for_targets(
     if not feature_names:
         raise ValueError("train_models_for_targets: no feature keys present in frame")
 
-    X = _build_feature_matrix(frame, feature_names)
+    fill_values = feature_fill_values(frame, feature_names)
+    X = build_feature_matrix(frame, feature_names, fill_values=fill_values)
     train_mask, holdout_mask = split_holdout_mask(frame, holdout_weeks=holdout_weeks)
     has_holdout = bool(holdout_mask.any())
 
@@ -228,3 +214,62 @@ def predicted_dfs_mae_on_holdout(
     if not abs_errors:
         return None, 0
     return float(np.mean(abs_errors)), len(abs_errors)
+
+
+def holdout_dfs_eval_metrics(
+    frame: list[dict[str, Any]],
+    trained: list[TrainedTargetModel],
+    scoring_rules: dict[str, Any],
+    *,
+    holdout_weeks: int = 1,
+) -> dict[str, float | int | None]:
+    """
+    Holdout metrics on total DraftKings points: MAE, RMSE, Spearman rank correlation.
+    """
+    _train_mask, holdout_mask = split_holdout_mask(frame, holdout_weeks=holdout_weeks)
+    holdout_indices = np.flatnonzero(holdout_mask)
+    if holdout_indices.size == 0:
+        return {"dfs_points_mae": None, "dfs_points_rmse": None, "dfs_points_spearman": None, "n": 0}
+
+    target_to_preds: dict[str, np.ndarray] = {}
+    for entry in trained:
+        if entry.holdout_predictions is None:
+            return {
+                "dfs_points_mae": None,
+                "dfs_points_rmse": None,
+                "dfs_points_spearman": None,
+                "n": 0,
+            }
+        target_to_preds[entry.target] = entry.holdout_predictions
+
+    predicted: list[float] = []
+    observed: list[float] = []
+    for pos, frame_idx in enumerate(holdout_indices):
+        row = frame[frame_idx]
+        predicted_targets = {
+            target: float(preds[pos]) for target, preds in target_to_preds.items()
+        }
+        predicted_total, _ = compute_dfs_points_from_targets(
+            row.get("r_start_position"),
+            predicted_targets,
+            scoring_rules,
+        )
+        predicted.append(float(predicted_total))
+        observed.append(float(row.get("dfs_points") or 0.0))
+
+    pred_arr = np.asarray(predicted, dtype=float)
+    obs_arr = np.asarray(observed, dtype=float)
+    mae = float(np.mean(np.abs(pred_arr - obs_arr)))
+    rmse = float(np.sqrt(np.mean((pred_arr - obs_arr) ** 2)))
+    if len(obs_arr) < 2 or np.std(obs_arr) == 0 or np.std(pred_arr) == 0:
+        spearman: float | None = None
+    else:
+        pred_rank = np.argsort(np.argsort(pred_arr))
+        obs_rank = np.argsort(np.argsort(obs_arr))
+        spearman = float(np.corrcoef(pred_rank, obs_rank)[0, 1])
+    return {
+        "dfs_points_mae": mae,
+        "dfs_points_rmse": rmse,
+        "dfs_points_spearman": spearman,
+        "n": int(len(obs_arr)),
+    }

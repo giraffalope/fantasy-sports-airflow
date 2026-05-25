@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from datetime import time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -25,6 +26,8 @@ from include.nascar.ml.scoring import (
     targets_from_agg_row,
 )
 from include.nascar.ml.snapshot_config import (
+    ANCHOR_PRELOCK_EXPLICIT_COLUMNS,
+    ANCHOR_PRELOCK_PREFIXES,
     AUDIT_COLUMNS,
     DRAFTKINGS_DFS_ID,
     GRAIN_CAR_DRIVER,
@@ -62,6 +65,28 @@ def _current_week_predict_week_id(
 
 
 _METRIC_COLUMNS_CACHE: dict[str, list[str]] = {}
+_AGG_PRELOCK_COLUMNS_CACHE: list[str] | None = None
+
+
+def _agg_week_prelock_columns(hook: NascarMySqlHook) -> list[str]:
+    global _AGG_PRELOCK_COLUMNS_CACHE
+    if _AGG_PRELOCK_COLUMNS_CACHE is not None:
+        return _AGG_PRELOCK_COLUMNS_CACHE
+    rows = hook.get_records(
+        """
+        SELECT COLUMN_NAME
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = 'nascar' AND TABLE_NAME = 'agg_week_results'
+        ORDER BY ORDINAL_POSITION
+        """,
+    )
+    columns = [
+        str(column_name)
+        for (column_name,) in rows
+        if _is_anchor_prelock_column(str(column_name))
+    ]
+    _AGG_PRELOCK_COLUMNS_CACHE = columns
+    return columns
 
 
 def time_value_to_seconds(value: Any) -> float | None:
@@ -126,6 +151,22 @@ def _metric_columns(hook: NascarMySqlHook, table_name: str) -> list[str]:
 
 def _prefixed_key(prefix: str, column_name: str) -> str:
     return f"{prefix}_{column_name}"
+
+
+def _is_anchor_prelock_column(column_name: str) -> bool:
+    if column_name in ANCHOR_PRELOCK_EXPLICIT_COLUMNS:
+        return True
+    return column_name.startswith(ANCHOR_PRELOCK_PREFIXES)
+
+
+def _anchor_prelock_features(anchor: dict[str, Any]) -> dict[str, float | None]:
+    """Pre-race signal from the anchor ``agg_week_results`` row (same week, pre-finish)."""
+    features: dict[str, float | None] = {}
+    for column_name, value in anchor.items():
+        if not _is_anchor_prelock_column(column_name):
+            continue
+        features[column_name] = normalize_feature_value(column_name, value)
+    return features
 
 
 def _row_to_prefixed_features(
@@ -354,6 +395,13 @@ def build_car_driver_training_snapshot(
     else:
         anchor_filter = "AND awr.r_start_position IS NOT NULL AND awr.r_finish_position IS NULL"
 
+    prelock_columns = _agg_week_prelock_columns(hook)
+    prelock_select = ""
+    if prelock_columns:
+        prelock_select = ",\n            " + ",\n            ".join(
+            f"awr.`{column}`" for column in prelock_columns
+        )
+
     anchor_sql = f"""
         SELECT
             awr.id,
@@ -392,7 +440,7 @@ def build_car_driver_training_snapshot(
             awr.r_total_pitstops,
             awr.r_total_penalties,
             awr.r_total_race_laps,
-            awr.r_total_race_miles
+            awr.r_total_race_miles{prelock_select}
         FROM nascar.agg_week_results awr
         WHERE awr.series_id = %s
           AND awr.week_id = %s
@@ -450,6 +498,7 @@ def build_car_driver_training_snapshot(
         "r_total_penalties",
         "r_total_race_laps",
         "r_total_race_miles",
+        *prelock_columns,
     ]
     anchors = [dict(zip(anchor_columns, raw, strict=True)) for raw in anchor_rows]
 
@@ -476,7 +525,7 @@ def build_car_driver_training_snapshot(
     all_feature_keys: set[str] = set()
 
     for anchor in anchors:
-        features: dict[str, float | None] = {}
+        features: dict[str, float | None] = _anchor_prelock_features(anchor)
         entity_ids = {
             "car_driver_id": int(anchor["car_driver_id"]),
             "driver_id": int(anchor["driver_id"]),
@@ -636,6 +685,13 @@ def build_car_driver_training_snapshot(
     return snapshot_id
 
 
+def _extra_rebuild_week_ids_from_env() -> set[int]:
+    raw = os.environ.get("FS_ML_REBUILD_WEEK_IDS", "").strip()
+    if not raw:
+        return set()
+    return {int(part.strip()) for part in raw.split(",") if part.strip()}
+
+
 def build_all_week_training_snapshots(
     *,
     mysql_conn_id: str = "nascar_conn",
@@ -654,10 +710,13 @@ def build_all_week_training_snapshots(
         return []
 
     series_id = NascarSeries.CUP.series_id
-    weeks = hook.get_records(FINISHED_AGG_WEEKS_SQL, parameters=(series_id,))
+    week_ids = {int(week_id) for _series_id, week_id in hook.get_records(
+        FINISHED_AGG_WEEKS_SQL, parameters=(series_id,)
+    )}
+    week_ids |= _extra_rebuild_week_ids_from_env()
 
     snapshot_ids: list[int] = []
-    for _series_id, week_id in weeks:
+    for week_id in sorted(week_ids):
         snapshot_id = build_car_driver_training_snapshot(
             series_id,
             int(week_id),

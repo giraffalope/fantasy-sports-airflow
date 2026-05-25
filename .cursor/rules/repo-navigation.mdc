@@ -6,7 +6,7 @@ alwaysApply: true
 # fantasy-sports-airflow navigation
 
 - **This repo:** `fantasy-sports-airflow` (DAGs, `include/`, SQL templates, tests).
-- **Schema DDL:** sibling **`fantasy-sports-db`** — do not invent columns, FKs, or unique keys without checking `nascar/ddl/` there.
+- **Schema DDL and migrations:** sibling **`fantasy-sports-db`** — check `nascar/ddl/` for canonical objects; migration SQL in `nascar/migrations/`; apply on the Airflow stack with [`script/db-migrate`](../../script/db-migrate) (Compose **mariadb**). See [`../fantasy-sports-db/nascar/migrations/README.md`](../fantasy-sports-db/nascar/migrations/README.md).
 - **DAG / importer work:** read [`docs/nascar/README.md`](../../docs/nascar/README.md) and the matching `docs/nascar/cup.*.md` for the DAG you change.
 - **Full workflow:** [`AGENTS.md`](../../AGENTS.md) and [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 

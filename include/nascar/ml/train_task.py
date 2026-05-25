@@ -3,8 +3,8 @@
 When new finished weeks appear, this task refreshes only the models
 ``predict_upcoming_week`` needs for the current week's venue: walk the same
 ``track`` -> ``track_type`` -> ``global`` chain as predict, skip when the first
-usable scope is already trained through ``latest_train_week``, and fit scopes
-that are missing or stale. Cold tracks (below ``FS_ML_MIN_TRACK_WEEKS``) are
+usable scope is already trained through ``latest_train_week``, and fit every
+scope in the chain that is missing or stale. Cold tracks (below ``FS_ML_MIN_TRACK_WEEKS``) are
 omitted from the chain; predict falls through to track_type / global.
 """
 
@@ -35,6 +35,7 @@ from include.nascar.ml.model_scope import (
     max_train_weeks,
     min_track_type_weeks,
     min_track_weeks,
+    track_meets_threshold,
 )
 from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID, SNAPSHOT_KIND_TRAIN
 from include.nascar.ml.training_targets import load_training_frame
@@ -42,6 +43,7 @@ from include.nascar.ml.xgb_train_pipeline import (
     DEFAULT_TARGETS,
     PRIMARY_TARGET,
     TrainedTargetModel,
+    holdout_dfs_eval_metrics,
     predicted_dfs_mae_on_holdout,
     train_models_for_targets,
 )
@@ -119,22 +121,14 @@ def _track_meets_threshold(
     track_id: int,
     min_weeks: int,
 ) -> bool:
-    rows = hook.get_records(
-        """
-        SELECT 1
-        FROM nascar.ml_training_snapshots s
-        WHERE s.kind = %s
-          AND s.dfs_scoring_rules_id = %s
-          AND s.series_id = %s
-          AND s.track_id = %s
-          AND s.deleted_at IS NULL
-        GROUP BY s.track_id
-        HAVING COUNT(DISTINCT s.week_id) >= %s
-        LIMIT 1
-        """,
-        parameters=(SNAPSHOT_KIND_TRAIN, rules_id, series_id, track_id, min_weeks),
+    return track_meets_threshold(
+        hook,
+        rules_id,
+        series_id,
+        track_id,
+        min_weeks,
+        train_kind=SNAPSHOT_KIND_TRAIN,
     )
-    return bool(rows)
 
 
 def _track_type_meets_threshold(
@@ -315,7 +309,8 @@ def _scopes_needing_refresh(
     chain: list[ScopeSpec],
     latest_train_week: int,
 ) -> list[ScopeSpec]:
-    """Return the first scope in the predict chain that is missing or stale."""
+    """Return every scope in the predict chain that is missing or stale."""
+    stale: list[ScopeSpec] = []
     for spec in chain:
         exists = _scope_model_exists(
             hook,
@@ -333,8 +328,8 @@ def _scopes_needing_refresh(
             track_type_id=spec.track_type_id,
         )
         if not exists or covered is None or covered < latest_train_week:
-            return [spec]
-    return []
+            stale.append(spec)
+    return stale
 
 
 def _feature_keys_from_snapshot_metadata(
@@ -610,7 +605,39 @@ def _train_scope(
         scoring_rules,
         holdout_weeks=holdout_weeks,
     )
-    if dfs_mae is not None and primary_model_id is not None:
+    eval_metrics = holdout_dfs_eval_metrics(
+        rows,
+        trained,
+        scoring_rules,
+        holdout_weeks=holdout_weeks,
+    )
+    if primary_model_id is not None and eval_metrics.get("n"):
+        sample_n = int(eval_metrics["n"])
+        if eval_metrics.get("dfs_points_mae") is not None:
+            _insert_evaluation(
+                hook,
+                model_id=primary_model_id,
+                metric="dfs_points_mae",
+                metric_value=float(eval_metrics["dfs_points_mae"]),
+                sample_count=sample_n,
+            )
+        if eval_metrics.get("dfs_points_rmse") is not None:
+            _insert_evaluation(
+                hook,
+                model_id=primary_model_id,
+                metric="dfs_points_rmse",
+                metric_value=float(eval_metrics["dfs_points_rmse"]),
+                sample_count=sample_n,
+            )
+        if eval_metrics.get("dfs_points_spearman") is not None:
+            _insert_evaluation(
+                hook,
+                model_id=primary_model_id,
+                metric="dfs_points_spearman",
+                metric_value=float(eval_metrics["dfs_points_spearman"]),
+                sample_count=sample_n,
+            )
+    elif dfs_mae is not None and primary_model_id is not None:
         _insert_evaluation(
             hook,
             model_id=primary_model_id,
@@ -644,6 +671,7 @@ def _train_scope(
         "trained_models": written,
         "primary_model_id": primary_model_id,
         "dfs_points_mae": dfs_mae,
+        "holdout_eval": eval_metrics,
         "n_rows": len(rows),
     }
 
