@@ -60,7 +60,8 @@ the DraftKings slate. Concretely:
 | `catchup` | `False` |
 | `max_active_runs` | `1` |
 
-Total tasks: **5** (1 sensor + 4 Python tasks).
+Total tasks: **4** (1 sensor + 3 Python tasks). Walk-forward backtest is
+[`nascar.cup.machine_learning.backtest`](./cup.machine_learning.backtest.md).
 
 ## Upstream and downstream wiring
 
@@ -78,7 +79,6 @@ flowchart TB
   wait_aggregate_complete --> build_ml_training_snapshots
   build_ml_training_snapshots --> train_models_if_needed
   train_models_if_needed --> predict_upcoming_week
-  predict_upcoming_week --> run_ml_backtest
 ```
 
 ## Tasks
@@ -273,22 +273,8 @@ flowchart TB
   `r_fastest_laps`) use zero defaults when no model resolves. Per-target
   scope decisions are logged so it is easy to see which model was actually
   used for each prediction.
-- **Upstream:** `train_models_if_needed`. **Downstream:** `run_ml_backtest`.
-
-### `run_ml_backtest`
-
-- **Operator:** `PythonOperator`.
-- **Callable:** `run_ml_backtest_task` in
-  [include/nascar/ml/backtest_task.py](../../include/nascar/ml/backtest_task.py).
-- **Behavior:** when `FS_ML_RUN_BACKTEST` is set, runs
-  `run_walk_forward_backtest` in
-  [include/nascar/ml/backtest.py](../../include/nascar/ml/backtest.py)
-  over the most recent `FS_ML_BACKTEST_MAX_WEEKS` finished train weeks.
-  Each eval week trains on prior weeks with the same scope heuristic as
-  production, scores holdout DFS-point MAE/RMSE/Spearman, and logs an
-  overall summary. When the env var is unset, returns `skipped=true` so
-  hourly runs stay cheap.
-- **Upstream:** `predict_upcoming_week`. **Downstream:** none.
+- **Upstream:** `train_models_if_needed`. **Downstream:** none (lineup DAG and
+  [cup.machine_learning.backtest](./cup.machine_learning.backtest.md) sensor this task).
 
 ## Data sources and sinks
 
@@ -354,11 +340,8 @@ flowchart TB
     into the aggregate DAG week load list (see `nascar.cup.aggregate`).
   - `FS_ML_REBUILD_WEEK_IDS` — comma-separated `week_id` values merged
     into the ML snapshot builder's finished-week list for one-off rebuilds.
-  - `FS_ML_RUN_BACKTEST` — when `1` / `true` / `yes` / `on`, the
-    `run_ml_backtest` task executes a walk-forward backtest over recent
-    finished weeks; otherwise the task no-ops with `skipped=true`.
-  - `FS_ML_BACKTEST_MAX_WEEKS` — int, defaults to `12`. Caps how many of
-    the most recent finished weeks participate in the walk-forward loop.
+  - Walk-forward backtest env vars (`FS_ML_BACKTEST_MAX_WEEKS`, etc.) — see
+    [cup.machine_learning.backtest.md](./cup.machine_learning.backtest.md).
 - **Python deps:** `scikit-learn`, `xgboost`, `boruta` (see
   [pyproject.toml](../../pyproject.toml)).
 

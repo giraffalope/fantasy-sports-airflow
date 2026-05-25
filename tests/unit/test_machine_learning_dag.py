@@ -15,7 +15,6 @@ _EXPECTED_TASK_IDS = frozenset(
         "build_ml_training_snapshots",
         "train_models_if_needed",
         "predict_upcoming_week",
-        "run_ml_backtest",
     }
 )
 
@@ -49,7 +48,6 @@ def test_linear_task_chain() -> None:
     build = dag.get_task("build_ml_training_snapshots")
     train = dag.get_task("train_models_if_needed")
     predict = dag.get_task("predict_upcoming_week")
-    backtest = dag.get_task("run_ml_backtest")
 
     assert wait.downstream_task_ids == {build.task_id}
     assert build.upstream_task_ids == {wait.task_id}
@@ -57,6 +55,4 @@ def test_linear_task_chain() -> None:
     assert train.upstream_task_ids == {build.task_id}
     assert train.downstream_task_ids == {predict.task_id}
     assert predict.upstream_task_ids == {train.task_id}
-    assert predict.downstream_task_ids == {backtest.task_id}
-    assert backtest.upstream_task_ids == {predict.task_id}
-    assert backtest.downstream_task_ids == set()
+    assert predict.downstream_task_ids == set()
