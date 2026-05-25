@@ -75,6 +75,28 @@ def test_lineup_import_sql_uses_tmp_car_and_does_not_write_entities() -> None:
     assert "INSERT INTO nascar.cars_drivers" not in lineup_sql
 
 
+def test_lineup_import_sql_does_not_delete_races() -> None:
+    lineup_sql = _sql_text("import_lineup_staging_into_db.sql")
+    assert "DELETE FROM nascar.races" not in lineup_sql
+
+
+def test_lineup_import_sql_writes_start_position_not_finish() -> None:
+    lineup_sql = _sql_text("import_lineup_staging_into_db.sql")
+    assert "INSERT INTO nascar.race_results (race_id, car_driver_id, start_position)" in lineup_sql
+    assert "CAST(stg.start AS UNSIGNED) AS start_position" in lineup_sql
+    assert "CAST(stg.start AS UNSIGNED) AS finish_position" not in lineup_sql
+    assert "ON DUPLICATE KEY UPDATE" in lineup_sql
+    assert "start_position = VALUES(start_position)" in lineup_sql
+    assert "total_laps_completed IS NULL" in lineup_sql
+    assert (
+        "DELETE rr\nFROM nascar.race_results rr\nINNER JOIN nascar.races r\n"
+        "    ON r.id = rr.race_id\nWHERE r.week_id = {{ week_id }}\n"
+        "    AND r.deleted_at IS NULL\n"
+        "    AND rr.deleted_at IS NULL\n"
+        "    AND rr.total_laps_completed IS NULL"
+    ) in lineup_sql
+
+
 def test_downstream_sql_requires_car_driver_id_for_fact_inserts() -> None:
     practice_sql = _sql_text("import_practice_staging_into_db.sql")
     qualifying_sql = _sql_text("import_qualifying_staging_into_db.sql")

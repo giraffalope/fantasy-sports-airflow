@@ -120,26 +120,53 @@ class TestTrainModelsIfNeededScopedLoads:
     def test_scoped_loads_not_monolithic_snapshot_list(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from include.nascar.cup.current_week import SeriesCurrentWeekTrackContext
+
         train_task = _import_train_task()
         hook = MagicMock()
         hook.get_records.side_effect = [
-            [(7, '{"version": 1, "components": []}')],  # _active_rules
-            [(200,)],  # _latest_train_week
-            [(100,)],  # _max_covered_train_week (needs retrain)
-            [(1,)],  # _distinct_series_ids
-            [('["r_start_position", "cd_pt_finish_avg"]',)],  # feature_keys
-            [(10,)],  # _tracks_meeting_threshold
-            [],  # _track_types_meeting_threshold
+            [(7, '{"version": 1, "components": []}')],
+            [(1,)],
+            [('["r_start_position", "cd_pt_finish_avg"]',)],
         ]
 
         load_calls: list[dict[str, Any]] = []
+        ctx = SeriesCurrentWeekTrackContext(series_id=1, track_id=10, track_type_id=2)
 
         def _fake_load(**kwargs: Any) -> list[dict]:
             load_calls.append(dict(kwargs))
-            return []
+            return [{"ml_training_snapshot_id": 1, "week_id": 100}]
 
         monkeypatch.setattr(train_task, "NascarMySqlHook", lambda **_: hook)
+        monkeypatch.setattr(
+            train_task,
+            "resolve_series_current_week",
+            lambda h, *, series_id: MagicMock(),
+        )
+        monkeypatch.setattr(train_task, "_latest_train_week_for_retrain_gate", lambda h, r: 200)
+        monkeypatch.setattr(
+            train_task,
+            "resolve_current_week_track_context",
+            lambda h, *, series_id: ctx,
+        )
+        monkeypatch.setattr(train_task, "latest_train_week_for_retrain", lambda h, **k: 200)
+        monkeypatch.setattr(
+            train_task,
+            "_predict_routing_chain",
+            lambda *a, **k: [train_task.ScopeSpec(train_task.SCOPE_TRACK, 10, None)],
+        )
+        monkeypatch.setattr(train_task, "_predict_ready", lambda *a, **k: False)
+        monkeypatch.setattr(
+            train_task,
+            "_scopes_needing_refresh",
+            lambda *a, **k: [train_task.ScopeSpec(train_task.SCOPE_TRACK, 10, None)],
+        )
         monkeypatch.setattr(train_task, "load_training_frame", _fake_load)
+        monkeypatch.setattr(
+            train_task,
+            "_train_scope",
+            lambda **kw: {"trained_models": {}, "scope": kw.get("scope")},
+        )
         monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "0")
 
         result = train_task.train_models_if_needed_task()

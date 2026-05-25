@@ -4,9 +4,10 @@
 
 ``build_weeks_to_aggregate_sql`` — per-task week selection for wave-1 / wave-2 loaders:
 
-- **Historical** (``week_id < current_week`` with a completed race): include when the
-  target ``agg_*`` table has no rows for that week.
-- **Current week**: always refresh every run (from ``v_series_current_week``).
+- **Weeks in scope**: only weeks that already have rows in ``agg_week_results``
+  (current week or historical before ``current_week``).
+- **Historical**: include when the target ``agg_*`` table has no rows for that week.
+- **Current week**: always refresh every run when base agg has rows.
 
 ``load_agg_week_results`` (proc 6019) uses the same view for ``current_week``.
 """
@@ -99,24 +100,14 @@ WITH current_week AS (
     WHERE series_id = %s
 ),
 weeks_in_scope AS (
-    SELECT DISTINCT s.series_id, w.id AS week_id
-    FROM nascar.weeks w
-    JOIN nascar.seasons s ON w.season_id = s.id AND s.deleted_at IS NULL
-    JOIN current_week cw ON cw.week_id IS NOT NULL
-    WHERE s.series_id = %s
-      AND w.deleted_at IS NULL
+    SELECT DISTINCT awr.series_id, awr.week_id
+    FROM nascar.agg_week_results awr
+    JOIN current_week cw ON cw.series_id = awr.series_id
+    WHERE awr.deleted_at IS NULL
+      AND awr.series_id = %s
       AND (
-          w.id = cw.week_id
-          OR (
-              w.id < cw.week_id
-              AND EXISTS (
-                  SELECT 1
-                  FROM nascar.race_results rr
-                  JOIN nascar.races r ON rr.race_id = r.id AND r.deleted_at IS NULL
-                  WHERE rr.deleted_at IS NULL
-                    AND r.week_id = w.id
-              )
-          )
+          awr.week_id = cw.week_id
+          OR awr.week_id < cw.week_id
       )
 )
 SELECT DISTINCT wr.series_id, wr.week_id

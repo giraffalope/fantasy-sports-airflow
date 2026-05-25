@@ -322,9 +322,17 @@ below, the conventions used by every pair are summarized once here:
 
 - **Operator:** `PythonOperator`.
 - **Callable:** `import_lineup`.
-- **Behavior:** combines the staged lineup + entrylist rows and writes the
-  per-week starting grid into the canonical lineup table. Drives the ML
-  DAG's prediction snapshots (needs `r_start_position` populated).
+- **Behavior:** stages the FRCS starting grid into `nascar.race_results` via
+  [`import_lineup_staging_into_db.sql`](../dags/sql/nascar.cup.importer/import_lineup_staging_into_db.sql):
+  ensures a `races` row with `INSERT … WHERE NOT EXISTS` (does **not** delete
+  `races` — deleting would CASCADE-remove `dfs_salaries` for the week).
+  Sets **`start_position`** from `stg.start` only (leaves **`finish_position`**
+  null until `import_races`). Uses `ON DUPLICATE KEY UPDATE` on
+  `(race_id, car_driver_id)` and deletes only lineup-only shells
+  (`total_laps_completed IS NULL`) so a re-run does not wipe post-race rows.
+  This populates `agg_week_results.r_start_position` after aggregate and
+  enables ML predict snapshots (`r_start_position` set, `r_finish_position`
+  null while the race is open).
 - **Upstream:** `import_qualifyings`. **Downstream:** `import_races`.
 
 ### `import_races`

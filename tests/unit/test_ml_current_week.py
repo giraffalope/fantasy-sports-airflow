@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from include.nascar.cup.current_week import (
+    _CURRENT_WEEK_TRACK_CONTEXT_SQL,
     _LATEST_TRAIN_WEEK_FOR_RETRAIN_SQL,
     _WEEK_ELIGIBLE_FOR_PREDICT_SQL,
     latest_train_week_for_retrain,
@@ -17,6 +18,10 @@ from include.nascar.ml.snapshot_config import SNAPSHOT_KIND_TRAIN
 def test_week_eligible_for_predict_sql_shape() -> None:
     assert "r_start_position IS NOT NULL" in _WEEK_ELIGIBLE_FOR_PREDICT_SQL
     assert "r_finish_position IS NULL" in _WEEK_ELIGIBLE_FOR_PREDICT_SQL
+
+
+def test_current_week_track_context_sql_uses_view() -> None:
+    assert "v_series_current_week" in _CURRENT_WEEK_TRACK_CONTEXT_SQL
 
 
 def test_latest_train_week_for_retrain_sql_uses_both_views() -> None:

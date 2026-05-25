@@ -35,14 +35,20 @@ task skips with a log when DK salaries are missing for the predict snapshot’s 
 
 ## Skip conditions
 
-The generate task returns `{"skipped": true, "reason": ...}` when any of:
+Skip paths log at WARNING with `reason=…`. The generate task returns
+`{"skipped": true, "reason": ...}` when any of:
 
 - No active `dfs_scoring_rules` for DraftKings
 - No latest `kind='predict'` snapshot
 - Zero `ml_predictions` for that snapshot
 - No `races` row for snapshot `week_id`
-- No active `dfs_salaries` for `(dfs_id=1, race_id)`
-- Player pool smaller than lineup size (default 6)
+- No active `dfs_salaries` for DraftKings on that `week_id` (join via `races`)
+- Player pool smaller than lineup size (default 6) — inner join of predictions + salaries
+- Optimizer finds zero feasible lineups under salary cap (`no_feasible_lineups`)
+
+Parent lineup rows use `NascarMySqlHook.run_insert_returning_id` (not
+`LAST_INSERT_ID()` on a pooled connection) so child `dfs_race_lineups_car_drivers`
+rows get a valid `dfs_race_lineup_id`.
 
 ## Optimizer
 

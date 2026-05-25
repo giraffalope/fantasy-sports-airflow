@@ -1,8 +1,3 @@
-DELETE FROM nascar.races
-WHERE week_id = {{ week_id }};
-
----
-
 INSERT INTO nascar.races (week_id)
 SELECT {{ week_id }}
 WHERE NOT EXISTS (
@@ -15,29 +10,30 @@ WHERE NOT EXISTS (
 
 ---
 
--- Lineup re-runs: ``ON DUPLICATE KEY UPDATE`` does not dedupe two rows in the *same* INSERT that
--- share (race_id, finish_position) or (race_id, car_driver_id). Clear this week’s results first, then
--- insert a clean set (see ``rn_pos`` / ``rn_driver`` below).
+-- Lineup re-runs: remove prior lineup-only shells (no race stats). Post-race rows from
+-- ``import_races`` keep ``total_laps_completed`` and are not deleted here.
 DELETE rr
 FROM nascar.race_results rr
 INNER JOIN nascar.races r
     ON r.id = rr.race_id
 WHERE r.week_id = {{ week_id }}
     AND r.deleted_at IS NULL
+    AND rr.deleted_at IS NULL
+    AND rr.total_laps_completed IS NULL
 ;
 
 ---
 
-INSERT INTO nascar.race_results (race_id, car_driver_id, finish_position)
+INSERT INTO nascar.race_results (race_id, car_driver_id, start_position)
 SELECT
     lineup_rr.race_id,
     lineup_rr.car_driver_id,
-    lineup_rr.finish_position
+    lineup_rr.start_position
 FROM (
     SELECT
         r.id AS race_id,
         COALESCE(tc_num.car_driver_id, tc_driver.car_driver_id) AS car_driver_id,
-        CAST(stg.start AS UNSIGNED) AS finish_position,
+        CAST(stg.start AS UNSIGNED) AS start_position,
         ROW_NUMBER() OVER (
             PARTITION BY r.id, CAST(stg.start AS UNSIGNED)
             ORDER BY COALESCE(tc_num.car_driver_id, tc_driver.car_driver_id), stg.driver_name, stg.number
@@ -61,4 +57,6 @@ FROM (
 ) lineup_rr
 WHERE lineup_rr.rn_pos = 1
     AND lineup_rr.rn_driver = 1
+ON DUPLICATE KEY UPDATE
+    start_position = VALUES(start_position)
 ;

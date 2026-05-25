@@ -148,35 +148,25 @@ flowchart TB
   3. Reads the latest train `week_id` capped to weeks in
      `v_series_before_current_week` or the current week (finished live
      week train snapshots). Skips with `no_training_snapshots` if empty.
-  4. Reads `MAX(s.week_id)` joined through `ml_model_training_snapshots →
-     ml_training_snapshots`. If the covered week is already at or beyond
-     that latest train week, returns `no_new_finished_weeks` without
-     retraining.
+  4. For each series with a current week, builds the same predict routing
+     chain as `predict_upcoming_week` (`track` → `track_type` → `global`).
+     Skips with `predict_ready` when the **first** scope in that chain
+     already exists and is trained through `latest_train_week` (per-scope
+     `MAX(week_id)` via `ml_model_training_snapshots`, not a global max
+     across all venues).
   5. Reads the feature allowlist from `ml_training_snapshots.feature_keys`
      on the latest train snapshot for the active rules version (no full-table
      scan of every row's `features_json`).
-  6. **Per-series, per-scope training loop** with **scoped SQL loads** via
-     `load_training_frame(dfs_scoring_rules_id=..., series_id=..., ...)`.
-     Each `(track_id)` / `(track_type_id)` / global bucket loads only its rows,
-     trains, then drops the frame before the next scope — avoiding a single
-     query with hundreds of snapshot ids and ~24k parsed JSON blobs in memory.
-     Rows are ordered by `week_id` for chronological `TimeSeriesSplit`.
-     Each row carries `series_id`, `track_id`, and `track_type_id`
-     (canonical primary type from `tracks_track_types`). Within each series:
-     - SQL discovers `track_id` / `track_type_id` buckets with at least
-       `FS_ML_MIN_TRACK_WEEKS` / `FS_ML_MIN_TYPE_WEEKS` distinct finished
-       weeks. Global scope is gated behind `FS_ML_ENABLE_GLOBAL_FALLBACK` and
-       may be capped with `FS_ML_MAX_TRAIN_WEEKS` (most recent N weeks only).
-     - For each bucket, build a per-scope feature allowlist from
-       `model_scope.features_for_scope`:
-       `*_pt_*` + anchors for `track`, `*_tt_<track_type_id>_*` + anchors
-       for `track_type`, everything for `global`.
-     - For each target in `DEFAULT_TARGETS` (`r_finish_position`,
-       `r_total_fastest_laps`, `r_total_laps_led`) call
-       `train_models_for_targets(rows, feature_allowlist=...)`. Boruta runs
-       on the allowlist subset, then `tune_xgb` (`RandomizedSearchCV` +
-       `TimeSeriesSplit`), then a final `XGBRegressor` fit. MAE on the
-       trailing `FS_ML_HOLDOUT_WEEKS` (default `1`) weeks is recorded.
+  6. **Incremental refresh** for the current week's venue only: resolves
+     `track_id` / `track_type_id` from `v_series_current_week` + `weeks`, then
+     trains the **first** scope in the predict chain that is missing or stale
+     (typically one scope per series per run). Cold tracks (below
+     `FS_ML_MIN_TRACK_WEEKS`) are omitted from the chain; predict falls
+     through to track_type / global. Scoped SQL loads via
+     `load_training_frame`; rows are ordered by `week_id` for
+     `TimeSeriesSplit`. Global scope respects `FS_ML_ENABLE_GLOBAL_FALLBACK`
+     and optional `FS_ML_MAX_TRAIN_WEEKS`.
+     For each target in `DEFAULT_TARGETS` call `train_models_for_targets`.
   7. Persists artifacts to `<FS_ML_ARTIFACT_ROOT>/<model_id>/<target>.json`
      and writes:
      - `ml_feature_sets` — `target_keys=[target]`, `selected_features`,
@@ -194,18 +184,18 @@ flowchart TB
   `dfs_scoring_rules`.
 - **Outputs:** rows in `ml_feature_sets`, `ml_models`,
   `ml_model_training_snapshots`, `ml_model_evaluations`; serialized XGBoost
-  artifacts on disk; returns a dict with `scope_results` (one entry per
-  trained `(scope, group)`), `latest_train_week`, `covered_week`, and
-  (when skipped) the skip reason.
+  artifacts on disk; returns a dict with `scope_results`, `series_contexts`
+  (current track / predict routing chain), `latest_train_week`, and
+  (when skipped) the skip reason (`predict_ready`, `no_eligible_scopes`, etc.).
 - **Upstream:** `build_ml_training_snapshots`. **Downstream:**
   `predict_upcoming_week`.
 - **Failure notes:** RandomizedSearchCV defaults can be capped via
   `FS_ML_TUNE_N_ITER` and `FS_ML_TUNE_CV_SPLITS`, and tuning can be
   short-circuited entirely with `FS_ML_TUNE_DISABLE=1` (the run still
   records `tuning_skipped=True` in `ml_feature_sets.boruta_metadata`).
-  Buckets that fall under the min-week threshold are silently skipped — a
-  rare-track-type (e.g. road course in early season) simply does not get a
-  scoped model until enough weeks accumulate.
+  Models for non-current venues are not refreshed each run; they age until
+  that track is current again. Goal is predict success on the current week,
+  not keeping every venue's model fresh.
 
 ### `predict_upcoming_week`
 

@@ -81,11 +81,11 @@ shared behavior is captured once here:
 - **Parameters factory:** `aggregate_load_parameters` (also in
   [include/nascar/cup/aggregate_load.py](../../include/nascar/cup/aggregate_load.py))
   runs per-task SQL (`build_weeks_to_aggregate_sql`) against `nascar_conn`.
-  **Current week** comes from `v_series_current_week` and is always included.
-  **Historical weeks** (before `current_week`) with a completed race
-  (`race_results`) are included only when that wave task's target `agg_*` table
-  has no rows for the week. Once history is complete, steady-state runs refresh
-  only `current_week` (per task). When the list is empty, Jinja emits no
+  **Weeks in scope** are those with rows in `agg_week_results` (current week or
+  historical before `current_week`). **Current week** is always reloaded when
+  base agg exists. **Historical weeks** are included only when that wave task's
+  target `agg_*` table has no rows for the week. Once history is complete,
+  steady-state runs refresh only `current_week` (per task). When the list is empty, Jinja emits no
   `CALL`s. Set
   `FS_AGG_REBUILD_ALL_WEEKS=1` to use `FINISHED_AGG_WEEKS_SQL` (all finished
   weeks) for a manual full rebuild.
@@ -123,9 +123,12 @@ shared behavior is captured once here:
   (`current_week` from `v_series_current_week`).
   Historical weeks with existing base rows are not re-merged on hourly runs.
   The proc `DELETE`s existing rows for weeks it is about to re-insert, then
-  runs the existing `INSERT … SELECT`.
+  runs the existing `INSERT … SELECT`. Race rows qualify when
+  `finish_position` or `start_position` is set (finished races and open-race
+  grid for ML predict).
 - **Behavior:** rebuilds the per-week per-car_driver row that downstream
-  loaders join against. Columns include `r_start_position`, `r_finish_position`,
+  wave-1 / `agg_week_prev*` loaders and ML join against. Columns include
+  `r_start_position`, `r_finish_position`,
   `r_place_diff`, `r_total_fastest_laps`, `r_total_laps_led`, and other
   per-driver per-race counters consumed by the ML pipeline. **Deploy** the
   updated proc DDL to MariaDB after changing

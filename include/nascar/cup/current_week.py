@@ -39,6 +39,41 @@ class SeriesCurrentWeek:
     week_season_number: int | None
 
 
+@dataclass(frozen=True)
+class SeriesCurrentWeekTrackContext:
+    series_id: int
+    track_id: int
+    track_type_id: int | None
+
+
+_CURRENT_WEEK_TRACK_CONTEXT_SQL = """
+SELECT w.track_id, MIN(tt.track_type_id) AS track_type_id
+FROM nascar.v_series_current_week v
+JOIN nascar.weeks w ON w.id = v.week_id AND w.deleted_at IS NULL
+LEFT JOIN nascar.tracks_track_types tt
+  ON tt.track_id = w.track_id AND tt.deleted_at IS NULL
+WHERE v.series_id = %s
+GROUP BY w.track_id
+LIMIT 1
+"""
+
+
+def resolve_current_week_track_context(
+    hook: NascarMySqlHook,
+    *,
+    series_id: int,
+) -> SeriesCurrentWeekTrackContext | None:
+    rows = hook.get_records(_CURRENT_WEEK_TRACK_CONTEXT_SQL, parameters=(series_id,))
+    if not rows:
+        return None
+    track_id, track_type_id = rows[0]
+    return SeriesCurrentWeekTrackContext(
+        series_id=int(series_id),
+        track_id=int(track_id),
+        track_type_id=int(track_type_id) if track_type_id is not None else None,
+    )
+
+
 def resolve_series_current_week(
     hook: NascarMySqlHook,
     *,

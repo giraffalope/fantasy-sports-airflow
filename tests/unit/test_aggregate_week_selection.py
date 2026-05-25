@@ -25,12 +25,13 @@ def test_build_weeks_to_aggregate_per_table_not_exists() -> None:
     assert "NOT EXISTS" in sql
 
 
-def test_build_weeks_to_aggregate_historical_race_only_in_scope() -> None:
+def test_build_weeks_to_aggregate_scope_uses_agg_week_results() -> None:
     sql = build_weeks_to_aggregate_sql("agg_week_teams_results")
     scope_idx = sql.index("weeks_in_scope AS")
     scope_block = sql[scope_idx : sql.index("SELECT DISTINCT wr.series_id")]
-    assert "w.id < cw.week_id" in scope_block
-    assert "race_results" in scope_block
+    assert "nascar.agg_week_results awr" in scope_block
+    assert "awr.week_id < cw.week_id" in scope_block
+    assert "race_results" not in scope_block
 
 
 def test_build_weeks_to_aggregate_final_filter_current_or_missing() -> None:

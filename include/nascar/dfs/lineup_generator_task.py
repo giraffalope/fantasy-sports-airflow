@@ -42,10 +42,13 @@ WHERE ml_training_snapshot_id = %s
 
 _SALARIES_EXIST_SQL = """
 SELECT 1
-FROM nascar.dfs_salaries
-WHERE dfs_id = %s
-  AND race_id = %s
-  AND deleted_at IS NULL
+FROM nascar.dfs_salaries ds
+JOIN nascar.races r
+  ON r.id = ds.race_id
+ AND r.deleted_at IS NULL
+WHERE ds.dfs_id = %s
+  AND r.week_id = %s
+  AND ds.deleted_at IS NULL
 LIMIT 1
 """
 
@@ -58,9 +61,12 @@ SELECT
 FROM nascar.ml_predictions mp
 JOIN nascar.dfs_salaries ds
   ON ds.car_driver_id = mp.car_driver_id
- AND ds.race_id = %s
  AND ds.dfs_id = %s
  AND ds.deleted_at IS NULL
+JOIN nascar.races r
+  ON r.id = ds.race_id
+ AND r.week_id = %s
+ AND r.deleted_at IS NULL
 WHERE mp.ml_training_snapshot_id = %s
   AND mp.deleted_at IS NULL
 """
@@ -77,11 +83,11 @@ def _load_player_pool(
     hook: NascarMySqlHook,
     *,
     snapshot_id: int,
-    race_id: int,
+    week_id: int,
 ) -> list[LineupPlayer]:
     rows = hook.get_records(
         _PLAYER_POOL_SQL,
-        parameters=(race_id, DRAFTKINGS_DFS_ID, snapshot_id),
+        parameters=(DRAFTKINGS_DFS_ID, week_id, snapshot_id),
     )
     players: list[LineupPlayer] = []
     for car_driver_id, salary, dfs_driver_id, predicted_points in rows:
@@ -129,7 +135,7 @@ def _insert_lineup(
     projected_total = round(sum(p.projected_points for p in picked), 2)
     salary_total = sum(p.salary for p in picked)
 
-    hook.run(
+    lineup_id = hook.run_insert_returning_id(
         """
         INSERT INTO nascar.dfs_race_lineups (
             dfs_id, race_id, strategy, projected_points_total, salary_total
@@ -137,8 +143,6 @@ def _insert_lineup(
         """,
         parameters=(dfs_id, race_id, strategy, projected_total, salary_total),
     )
-    lineup_id_rows = hook.get_records("SELECT LAST_INSERT_ID()")
-    lineup_id = int(lineup_id_rows[0][0])
 
     for player in picked:
         hook.run(
@@ -168,11 +172,14 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
 
     rules = _active_rules(hook, DRAFTKINGS_DFS_ID)
     if rules is None:
+        _LOG.warning("generate_draftkings_lineups: skipped reason=no_active_rules")
         return {"skipped": True, "reason": "no_active_rules"}
+
     rules_id, _rules = rules
 
     snapshot = _latest_predict_snapshot(hook, rules_id)
     if snapshot is None:
+        _LOG.warning("generate_draftkings_lineups: skipped reason=no_predict_snapshot")
         return {"skipped": True, "reason": "no_predict_snapshot"}
 
     pred_rows = hook.get_records(
@@ -181,26 +188,48 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
     )
     prediction_count = int(pred_rows[0][0]) if pred_rows else 0
     if prediction_count <= 0:
+        _LOG.warning(
+            "generate_draftkings_lineups: skipped reason=no_ml_predictions snapshot_id=%s",
+            snapshot["id"],
+        )
         return {"skipped": True, "reason": "no_ml_predictions", "snapshot_id": snapshot["id"]}
 
-    race_id = _race_id_for_week(hook, snapshot["week_id"])
+    week_id = snapshot["week_id"]
+    race_id = _race_id_for_week(hook, week_id)
     if race_id is None:
-        return {"skipped": True, "reason": "no_race_for_week", "week_id": snapshot["week_id"]}
+        _LOG.warning(
+            "generate_draftkings_lineups: skipped reason=no_race_for_week week_id=%s",
+            week_id,
+        )
+        return {"skipped": True, "reason": "no_race_for_week", "week_id": week_id}
 
     salary_rows = hook.get_records(
         _SALARIES_EXIST_SQL,
-        parameters=(DRAFTKINGS_DFS_ID, race_id),
+        parameters=(DRAFTKINGS_DFS_ID, week_id),
     )
     if not salary_rows:
-        return {"skipped": True, "reason": "no_dk_salaries", "race_id": race_id}
+        _LOG.warning(
+            "generate_draftkings_lineups: skipped reason=no_dk_salaries week_id=%s race_id=%s",
+            week_id,
+            race_id,
+        )
+        return {"skipped": True, "reason": "no_dk_salaries", "week_id": week_id, "race_id": race_id}
 
-    players = _load_player_pool(hook, snapshot_id=snapshot["id"], race_id=race_id)
+    players = _load_player_pool(hook, snapshot_id=snapshot["id"], week_id=week_id)
     if len(players) < dk_lineup_size():
+        _LOG.warning(
+            "generate_draftkings_lineups: skipped reason=insufficient_player_pool "
+            "pool_size=%s required=%s week_id=%s",
+            len(players),
+            dk_lineup_size(),
+            week_id,
+        )
         return {
             "skipped": True,
             "reason": "insufficient_player_pool",
             "pool_size": len(players),
             "required": dk_lineup_size(),
+            "week_id": week_id,
         }
 
     lineup_size = dk_lineup_size()
@@ -243,10 +272,33 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
             min_diff,
         )
 
+    total_inserted = sum(inserted_by_strategy.values())
+    if total_inserted == 0:
+        _LOG.warning(
+            "generate_draftkings_lineups: skipped reason=no_feasible_lineups "
+            "race_id=%s pool_size=%s salary_cap=%s",
+            race_id,
+            len(players),
+            salary_cap,
+        )
+        return {
+            "skipped": True,
+            "reason": "no_feasible_lineups",
+            "snapshot_id": snapshot["id"],
+            "race_id": race_id,
+            "week_id": week_id,
+            "pool_size": len(players),
+            "lineup_size": lineup_size,
+            "salary_cap": salary_cap,
+            "top_k": top_k,
+            "lineups_inserted": inserted_by_strategy,
+        }
+
     return {
         "skipped": False,
         "snapshot_id": snapshot["id"],
         "race_id": race_id,
+        "week_id": week_id,
         "pool_size": len(players),
         "lineup_size": lineup_size,
         "salary_cap": salary_cap,

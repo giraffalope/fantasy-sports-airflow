@@ -1,21 +1,11 @@
-"""Airflow callable: train scoped XGBoost regressors when new finished Cup weeks appear.
+"""Airflow callable: train scoped XGBoost regressors for predict on the current week.
 
-For each (scope, target) pair we slice the training frame, run Boruta + tuning
-on the appropriate feature allowlist, fit the regressor, and persist a row in
-``ml_models`` keyed by ``model_scope`` / ``track_id`` / ``track_type_id``:
-
-- ``track`` scope: one model per ``track_id`` with at least
-  ``FS_ML_MIN_TRACK_WEEKS`` finished weeks.
-- ``track_type`` scope: one model per ``track_type_id`` with at least
-  ``FS_ML_MIN_TYPE_WEEKS`` finished weeks (used when an upcoming race lacks
-  enough history at its track for a per-track model).
-- ``global`` scope: legacy fallback, retained for safety while per-track models
-  warm up. Disable via ``FS_ML_ENABLE_GLOBAL_FALLBACK=0``.
-
-The task short-circuits when ``ml_model_training_snapshots`` already covers the
-latest train week through ``v_series_before_current_week`` and
-``v_series_current_week`` for every scope/target combo that has enough history
-to train, so we don't refit every hour.
+When new finished weeks appear, this task refreshes only the models
+``predict_upcoming_week`` needs for the current week's venue: walk the same
+``track`` -> ``track_type`` -> ``global`` chain as predict, skip when the first
+usable scope is already trained through ``latest_train_week``, and fit scopes
+that are missing or stale. Cold tracks (below ``FS_ML_MIN_TRACK_WEEKS``) are
+omitted from the chain; predict falls through to track_type / global.
 """
 
 from __future__ import annotations
@@ -25,11 +15,13 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 from include.nascar.cup.current_week import (
+    SeriesCurrentWeekTrackContext,
     latest_train_week_for_retrain,
+    resolve_current_week_track_context,
     resolve_series_current_week,
 )
 from include.nascar.enums import NascarSeries
@@ -99,22 +91,10 @@ def _latest_train_week_for_retrain_gate(
     )
 
 
-def _max_covered_train_week(hook: NascarMySqlHook, rules_id: int) -> int | None:
-    rows = hook.get_records(
-        """
-        SELECT MAX(s.week_id)
-        FROM nascar.ml_model_training_snapshots mts
-        JOIN nascar.ml_training_snapshots s ON s.id = mts.ml_training_snapshot_id
-        JOIN nascar.ml_models m ON m.id = mts.ml_model_id AND m.deleted_at IS NULL
-        WHERE s.deleted_at IS NULL
-          AND s.kind = %s
-          AND s.dfs_scoring_rules_id = %s
-        """,
-        parameters=(SNAPSHOT_KIND_TRAIN, rules_id),
-    )
-    if not rows or rows[0][0] is None:
-        return None
-    return int(rows[0][0])
+class ScopeSpec(NamedTuple):
+    scope: str
+    track_id: int | None
+    track_type_id: int | None
 
 
 def _distinct_series_ids(hook: NascarMySqlHook, rules_id: int) -> list[int]:
@@ -132,38 +112,41 @@ def _distinct_series_ids(hook: NascarMySqlHook, rules_id: int) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-def _tracks_meeting_threshold(
+def _track_meets_threshold(
     hook: NascarMySqlHook,
     rules_id: int,
     series_id: int,
+    track_id: int,
     min_weeks: int,
-) -> list[int]:
+) -> bool:
     rows = hook.get_records(
         """
-        SELECT s.track_id
+        SELECT 1
         FROM nascar.ml_training_snapshots s
         WHERE s.kind = %s
           AND s.dfs_scoring_rules_id = %s
           AND s.series_id = %s
+          AND s.track_id = %s
           AND s.deleted_at IS NULL
         GROUP BY s.track_id
         HAVING COUNT(DISTINCT s.week_id) >= %s
-        ORDER BY s.track_id ASC
+        LIMIT 1
         """,
-        parameters=(SNAPSHOT_KIND_TRAIN, rules_id, series_id, min_weeks),
+        parameters=(SNAPSHOT_KIND_TRAIN, rules_id, series_id, track_id, min_weeks),
     )
-    return [int(r[0]) for r in rows]
+    return bool(rows)
 
 
-def _track_types_meeting_threshold(
+def _track_type_meets_threshold(
     hook: NascarMySqlHook,
     rules_id: int,
     series_id: int,
+    track_type_id: int,
     min_weeks: int,
-) -> list[int]:
+) -> bool:
     rows = hook.get_records(
         """
-        SELECT tt.track_type_id
+        SELECT 1
         FROM nascar.ml_training_snapshots s
         JOIN (
             SELECT track_id, MIN(track_type_id) AS track_type_id
@@ -175,14 +158,185 @@ def _track_types_meeting_threshold(
           AND s.dfs_scoring_rules_id = %s
           AND s.series_id = %s
           AND s.deleted_at IS NULL
-          AND tt.track_type_id IS NOT NULL
+          AND tt.track_type_id = %s
         GROUP BY tt.track_type_id
         HAVING COUNT(DISTINCT s.week_id) >= %s
-        ORDER BY tt.track_type_id ASC
+        LIMIT 1
         """,
-        parameters=(SNAPSHOT_KIND_TRAIN, rules_id, series_id, min_weeks),
+        parameters=(SNAPSHOT_KIND_TRAIN, rules_id, series_id, track_type_id, min_weeks),
     )
-    return [int(r[0]) for r in rows]
+    return bool(rows)
+
+
+def _scope_covered_week(
+    hook: NascarMySqlHook,
+    rules_id: int,
+    series_id: int,
+    scope: str,
+    *,
+    track_id: int | None = None,
+    track_type_id: int | None = None,
+) -> int | None:
+    if scope == SCOPE_TRACK:
+        if track_id is None:
+            return None
+        scope_clause = "AND m.model_scope = %s AND m.track_id = %s"
+        scope_params: tuple[Any, ...] = (scope, int(track_id))
+    elif scope == SCOPE_TRACK_TYPE:
+        if track_type_id is None:
+            return None
+        scope_clause = "AND m.model_scope = %s AND m.track_type_id = %s"
+        scope_params = (scope, int(track_type_id))
+    elif scope == SCOPE_GLOBAL:
+        scope_clause = "AND m.model_scope = %s"
+        scope_params = (scope,)
+    else:
+        raise ValueError(f"unknown model_scope: {scope!r}")
+
+    rows = hook.get_records(
+        f"""
+        SELECT MAX(s.week_id)
+        FROM nascar.ml_model_training_snapshots mts
+        JOIN nascar.ml_training_snapshots s
+            ON s.id = mts.ml_training_snapshot_id AND s.deleted_at IS NULL
+        JOIN nascar.ml_models m
+            ON m.id = mts.ml_model_id AND m.deleted_at IS NULL
+        WHERE s.kind = %s
+          AND s.dfs_scoring_rules_id = %s
+          AND s.series_id = %s
+          {scope_clause}
+        """,
+        parameters=(SNAPSHOT_KIND_TRAIN, rules_id, series_id, *scope_params),
+    )
+    if not rows or rows[0][0] is None:
+        return None
+    return int(rows[0][0])
+
+
+def _scope_model_exists(
+    hook: NascarMySqlHook,
+    *,
+    series_id: int,
+    scope: str,
+    track_id: int | None,
+    track_type_id: int | None,
+    target: str = PRIMARY_TARGET,
+) -> bool:
+    if scope == SCOPE_TRACK:
+        if track_id is None:
+            return False
+        scope_clause = "AND m.model_scope = %s AND m.track_id = %s"
+        scope_params: tuple[Any, ...] = (scope, int(track_id))
+    elif scope == SCOPE_TRACK_TYPE:
+        if track_type_id is None:
+            return False
+        scope_clause = "AND m.model_scope = %s AND m.track_type_id = %s"
+        scope_params = (scope, int(track_type_id))
+    elif scope == SCOPE_GLOBAL:
+        scope_clause = "AND m.model_scope = %s"
+        scope_params = (scope,)
+    else:
+        raise ValueError(f"unknown model_scope: {scope!r}")
+
+    rows = hook.get_records(
+        f"""
+        SELECT 1
+        FROM nascar.ml_models m
+        JOIN nascar.ml_feature_sets fs
+            ON fs.id = m.ml_feature_set_id AND fs.deleted_at IS NULL
+        WHERE m.deleted_at IS NULL
+          AND m.series_id = %s
+          AND m.artifact_uri IS NOT NULL
+          AND JSON_CONTAINS(fs.target_keys, JSON_QUOTE(%s))
+          AND JSON_LENGTH(fs.target_keys) = 1
+          {scope_clause}
+        LIMIT 1
+        """,
+        parameters=(int(series_id), target, *scope_params),
+    )
+    return bool(rows)
+
+
+def _predict_routing_chain(
+    hook: NascarMySqlHook,
+    rules_id: int,
+    series_id: int,
+    ctx: SeriesCurrentWeekTrackContext,
+    *,
+    track_threshold: int,
+    type_threshold: int,
+    enable_global: bool,
+) -> list[ScopeSpec]:
+    chain: list[ScopeSpec] = []
+    if _track_meets_threshold(
+        hook, rules_id, series_id, ctx.track_id, track_threshold
+    ):
+        chain.append(ScopeSpec(SCOPE_TRACK, ctx.track_id, None))
+    if ctx.track_type_id is not None and _track_type_meets_threshold(
+        hook, rules_id, series_id, ctx.track_type_id, type_threshold
+    ):
+        chain.append(ScopeSpec(SCOPE_TRACK_TYPE, None, ctx.track_type_id))
+    if enable_global:
+        chain.append(ScopeSpec(SCOPE_GLOBAL, None, None))
+    return chain
+
+
+def _predict_ready(
+    hook: NascarMySqlHook,
+    rules_id: int,
+    series_id: int,
+    chain: list[ScopeSpec],
+    latest_train_week: int,
+) -> bool:
+    if not chain:
+        return False
+    first = chain[0]
+    if not _scope_model_exists(
+        hook,
+        series_id=series_id,
+        scope=first.scope,
+        track_id=first.track_id,
+        track_type_id=first.track_type_id,
+    ):
+        return False
+    covered = _scope_covered_week(
+        hook,
+        rules_id,
+        series_id,
+        first.scope,
+        track_id=first.track_id,
+        track_type_id=first.track_type_id,
+    )
+    return covered is not None and covered >= latest_train_week
+
+
+def _scopes_needing_refresh(
+    hook: NascarMySqlHook,
+    rules_id: int,
+    series_id: int,
+    chain: list[ScopeSpec],
+    latest_train_week: int,
+) -> list[ScopeSpec]:
+    """Return the first scope in the predict chain that is missing or stale."""
+    for spec in chain:
+        exists = _scope_model_exists(
+            hook,
+            series_id=series_id,
+            scope=spec.scope,
+            track_id=spec.track_id,
+            track_type_id=spec.track_type_id,
+        )
+        covered = _scope_covered_week(
+            hook,
+            rules_id,
+            series_id,
+            spec.scope,
+            track_id=spec.track_id,
+            track_type_id=spec.track_type_id,
+        )
+        if not exists or covered is None or covered < latest_train_week:
+            return [spec]
+    return []
 
 
 def _feature_keys_from_snapshot_metadata(
@@ -517,19 +671,6 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
         _LOG.info("train_models_if_needed_task: no train snapshots yet for rules_id=%s", rules_id)
         return {"skipped": "no_training_snapshots"}
 
-    covered_week = _max_covered_train_week(hook, rules_id)
-    if covered_week is not None and covered_week >= latest_train_week:
-        _LOG.info(
-            "train_models_if_needed_task: covered_week=%s >= latest=%s; skipping retrain",
-            covered_week,
-            latest_train_week,
-        )
-        return {
-            "skipped": "no_new_finished_weeks",
-            "latest_train_week": latest_train_week,
-            "covered_week": covered_week,
-        }
-
     series_ids = _distinct_series_ids(hook, rules_id)
     if not series_ids:
         return {"skipped": "no_training_snapshots"}
@@ -550,103 +691,119 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
     except ValueError:
         holdout_weeks = 1
 
-    scope_results: list[dict[str, Any]] = []
-
     track_threshold = min_track_weeks()
     type_threshold = min_track_type_weeks()
     enable_global = global_fallback_enabled()
     global_week_cap = max_train_weeks() if enable_global else 0
 
-    track_features = features_for_scope(all_feature_keys, scope=SCOPE_TRACK)
+    scope_results: list[dict[str, Any]] = []
+    series_contexts: list[dict[str, Any]] = []
+    any_eligible_chain = False
+    all_series_predict_ready = True
 
-    # Outer series loop ensures Cup / Xfinity / Truck models never share weights.
     for series_id in series_ids:
-        # Per-track models: scoped SQL load per venue (frees memory after each scope).
-        for track_id in _tracks_meeting_threshold(hook, rules_id, series_id, track_threshold):
-            if not track_features:
-                continue
-            rows = load_training_frame(
-                dfs_scoring_rules_id=rules_id,
-                series_id=series_id,
-                track_id=track_id,
-                mysql_conn_id=mysql_conn_id,
-            )
-            if not rows:
-                continue
-            scope_results.append(
-                _train_scope(
-                    series_id=series_id,
-                    scope=SCOPE_TRACK,
-                    rows=rows,
-                    track_id=track_id,
-                    track_type_id=None,
-                    feature_keys=track_features,
-                    holdout_weeks=holdout_weeks,
-                    artifact_root=artifact_root,
-                    hook=hook,
-                    scoring_rules=scoring_rules,
-                )
-            )
-            del rows
+        ctx = resolve_current_week_track_context(hook, series_id=series_id)
+        if ctx is None:
+            all_series_predict_ready = False
+            continue
 
-        # Per-track-type models: similar-track fallback for cold tracks (within series).
-        for track_type_id in _track_types_meeting_threshold(
-            hook, rules_id, series_id, type_threshold
-        ):
-            type_features = features_for_scope(
-                all_feature_keys,
-                scope=SCOPE_TRACK_TYPE,
-                track_type_id=track_type_id,
-            )
-            if not type_features:
-                continue
-            rows = load_training_frame(
-                dfs_scoring_rules_id=rules_id,
-                series_id=series_id,
-                track_type_id=track_type_id,
-                mysql_conn_id=mysql_conn_id,
-            )
-            if not rows:
-                continue
-            scope_results.append(
-                _train_scope(
-                    series_id=series_id,
-                    scope=SCOPE_TRACK_TYPE,
-                    rows=rows,
-                    track_id=None,
-                    track_type_id=track_type_id,
-                    feature_keys=type_features,
-                    holdout_weeks=holdout_weeks,
-                    artifact_root=artifact_root,
-                    hook=hook,
-                    scoring_rules=scoring_rules,
-                )
-            )
-            del rows
+        series_latest = latest_train_week_for_retrain(
+            hook,
+            rules_id=rules_id,
+            series_id=series_id,
+            train_kind=SNAPSHOT_KIND_TRAIN,
+        )
+        if series_latest is None:
+            all_series_predict_ready = False
+            continue
 
-        # Per-series global fallback. Optional week cap via FS_ML_MAX_TRAIN_WEEKS.
-        if enable_global:
-            global_features = features_for_scope(all_feature_keys, scope=SCOPE_GLOBAL)
-            if not global_features:
-                continue
-            load_kw: dict[str, Any] = {
-                "dfs_scoring_rules_id": rules_id,
-                "series_id": series_id,
-                "mysql_conn_id": mysql_conn_id,
+        chain = _predict_routing_chain(
+            hook,
+            rules_id,
+            series_id,
+            ctx,
+            track_threshold=track_threshold,
+            type_threshold=type_threshold,
+            enable_global=enable_global,
+        )
+        if not chain:
+            all_series_predict_ready = False
+            continue
+
+        any_eligible_chain = True
+        chain_labels = [
+            {
+                "scope": s.scope,
+                "track_id": s.track_id,
+                "track_type_id": s.track_type_id,
             }
-            if global_week_cap > 0:
-                load_kw["max_weeks"] = global_week_cap
+            for s in chain
+        ]
+        series_contexts.append(
+            {
+                "series_id": series_id,
+                "current_track_id": ctx.track_id,
+                "current_track_type_id": ctx.track_type_id,
+                "predict_routing_chain": chain_labels,
+            }
+        )
+
+        if _predict_ready(hook, rules_id, series_id, chain, series_latest):
+            _LOG.info(
+                "train_models_if_needed_task: series_id=%s predict-ready through week %s",
+                series_id,
+                series_latest,
+            )
+            continue
+
+        all_series_predict_ready = False
+        scopes_to_train = _scopes_needing_refresh(
+            hook, rules_id, series_id, chain, series_latest
+        )
+        for spec in scopes_to_train:
+            if spec.scope == SCOPE_TRACK:
+                feature_keys = features_for_scope(all_feature_keys, scope=SCOPE_TRACK)
+                load_kw: dict[str, Any] = {
+                    "dfs_scoring_rules_id": rules_id,
+                    "series_id": series_id,
+                    "track_id": spec.track_id,
+                    "mysql_conn_id": mysql_conn_id,
+                }
+            elif spec.scope == SCOPE_TRACK_TYPE:
+                feature_keys = features_for_scope(
+                    all_feature_keys,
+                    scope=SCOPE_TRACK_TYPE,
+                    track_type_id=spec.track_type_id,
+                )
+                load_kw = {
+                    "dfs_scoring_rules_id": rules_id,
+                    "series_id": series_id,
+                    "track_type_id": spec.track_type_id,
+                    "mysql_conn_id": mysql_conn_id,
+                }
+            else:
+                feature_keys = features_for_scope(all_feature_keys, scope=SCOPE_GLOBAL)
+                load_kw = {
+                    "dfs_scoring_rules_id": rules_id,
+                    "series_id": series_id,
+                    "mysql_conn_id": mysql_conn_id,
+                }
+                if global_week_cap > 0:
+                    load_kw["max_weeks"] = global_week_cap
+
+            if not feature_keys:
+                continue
             rows = load_training_frame(**load_kw)
             if not rows:
                 continue
             scope_results.append(
                 _train_scope(
                     series_id=series_id,
-                    scope=SCOPE_GLOBAL,
+                    scope=spec.scope,
                     rows=rows,
-                    track_id=None,
-                    track_type_id=None,
-                    feature_keys=global_features,
+                    track_id=spec.track_id,
+                    track_type_id=spec.track_type_id,
+                    feature_keys=feature_keys,
                     holdout_weeks=holdout_weeks,
                     artifact_root=artifact_root,
                     hook=hook,
@@ -655,16 +812,40 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
             )
             del rows
 
+    if not any_eligible_chain:
+        _LOG.info("train_models_if_needed_task: no eligible predict routing chain")
+        return {"skipped": "no_eligible_scopes"}
+
+    if all_series_predict_ready and not scope_results:
+        _LOG.info(
+            "train_models_if_needed_task: predict-ready; latest=%s",
+            latest_train_week,
+        )
+        return {
+            "skipped": "predict_ready",
+            "latest_train_week": latest_train_week,
+        }
+
+    if not scope_results:
+        _LOG.info(
+            "train_models_if_needed_task: nothing to train after refresh check; latest=%s",
+            latest_train_week,
+        )
+        return {
+            "skipped": "no_scopes_to_train",
+            "latest_train_week": latest_train_week,
+            "series_contexts": series_contexts,
+        }
+
     _LOG.info(
-        "train_models_if_needed_task: latest_week=%s covered_week=%s scopes_trained=%s",
+        "train_models_if_needed_task: latest_week=%s scopes_trained=%s",
         latest_train_week,
-        covered_week,
         len(scope_results),
     )
     return {
         "skipped": None,
         "latest_train_week": latest_train_week,
-        "covered_week": covered_week,
         "scope_results": scope_results,
+        "series_contexts": series_contexts,
         "available_scopes": list(ALL_SCOPES),
     }
