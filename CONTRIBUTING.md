@@ -62,9 +62,30 @@ Containerized test options:
 
 Notes:
 
-- Coverage settings are defined in `pyproject.toml`.
+- Coverage settings are defined in `pyproject.toml` (repo-wide minimum **30%**;
+  `--cov=include`, `--cov=dags`, `--cov=airflow_utils`).
 - Use targeted tests during iteration, but include enough evidence in PRs that behavior is covered.
 - If you change DAG task graphs or SQL contracts, update and run corresponding unit/integration tests.
+
+### Coverage expectations (humans and AI agents)
+
+For Python changes in `include/`, `dags/`, or `airflow_utils/`:
+
+1. Add or update unit tests in `tests/unit/` in the same PR.
+2. Aim for **~100% line coverage on modules you touch**, not only the global threshold.
+3. Cover success paths, skip/error branches, and non-trivial edge cases.
+4. Report the coverage command and result in the PR testing section.
+
+Check coverage for a specific module:
+
+```bash
+uv run pytest tests/unit/test_<feature>.py \
+  --cov=include.nascar.<package>.<module> \
+  --cov-report=term-missing -o addopts=''
+```
+
+AI agents should follow the detailed workflow in [`AGENTS.md`](./AGENTS.md)
+(sections **Test Coverage for Agent Changes** and **Change-Coupling Rules**).
 
 ## SQL and DAG Change Guidance
 
@@ -140,6 +161,7 @@ Suggested PR checklist:
 - [ ] Scope is limited to the stated change.
 - [ ] Lint/format pass.
 - [ ] Relevant tests pass.
+- [ ] Unit tests added/updated for changed Python modules; touched modules near 100% coverage.
 - [ ] DAG/SQL contract tests updated when needed.
 - [ ] No unrelated file churn.
 

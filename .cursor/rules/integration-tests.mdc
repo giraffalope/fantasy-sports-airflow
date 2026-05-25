@@ -1,0 +1,27 @@
+---
+description: Mark and run integration tests that need live MariaDB
+globs: tests/integration/**/*.py
+alwaysApply: false
+---
+
+# Integration tests
+
+## Marker
+
+- Decorate DB-dependent tests with `@pytest.mark.integration`.
+- They auto-skip when `AIRFLOW_CONN_NASCAR_CONN` is unset ([`tests/conftest.py`](../../tests/conftest.py)).
+
+## When to use
+
+- Prefer SQL **contract** tests (`test_cup_importer_sql_contract.py`) for importer clause/dependency changes.
+- Reserve runtime integration tests for true end-to-end behavior against MariaDB.
+
+## Run
+
+```bash
+uv run pytest -o addopts='' -m integration
+```
+
+Only run when a live connection is configured. Do not require integration tests to pass in environments without `AIRFLOW_CONN_NASCAR_CONN`.
+
+See [`AGENTS.md`](../../AGENTS.md) for full validation expectations.

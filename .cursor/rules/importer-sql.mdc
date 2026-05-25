@@ -1,0 +1,28 @@
+---
+description: Guardrails for Cup importer SQL templates and contract tests
+globs: dags/sql/**/*.sql
+alwaysApply: false
+---
+
+# Importer SQL
+
+## Single-writer rule
+
+- **`resolve_drivers_cars_manufacturers_teams.sql`** is the only writer for entity/mapping tables (`drivers`, `manufacturers`, `teams`, `cars`, `cars_drivers`, `data_sources_*`).
+- **`import_*.sql`** consumes staged data and `tmp_car_*`; writes only fact/output tables for that import.
+
+## Week-scoped reloads
+
+- Follow existing `DELETE ... JOIN races WHERE week_id = ...` patterns (see `import_draftkings_staging_into_db.sql`).
+- Do **not** use soft-delete + `INSERT` for snapshot reloads unless all reads filter `deleted_at IS NULL` **and** unique keys exclude soft-deleted rows (they usually do not).
+
+## Data integrity
+
+- Preserve nullable FK semantics; no sentinel `'None'` placeholder entities.
+- Keep FRCS vs Racing Reference precedence deterministic (see [`docs/nascar/cup.importer.md`](../../docs/nascar/cup.importer.md)).
+
+## Tests
+
+- Update [`tests/integration/test_cup_importer_sql_contract.py`](../../tests/integration/test_cup_importer_sql_contract.py) (or sibling contract tests) when SQL semantics or table dependencies change.
+
+Importer process: [`CONTRIBUTING.md`](../../CONTRIBUTING.md) → **Importer DAG Process**.

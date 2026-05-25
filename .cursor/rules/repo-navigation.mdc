@@ -1,0 +1,28 @@
+---
+description: Orient agents to repo layout, docs, and standard commands
+alwaysApply: true
+---
+
+# fantasy-sports-airflow navigation
+
+- **This repo:** `fantasy-sports-airflow` (DAGs, `include/`, SQL templates, tests).
+- **Schema DDL:** sibling **`fantasy-sports-db`** — do not invent columns, FKs, or unique keys without checking `nascar/ddl/` there.
+- **DAG / importer work:** read [`docs/nascar/README.md`](../../docs/nascar/README.md) and the matching `docs/nascar/cup.*.md` for the DAG you change.
+- **Full workflow:** [`AGENTS.md`](../../AGENTS.md) and [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
+
+## Commands
+
+- Prefer `uv run ...` or [`script/test`](../../script/test), not bare `pytest` (coverage addopts are in `pyproject.toml`).
+- `./script/format`, `./script/lint` before tests when touching Python.
+
+## Backfill DAGs
+
+- Hidden in UI unless `FS_ENABLE_BACKFILL_DAGS=1` in `.env` (restart scheduler after toggle).
+- Unit tests enable backfill via [`tests/conftest.py`](../../tests/conftest.py).
+
+## Do not
+
+- Edit user plan files under `.cursor/plans/` unless explicitly asked.
+- Revert unrelated local changes or expand scope beyond the request.
+
+File-scoped rules under `.cursor/rules/` apply when you edit matching paths (DAGs, SQL, Python, integration tests).

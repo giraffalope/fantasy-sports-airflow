@@ -1,0 +1,36 @@
+---
+description: Require unit tests and high line coverage when changing Python pipeline code
+globs: include/**/*.py,dags/**/*.py,airflow_utils/**/*.py
+alwaysApply: false
+---
+
+# Test coverage on Python changes
+
+When editing files under `include/`, `dags/`, or `airflow_utils/`:
+
+1. **Add or update** matching tests under `tests/unit/` (or `tests/integration/` for SQL contracts) in the same change.
+2. **Target ~100% line coverage** on every module you modify—not only the repo’s 30% global gate (`pyproject.toml`).
+3. **Cover branches**: skips, empty DB results, parse/IO errors, and edge cases—not just the happy path.
+4. **Run and report** before finishing:
+
+```bash
+uv run pytest tests/unit/test_<relevant>.py \
+  --cov=<dotted.module.path> \
+  --cov-report=term-missing -o addopts=''
+```
+
+## Conventions
+
+- Mock `NascarMySqlHook`; avoid live DB in unit tests unless marked `integration`.
+- Patch paths (`draftkings_salaries_csv`, env, hooks) at the **import site** in the module under test.
+- For `run_in_transaction` writers, invoke the callback with a mock cursor and assert SQL text and parameters.
+- DAG changes: update `tests/unit/test_*_dag.py` for task IDs, schedule, and upstream/downstream edges.
+- Fixtures: `tests/unit/fixtures/` for small CSV/HTML samples.
+
+## Avoid
+
+- Tests that only restate trivial assignments or constants.
+- Leaving new functions/modules without a corresponding test file update.
+- `# pragma: no cover` without a short justification comment.
+
+Full policy: [`AGENTS.md`](../../AGENTS.md) and [`CONTRIBUTING.md`](../../CONTRIBUTING.md).

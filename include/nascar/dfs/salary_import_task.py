@@ -196,6 +196,19 @@ def _match_car_driver_id(
     return None
 
 
+def _dedupe_insert_rows_by_car_driver(
+    rows: list[tuple[int, int, int, int, int]],
+) -> list[tuple[int, int, int, int, int]]:
+    """Keep one row per car_driver_id, preferring the highest salary (staging importer parity)."""
+    by_car_driver: dict[int, tuple[int, int, int, int, int]] = {}
+    for row in rows:
+        car_driver_id = row[3]
+        existing = by_car_driver.get(car_driver_id)
+        if existing is None or row[4] > existing[4]:
+            by_car_driver[car_driver_id] = row
+    return list(by_car_driver.values())
+
+
 def _import_csv_file(
     hook: NascarMySqlHook,
     path: str,
@@ -236,29 +249,29 @@ def _import_csv_file(
             )
         )
 
+    rows_to_insert = _dedupe_insert_rows_by_car_driver(insert_rows)
+
     def _write_salaries(_conn: object, cursor: DbCursor) -> None:
         cursor.execute(
             """
-            UPDATE nascar.dfs_salaries
-            SET deleted_at = UTC_TIMESTAMP()
+            DELETE FROM nascar.dfs_salaries
             WHERE dfs_id = %s
               AND race_id = %s
-              AND deleted_at IS NULL
             """,
             (DRAFTKINGS_DFS_ID, race_id),
         )
-        if insert_rows:
+        if rows_to_insert:
             cursor.executemany(
                 """
                 INSERT INTO nascar.dfs_salaries (
                     dfs_id, race_id, dfs_driver_id, car_driver_id, salary
                 ) VALUES (%s, %s, %s, %s, %s)
                 """,
-                insert_rows,
+                rows_to_insert,
             )
 
     hook.run_in_transaction(_write_salaries)
-    inserted = len(insert_rows)
+    inserted = len(rows_to_insert)
 
     return {
         "path": path,

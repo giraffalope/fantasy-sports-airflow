@@ -1,0 +1,32 @@
+---
+description: NascarMySqlHook write patterns and soft-delete vs unique key traps
+globs: include/**/*.py,airflow_utils/**/*.py
+alwaysApply: false
+---
+
+# NASCAR MySQL writes
+
+## Hook and transactions
+
+- Use [`NascarMySqlHook`](../../airflow_utils/nascar_mysql_hook.py) with `mysql_conn_id="nascar_conn"`.
+- Multi-step writes: `run_in_transaction(write_fn)` — unit tests should invoke `write_fn` with a mock cursor and assert SQL text/parameters.
+
+## Inserts and IDs
+
+- Use `run_insert_returning_id` for auto-increment FKs.
+- Do **not** rely on `LAST_INSERT_ID()` via a second pooled connection (often returns 0).
+
+## Reads
+
+- Filter `deleted_at IS NULL` unless intentionally including tombstones.
+
+## Replace semantics (unique keys)
+
+- Tables with non-partial `UNIQUE` keys (e.g. `dfs_salaries` on `(dfs_id, race_id, car_driver_id)`): use **`DELETE` then `INSERT`**, or `UPDATE` in place.
+- Soft-delete + `INSERT` fails on re-run: soft-deleted rows still occupy the unique key.
+
+## Schema
+
+- Check `fantasy-sports-db/nascar/ddl/` for FK direction. Child FKs on fact tables point to parents; deleting child rows does not cascade to `races` / `drivers`.
+
+Pair with [`test-coverage.mdc`](./test-coverage.mdc) for unit test expectations on touched modules.

@@ -7,7 +7,8 @@ The stack is intended to run in Docker (Airflow with Celery, PostgreSQL, Redis, 
 ## Documentation
 
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): full contributor workflow, testing policy, SQL/DAG change guidance, and PR standards.
-- [`AGENTS.md`](AGENTS.md): repository-specific AI coding agent conventions, validation requirements, and safe-edit expectations.
+- [`AGENTS.md`](AGENTS.md): AI agent conventions, validation requirements, and **test coverage expectations** (~100% on touched Python modules).
+- [`.cursor/rules/`](.cursor/rules/): Cursor rules that auto-attach by file type (repo navigation, DAG/SQL guardrails, MySQL writes, tests).
 
 ## Repository layout
 

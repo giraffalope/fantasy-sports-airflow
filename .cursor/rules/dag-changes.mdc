@@ -1,0 +1,31 @@
+---
+description: Couple DAG graph changes with tests and per-DAG docs
+globs: dags/**/*.py
+alwaysApply: false
+---
+
+# DAG changes
+
+## Thin DAGs
+
+- Keep orchestration in `dags/nascar/cup/...` only: `DAG`, operators, sensors, task edges.
+- Put business logic in `include/nascar/...` callables imported by the DAG.
+
+## Required coupling
+
+When changing `dag_id`, `task_id`, `schedule`, `catchup`, `max_active_runs`, or task dependencies:
+
+1. Update `tests/unit/test_<dag>_dag.py` (or the shared importer builder test).
+2. Update the matching file under [`docs/nascar/`](../../docs/nascar/).
+
+## Backfill twins
+
+- Production and `backfill.*` DAGs often share a factory; only schedule, catchup, assets, and external-sensor targets differ.
+- Verify both paths in docs and tests when touching shared builders.
+
+## Reuse shared defaults
+
+- [`CUP_DAG_DEFAULT_ARGS`](../../dags/nascar/cup/dag_defaults.py) for retries/delay.
+- Shared crons (`CUP_SCRAPER_PROD_HOURLY_CRON`, `BACKFILL_YEARLY_SCHEDULE`, etc.) — avoid one-off schedules without reason.
+
+See [`AGENTS.md`](../../AGENTS.md) for validation commands and change-coupling rules.

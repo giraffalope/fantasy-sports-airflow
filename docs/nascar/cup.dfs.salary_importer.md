@@ -37,7 +37,7 @@ create the CSV file.
 | Task ID | Callable | Purpose |
 | --- | --- | --- |
 | `ensure_draftkings_week_directory` | `ensure_draftkings_week_directory_task` | `mkdir -p` for the current Cup week (`v_series_current_week`) |
-| `import_draftkings_salaries` | `import_draftkings_salaries_task` | Import current-week `DKSalaries.csv` only and upsert `dfs_salaries` (`dfs_id=1`) |
+| `import_draftkings_salaries` | `import_draftkings_salaries_task` | Import current-week `DKSalaries.csv` only; replace `dfs_salaries` for the race via delete+insert (`dfs_id=1`) |
 
 ### CSV mapping
 
