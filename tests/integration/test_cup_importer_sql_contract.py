@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 SQL_ROOT = Path(__file__).resolve().parents[2] / "dags" / "sql" / "nascar.cup.importer"
 
 
@@ -34,18 +33,26 @@ def test_qualifying_import_sql_inserts_results_without_entity_writes() -> None:
     assert "INSERT INTO nascar.cars_drivers" not in sql
 
 
-def test_practice_and_qualifying_import_sql_nulls_zero_speed_and_time() -> None:
+def test_practice_and_qualifying_import_sql_filters_blank_time_and_null_speed() -> None:
     practice_sql = _sql_text("import_practice_staging_into_db.sql")
     qualifying_sql = _sql_text("import_qualifying_staging_into_db.sql")
     for sql in (practice_sql, qualifying_sql):
-        assert "nascar.clean_speed(t.speed)" in sql
-        assert "nascar.clean_time(t.time)" in sql
         assert "AND TRIM(t.time) != ''" in sql
+        assert "by_driver.speed IS NOT NULL" in sql
+
+
+def test_load_practice_and_qualifying_apply_clean_speed_and_time() -> None:
+    practice_load = _sql_text("load_practice_csv_into_staging_table.sql")
+    qualifying_load = _sql_text("load_qualifying_csv_into_staging_table.sql")
+    assert "nascar.clean_speed(@speed)" in practice_load
+    assert "nascar.clean_time(@time)" in practice_load
+    assert "nascar.clean_speed(@speed)" in qualifying_load
+    assert "nascar.clean_time(@time)" in qualifying_load
 
 
 def test_qualifying_import_sql_only_uses_numeric_rank_for_finish_position() -> None:
     sql = _sql_text("import_qualifying_staging_into_db.sql")
-    assert "nascar.clean_position(t.rank)" in sql
+    assert "CAST(t.rank AS UNSIGNED) AS finish_position" in sql
     assert "AND by_driver.finish_position IS NOT NULL" in sql
 
 
@@ -78,6 +85,27 @@ def test_lineup_import_sql_uses_tmp_car_and_does_not_write_entities() -> None:
 def test_lineup_import_sql_does_not_delete_races() -> None:
     lineup_sql = _sql_text("import_lineup_staging_into_db.sql")
     assert "DELETE FROM nascar.races" not in lineup_sql
+
+
+def test_race_import_sql_does_not_delete_lineup_only_race_results() -> None:
+    race_sql = _sql_text("import_race_staging_into_db.sql")
+    assert "total_laps_completed IS NULL" in race_sql
+    assert "finish_position IS NULL" in race_sql
+    assert (
+        "DELETE rr\nFROM nascar.race_results rr\nINNER JOIN nascar.races r\n"
+        "    ON r.id = rr.race_id\nWHERE r.week_id = {{ week_id }}\n"
+        "    AND r.deleted_at IS NULL\n"
+        "    AND rr.deleted_at IS NULL\n"
+        "    AND rr.total_laps_completed IS NULL\n"
+        "    AND rr.finish_position IS NULL"
+    ) in race_sql
+
+
+def test_schedule_import_sql_enforces_rr_frcs_guard() -> None:
+    schedule_sql = _sql_text("import_schedule.sql")
+    assert "tmp_cup_schedule_rr_match_guard" in schedule_sql
+    assert "schedule_rr_frcs_guard_ok" in schedule_sql
+    assert "1 / 0" in schedule_sql
 
 
 def test_lineup_import_sql_writes_start_position_not_finish() -> None:
@@ -179,7 +207,7 @@ def test_load_stage_race_penalty_pitstop_dfs_sqls_target_staging_tables() -> Non
     assert "@position" in race_sql and "@driver_name" in race_sql
     assert race_sql.count("LOAD DATA LOCAL INFILE") == 2
     assert race_sql.count("IGNORE 1 LINES") == 2
-    assert "TRIM(stg.owner) NOT REGEXP '^[0-9]+$'" in race_sql
+    assert "owner = nascar.clean_team_name(@owner)" in race_sql
     assert "clean_team_name(stg.sponsor)" not in race_sql
     penalties_sql = _sql_text("load_penalties_csv_into_staging_table.sql")
     pitstops_sql = _sql_text("load_pit_stops_detail_csv_into_staging_table.sql")
@@ -221,14 +249,22 @@ def test_import_schedule_sql_merges_dual_sources_and_validates_rr_match() -> Non
     assert "THEN NULL" in sql
     assert "ds.name = '{{ frcs_source_name }}'" in sql
     assert "ds.name = '{{ racing_reference_source_name }}'" in sql
-    assert "COALESCE(NULLIF(TRIM(frcs.week_track), ''), NULLIF(TRIM(rr.week_track), '')) AS week_track_preferred" in sql
+    assert (
+        "COALESCE(NULLIF(TRIM(frcs.week_track), ''), NULLIF(TRIM(rr.week_track), '')) AS week_track_preferred"
+        in sql
+    )
     assert "week_track_canonical" in sql
     assert "resolved_track_id" in sql
     assert "COALESCE(dst_frcs.track_id, dst_rr.track_id)" in sql
     assert "ON t.id = merged.resolved_track_id" in sql
     assert "ON DUPLICATE KEY UPDATE\n    `tracks`.`deleted_at` = `tracks`.`deleted_at`" in sql
-    assert "JOIN nascar.tracks t\n    ON TRIM(t.name) = TRIM(merged.week_track_preferred)" not in sql
-    assert "INSERT INTO nascar.weeks (season_id, track_id, number, season_number, race_name, scheduled_start, event_type)" in sql
+    assert (
+        "JOIN nascar.tracks t\n    ON TRIM(t.name) = TRIM(merged.week_track_preferred)" not in sql
+    )
+    assert (
+        "INSERT INTO nascar.weeks (season_id, track_id, number, season_number, race_name, scheduled_start, event_type)"
+        in sql
+    )
     assert "WHEN CAST(merged.frcs_week_number AS UNSIGNED) IS NULL THEN 'OTHER'" in sql
     assert "WHEN CAST(merged.frcs_week_number AS UNSIGNED) = 0 THEN 'OTHER'" in sql
     assert "ELSE 'REGULAR'" in sql

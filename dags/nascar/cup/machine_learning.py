@@ -21,15 +21,16 @@ from datetime import datetime
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from airflow.sdk import DAG
-
-from include.nascar.ml.predict_task import predict_upcoming_week_task
-from include.nascar.ml.train_task import train_models_if_needed_task
-from include.nascar.ml.training_snapshot_task import build_ml_training_snapshots_task
+from nascar.cup.dag_defaults import CUP_DAG_DEFAULT_ARGS
 from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
 from nascar.cup.scraper.dag_factories import (
     CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
     CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
 )
+
+from include.nascar.ml.predict_task import predict_upcoming_week_task
+from include.nascar.ml.train_task import train_models_if_needed_task
+from include.nascar.ml.training_snapshot_task import build_ml_training_snapshots_task
 
 DAG_ID = "nascar.cup.machine_learning"
 
@@ -40,6 +41,7 @@ with DAG(
     schedule=CUP_SCRAPER_PROD_HOURLY_CRON,
     catchup=False,
     max_active_runs=1,
+    default_args=CUP_DAG_DEFAULT_ARGS,
     doc_md=__doc__ or "",
 ) as dag:
     wait_aggregate_complete = ExternalTaskSensor(

@@ -15,21 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmariadb-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    pytest==9.0.2 \
-    pytest-cov==7.1.0 \
-    coverage==7.13.5 \
-    beautifulsoup4 \
-    lxml \
-    "apache-airflow==3.1.8" \
-    apache-airflow-providers-standard \
-    apache-airflow-providers-mysql
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --group dev -o /tmp/requirements-export.txt \
+    && uv pip install --system -r /tmp/requirements-export.txt \
+    && rm -f /tmp/requirements-export.txt
 
 COPY include ./include
 COPY airflow_utils ./airflow_utils
 COPY dags ./dags
 COPY tests ./tests
-COPY pyproject.toml ./pyproject.toml
 RUN mkdir -p /app/scraper-data/nascar/frcs.pro/cup/2010/01 \
     /app/scraper-data/nascar/frcs.pro/cup/2024/13 \
     /app/scraper-data/nascar/frcs.pro/cup/2025/25 \

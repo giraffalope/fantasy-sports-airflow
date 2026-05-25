@@ -3,25 +3,11 @@ import os
 
 from jinja2 import Template
 
+from airflow_utils.mysql_connection import connection_set_autocommit
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 
 # Use Airflow's task logger so SQL from PythonOperator callables appears in the task log UI.
 _TASK_LOG = logging.getLogger("airflow.task")
-
-
-def _connection_set_autocommit(conn, enabled: bool) -> None:
-    """Support mysqlclient (callable), PyMySQL (callable), and mysql-connector (property)."""
-    ac = getattr(conn, "autocommit", None)
-    if callable(ac):
-        try:
-            ac(enabled)
-        except TypeError:
-            conn.autocommit = enabled  # type: ignore[misc, assignment]
-    else:
-        try:
-            conn.autocommit = enabled  # type: ignore[misc, assignment]
-        except (AttributeError, TypeError):
-            pass
 
 
 def execute_sql_statements_transactional(hook: NascarMySqlHook, statements: list[str]) -> None:
@@ -38,7 +24,7 @@ def execute_sql_statements_transactional(hook: NascarMySqlHook, statements: list
 
     conn = hook.get_conn()
     try:
-        _connection_set_autocommit(conn, False)
+        connection_set_autocommit(conn, False)
         cursor = conn.cursor()
         try:
             total = len(statements)
@@ -53,7 +39,7 @@ def execute_sql_statements_transactional(hook: NascarMySqlHook, statements: list
             cursor.close()
     finally:
         try:
-            _connection_set_autocommit(conn, True)
+            connection_set_autocommit(conn, True)
         except Exception:
             pass
         conn.close()

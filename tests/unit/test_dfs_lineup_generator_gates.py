@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from include.nascar.dfs import lineup_generator_task as mod
 from include.nascar.dfs.lineup_generator_task import (
-    _insert_lineup,
+    _insert_lineup_on_cursor,
     generate_draftkings_lineups_task,
 )
 from include.nascar.dfs.lineup_optimizer import LineupPlayer
@@ -92,9 +92,9 @@ def test_salary_sql_uses_week_id() -> None:
     assert "r.week_id = %s" in mod._PLAYER_POOL_SQL
 
 
-def test_insert_lineup_uses_run_insert_returning_id() -> None:
-    hook = MagicMock()
-    hook.run_insert_returning_id.return_value = 123
+def test_insert_lineup_on_cursor_uses_lastrowid_for_child_rows() -> None:
+    cursor = MagicMock()
+    cursor.lastrowid = 123
     players = [
         LineupPlayer(car_driver_id=1, salary=9000, projected_points=50.0, dfs_driver_id=10),
         LineupPlayer(car_driver_id=2, salary=8000, projected_points=40.0, dfs_driver_id=20),
@@ -103,8 +103,8 @@ def test_insert_lineup_uses_run_insert_returning_id() -> None:
         LineupPlayer(car_driver_id=5, salary=5000, projected_points=10.0, dfs_driver_id=50),
         LineupPlayer(car_driver_id=6, salary=4000, projected_points=5.0, dfs_driver_id=60),
     ]
-    lineup_id = _insert_lineup(
-        hook,
+    lineup_id = _insert_lineup_on_cursor(
+        cursor,
         dfs_id=1,
         race_id=42,
         strategy="DOUBLE_UP",
@@ -112,9 +112,80 @@ def test_insert_lineup_uses_run_insert_returning_id() -> None:
         indices=[0, 1, 2, 3, 4, 5],
     )
     assert lineup_id == 123
-    hook.run_insert_returning_id.assert_called_once()
-    child_calls = [c for c in hook.run.call_args_list if "dfs_race_lineups_car_drivers" in str(c)]
-    assert len(child_calls) == 6
-    for call in child_calls:
-        params = call.kwargs.get("parameters") or call[0][1]
-        assert params[0] == 123
+    cursor.executemany.assert_called_once()
+    child_rows = cursor.executemany.call_args[0][1]
+    assert len(child_rows) == 6
+    assert all(row[0] == 123 for row in child_rows)
+
+
+def _six_player_pool() -> list[LineupPlayer]:
+    return [
+        LineupPlayer(
+            car_driver_id=i, salary=5000 + i * 100, projected_points=40.0 - i, dfs_driver_id=100 + i
+        )
+        for i in range(1, 7)
+    ]
+
+
+def test_no_feasible_lineups_when_optimizer_returns_empty() -> None:
+    hook = MagicMock()
+
+    def get_records_side_effect(sql: str, parameters: tuple | None = None) -> list:
+        if "COUNT(*)" in sql:
+            return [(3,)]
+        if "SELECT r.id" in sql:
+            return [(42,)]
+        if "SELECT 1" in sql and "dfs_salaries" in sql:
+            return [(1,)]
+        if "SELECT" in sql and "ml_predictions mp" in sql:
+            return [
+                (1, 9000, 10, 50.0),
+                (2, 8000, 20, 45.0),
+                (3, 7000, 30, 40.0),
+                (4, 6000, 40, 35.0),
+                (5, 5000, 50, 30.0),
+                (6, 4000, 60, 25.0),
+            ]
+        return []
+
+    hook.get_records.side_effect = get_records_side_effect
+
+    with (
+        patch(
+            "include.nascar.dfs.lineup_generator_task.NascarMySqlHook",
+            return_value=hook,
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._active_rules",
+            return_value=(1, {}),
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._latest_predict_snapshot",
+            return_value={"id": 99, "week_id": 5},
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task.generate_top_k_lineups",
+            return_value=[],
+        ),
+    ):
+        result = generate_draftkings_lineups_task()
+
+    assert result["skipped"] is True
+    assert result["reason"] == "no_feasible_lineups"
+
+
+def test_persist_strategy_lineups_uses_run_in_transaction() -> None:
+    hook = MagicMock()
+    players = _six_player_pool()
+    lineups = [[0, 1, 2, 3, 4, 5]]
+
+    mod._persist_strategy_lineups(
+        hook,
+        dfs_id=1,
+        race_id=42,
+        strategy="DOUBLE_UP",
+        players=players,
+        lineups=lineups,
+    )
+
+    hook.run_in_transaction.assert_called_once()

@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from airflow.sdk import DAG, Asset
+from nascar.cup.dag_defaults import CUP_DAG_DEFAULT_ARGS
 
 from airflow_utils.wait_operator import WaitOperator
 from include.nascar.data_sources.frcs import (
@@ -105,6 +106,7 @@ def register_frcs_schedule_dag(
         schedule=schedule,
         catchup=catchup,
         max_active_runs=1,
+        default_args=CUP_DAG_DEFAULT_ARGS,
         doc_md=doc_md,
     ) as dag:
         wait_random_time_task = WaitOperator(
@@ -145,6 +147,7 @@ def register_racing_reference_schedule_dag(
         schedule=schedule,
         catchup=catchup,
         max_active_runs=1,
+        default_args=CUP_DAG_DEFAULT_ARGS,
         doc_md=doc_md,
     ) as dag:
         wait_random_time_task = WaitOperator(
@@ -187,6 +190,7 @@ def register_frcs_race_week_dag(
         schedule=schedule,
         catchup=catchup,
         max_active_runs=1,
+        default_args=CUP_DAG_DEFAULT_ARGS,
         doc_md=doc_md,
     ) as dag:
         wait_random_time_task = WaitOperator(
@@ -284,6 +288,7 @@ def register_racing_reference_race_week_dag(
         schedule=schedule,
         catchup=catchup,
         max_active_runs=1,
+        default_args=CUP_DAG_DEFAULT_ARGS,
         doc_md=doc_md,
     ) as dag:
         wait_random_time_task = WaitOperator(

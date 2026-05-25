@@ -225,9 +225,7 @@ class HttpDomainEventBackend(DomainEventBackend):
         if self._bearer:
             headers["Authorization"] = f"Bearer {self._bearer}"
         if self._hmac_secret:
-            sig = hmac.new(
-                self._hmac_secret.encode("utf-8"), body, hashlib.sha256
-            ).hexdigest()
+            sig = hmac.new(self._hmac_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
             headers["X-Nascar-Domain-Events-Signature"] = f"sha256={sig}"
         try:
             resp = requests.post(

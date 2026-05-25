@@ -13,6 +13,7 @@ from datetime import datetime
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from airflow.sdk import DAG
+from nascar.cup.dag_defaults import CUP_DAG_DEFAULT_ARGS
 from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
 from nascar.cup.scraper.dag_factories import (
     CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
@@ -22,6 +23,7 @@ from nascar.cup.scraper.dag_factories import (
 from include.nascar.dfs.lineup_generator_task import generate_draftkings_lineups_task
 
 DAG_ID = "nascar.cup.dfs.lineup_generator"
+SALARY_IMPORTER_DAG_ID = "nascar.cup.dfs.salary_importer"
 
 
 with DAG(
@@ -30,8 +32,19 @@ with DAG(
     schedule=CUP_SCRAPER_PROD_HOURLY_CRON,
     catchup=False,
     max_active_runs=1,
+    default_args=CUP_DAG_DEFAULT_ARGS,
     doc_md=__doc__ or "",
 ) as dag:
+    wait_dk_salaries_complete = ExternalTaskSensor(
+        task_id="wait_dk_salaries_complete",
+        external_dag_id=SALARY_IMPORTER_DAG_ID,
+        external_task_id="import_draftkings_salaries",
+        mode="reschedule",
+        poke_interval=CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
+        timeout=CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
+        check_existence=True,
+    )
+
     wait_ml_predict_complete = ExternalTaskSensor(
         task_id="wait_ml_predict_complete",
         external_dag_id="nascar.cup.machine_learning",
@@ -47,4 +60,4 @@ with DAG(
         python_callable=generate_draftkings_lineups_task,
     )
 
-    wait_ml_predict_complete >> generate_draftkings_lineups
+    [wait_ml_predict_complete, wait_dk_salaries_complete] >> generate_draftkings_lineups

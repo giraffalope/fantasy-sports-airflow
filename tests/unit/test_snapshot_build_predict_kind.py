@@ -18,8 +18,8 @@ for _name in (
 ):
     sys.modules.setdefault(_name, MagicMock())
 
-import include.nascar.ml.snapshot_build as snapshot_build
-from include.nascar.ml.snapshot_config import (
+import include.nascar.ml.snapshot_build as snapshot_build  # noqa: E402
+from include.nascar.ml.snapshot_config import (  # noqa: E402
     SNAPSHOT_KIND_PREDICT,
     SNAPSHOT_KIND_TRAIN,
 )
@@ -52,22 +52,22 @@ _DK_RULES = {
 
 def _anchor_tuple(*, finish_position: int | None, start_position: int = 5) -> tuple:
     payload = [
-        1,            # id
-        1,            # series_id
-        2025,         # season_id
-        100,          # week_id
-        7,            # track_id
-        9,            # race_id
-        101,          # car_driver_id
-        201,          # driver_id
-        301,          # car_id
-        401,          # team_id
-        501,          # manufacturer_id
-        601,          # car_generation_id
-        701,          # car_generation_model_id
+        1,  # id
+        1,  # series_id
+        2025,  # season_id
+        100,  # week_id
+        7,  # track_id
+        9,  # race_id
+        101,  # car_driver_id
+        201,  # driver_id
+        301,  # car_id
+        401,  # team_id
+        501,  # manufacturer_id
+        601,  # car_generation_id
+        701,  # car_generation_model_id
         start_position,  # r_start_position
         finish_position,  # r_finish_position
-        None,         # r_place_diff
+        None,  # r_place_diff
     ]
     payload.extend([None] * 21)
     assert len(payload) == 37
@@ -92,11 +92,10 @@ def _make_hook(anchor_rows: list[tuple]) -> MagicMock:
             return []
         if "from nascar.agg_week_results awr" in text:
             return anchor_rows
-        if "select id from nascar.ml_training_snapshots" in text:
-            return [(42,)]
         return []
 
     hook.get_records.side_effect = get_records
+    hook.run_insert_returning_id.return_value = 42
 
     conn_cm = MagicMock()
     cursor_cm = MagicMock()
@@ -127,9 +126,11 @@ def test_predict_kind_inserts_rows_but_skips_labels(mock_hook_cls: MagicMock) ->
     )
 
     assert snapshot_id == 42
+    hook.run_insert_returning_id.assert_called_once()
+    insert_sql = str(hook.run_insert_returning_id.call_args.args[0])
+    assert "INSERT INTO nascar.ml_training_snapshots" in insert_sql
 
     run_sqls = [str(call.args[0]) for call in hook.run.mock_calls]
-    assert any("INSERT INTO nascar.ml_training_snapshots" in s for s in run_sqls)
     assert any("INSERT INTO nascar.ml_training_rows" in s for s in run_sqls)
     assert not any("INSERT INTO nascar.ml_labels" in s for s in run_sqls)
 
@@ -189,13 +190,11 @@ def test_predict_kind_persists_kind_column(mock_hook_cls: MagicMock) -> None:
         kind=SNAPSHOT_KIND_PREDICT,
     )
 
-    snapshot_inserts = [
-        call
-        for call in hook.run.mock_calls
-        if "INSERT INTO nascar.ml_training_snapshots" in str(call.args[0])
-    ]
-    assert snapshot_inserts, "expected ml_training_snapshots insert"
-    params = snapshot_inserts[0].kwargs.get("parameters") or snapshot_inserts[0].args[1]
+    hook.run_insert_returning_id.assert_called_once()
+    params = (
+        hook.run_insert_returning_id.call_args.kwargs.get("parameters")
+        or (hook.run_insert_returning_id.call_args.args[1])
+    )
     assert SNAPSHOT_KIND_PREDICT in params
 
 
@@ -217,13 +216,8 @@ def test_rebuild_same_week_hard_deletes_then_reinserts(mock_hook_cls: MagicMock)
     )
 
     run_sqls = [str(call.args[0]) for call in hook.run.mock_calls]
-    delete_sqls = [
-        s for s in run_sqls if "DELETE FROM nascar.ml_training_snapshots" in s
-    ]
+    delete_sqls = [s for s in run_sqls if "DELETE FROM nascar.ml_training_snapshots" in s]
     assert len(delete_sqls) == 2
     assert not any("SET deleted_at" in s for s in run_sqls)
 
-    snapshot_inserts = [
-        s for s in run_sqls if "INSERT INTO nascar.ml_training_snapshots" in s
-    ]
-    assert len(snapshot_inserts) == 2
+    assert hook.run_insert_returning_id.call_count == 2

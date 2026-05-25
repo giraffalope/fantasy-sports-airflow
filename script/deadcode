@@ -1,0 +1,30 @@
+#!/usr/bin/env sh
+# Find likely unused Python code with Vulture.
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(dirname "$0")/.."
+cd "${BASEDIR}"
+
+case "${1:-}" in
+  --help | -h)
+    printf '%s\n' \
+      "Usage: ./script/deadcode [vulture-args]" \
+      "" \
+      "Runs \`vulture\` on dags/, include/, and airflow_utils/ (see pyproject.toml [tool.vulture])." \
+      "Requires uv and dev deps from script/setup. Examples:" \
+      "  ./script/deadcode" \
+      "  ./script/deadcode --min-confidence 90"
+    exit 0
+    ;;
+esac
+
+uv_bin="$(command -v uv)"
+if [ -z "$uv_bin" ]; then
+  echo "uv not found; install from https://docs.astral.sh/uv/ or run script/setup" >&2
+  exit 1
+fi
+
+paths="dags include airflow_utils"
+
+exec "$uv_bin" run vulture $paths "$@"

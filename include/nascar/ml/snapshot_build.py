@@ -60,6 +60,7 @@ def _current_week_predict_week_id(
         return None
     return current.week_id
 
+
 _METRIC_COLUMNS_CACHE: dict[str, list[str]] = {}
 
 
@@ -70,7 +71,9 @@ def time_value_to_seconds(value: Any) -> float | None:
     if isinstance(value, timedelta):
         return round(value.total_seconds(), 3)
     if isinstance(value, time):
-        return round(value.hour * 3600 + value.minute * 60 + value.second + value.microsecond / 1e6, 3)
+        return round(
+            value.hour * 3600 + value.minute * 60 + value.second + value.microsecond / 1e6, 3
+        )
     if isinstance(value, Decimal):
         return round(float(value), 3)
     if isinstance(value, (int, float)):
@@ -143,9 +146,7 @@ def _fetch_flattened_track_types(
     week_id: int,
     source: PrevTrackTypesSource,
 ) -> dict[int, dict[str, Any]]:
-    sql = (
-        "CALL nascar.flatten_agg_week_prev_track_types_results(%s, %s, %s)"
-    )
+    sql = "CALL nascar.flatten_agg_week_prev_track_types_results(%s, %s, %s)"
     with hook.get_conn() as conn:
         with conn.cursor() as cursor:
             cursor.execute(sql, (series_id, week_id, source.table_name))
@@ -278,7 +279,7 @@ def _insert_snapshot(
     feature_schema_hash = _feature_schema_hash(feature_keys)
     target_column_count = len(target_keys)
     target_schema_hash = _feature_schema_hash(target_keys)
-    hook.run(
+    return hook.run_insert_returning_id(
         """
         INSERT INTO nascar.ml_training_snapshots (
             series_id,
@@ -316,16 +317,6 @@ def _insert_snapshot(
             pipeline_version,
         ),
     )
-    snapshot_rows = hook.get_records(
-        """
-        SELECT id FROM nascar.ml_training_snapshots
-        WHERE series_id = %s AND week_id = %s AND grain = %s
-          AND kind = %s AND dfs_scoring_rules_id = %s AND deleted_at IS NULL
-        ORDER BY id DESC LIMIT 1
-        """,
-        parameters=(series_id, week_id, GRAIN_CAR_DRIVER, kind, rules_id),
-    )
-    return int(snapshot_rows[0][0])
 
 
 def build_car_driver_training_snapshot(
@@ -460,20 +451,13 @@ def build_car_driver_training_snapshot(
         "r_total_race_laps",
         "r_total_race_miles",
     ]
-    anchors = [
-        dict(zip(anchor_columns, raw, strict=True)) for raw in anchor_rows
-    ]
+    anchors = [dict(zip(anchor_columns, raw, strict=True)) for raw in anchor_rows]
 
     track_id = int(anchors[0]["track_id"])
     season_id = int(anchors[0]["season_id"])
 
     prev_track_metrics = {
-        source.table_name: _metric_columns(hook, source.table_name)
-        for source in PREV_TRACK_SOURCES
-    }
-    prev_track_types_metrics = {
-        source.table_name: _metric_columns(hook, source.table_name)
-        for source in PREV_TRACK_TYPES_SOURCES
+        source.table_name: _metric_columns(hook, source.table_name) for source in PREV_TRACK_SOURCES
     }
 
     prev_track_data = {
@@ -517,17 +501,17 @@ def build_car_driver_training_snapshot(
             )
             features.update(prefixed)
 
-        for source in PREV_TRACK_TYPES_SOURCES:
-            join_id = entity_ids[source.join_column]
+        for types_source in PREV_TRACK_TYPES_SOURCES:
+            join_id = entity_ids[types_source.join_column]
             if join_id is None:
                 continue
-            flat_row = prev_track_types_data[source.table_name].get(join_id)
+            flat_row = prev_track_types_data[types_source.table_name].get(join_id)
             if not flat_row:
                 continue
             for column, value in flat_row.items():
                 if column in GRAIN_COLUMNS or column in AUDIT_COLUMNS:
                     continue
-                key = _prefixed_key(source.prefix, column)
+                key = _prefixed_key(types_source.prefix, column)
                 features[key] = normalize_feature_value(column, value)
 
         all_feature_keys.update(features.keys())

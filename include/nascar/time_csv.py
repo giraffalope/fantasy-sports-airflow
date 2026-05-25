@@ -33,13 +33,7 @@ def normalize_time_to_hhmmss_mmm(value: str) -> str:
     # #region agent log
     raw_in = value
     # #endregion
-    s = (
-        value.strip()
-        .replace("\xa0", "")
-        .replace("\u2009", "")
-        .replace("\u202f", "")
-        .strip()
-    )
+    s = value.strip().replace("\xa0", "").replace("\u2009", "").replace("\u202f", "").strip()
     if not s:
         return ""
 

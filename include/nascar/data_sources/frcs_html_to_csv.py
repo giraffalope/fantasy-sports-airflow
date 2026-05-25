@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from bs4 import BeautifulSoup, Tag
 
+from include.nascar.data_sources.html_parse import as_str, as_tag, child_tags, class_list
 from include.nascar.schedule_week_date_csv import week_date_for_schedule_csv
 from include.nascar.time_csv import normalize_time_to_hhmmss_mmm as _normalize_time_to_hhmmss_mmm
 from include.utils.file import File
@@ -89,7 +90,7 @@ def _frcs_tabulator_qual_rows_from_root(
 ) -> list[dict[str, str]]:
     rows_out: list[dict[str, str]] = []
     for row in root.select("div.tabulator-row"):
-        classes = row.get("class") or []
+        classes = class_list(row)
         if "tabulator-calcs-holder" in classes:
             continue
         row_dict: dict[str, str] = {}
@@ -115,7 +116,8 @@ def _frcs_tabulator_qual_rows_from_root(
             continue
         if require_time_or_rank:
             has_time_or_speed = any(
-                row_dict.get(k) for k in ("lap_time", "time", "lap_speed", "speed", "best_lap", "best_speed")
+                row_dict.get(k)
+                for k in ("lap_time", "time", "lap_speed", "speed", "best_lap", "best_speed")
             )
             has_rankish = any(row_dict.get(k) for k in ("lap_rank", "rank", "pos", "position"))
             if not (has_time_or_speed or has_rankish):
@@ -127,7 +129,7 @@ def _frcs_tabulator_qual_rows_from_root(
 def _frcs_qualifying_rows_from_tabulator_div(soup: BeautifulSoup) -> list[dict[str, str]] | None:
     """Fallback when embedded ``roundOne``/``roundTwo`` JSON is missing (e.g. saved DOM)."""
     for div_id in ("roundTwoTable", "roundOneTable"):
-        root = soup.find(id=div_id)
+        root = as_tag(soup.find(id=div_id))
         if root is None:
             continue
         rows_out = _frcs_tabulator_qual_rows_from_root(root)
@@ -136,11 +138,16 @@ def _frcs_qualifying_rows_from_tabulator_div(soup: BeautifulSoup) -> list[dict[s
     return None
 
 
-def _frcs_qualifying_rows_from_generic_tabulator(soup: BeautifulSoup) -> list[dict[str, str]] | None:
+def _frcs_qualifying_rows_from_generic_tabulator(
+    soup: BeautifulSoup,
+) -> list[dict[str, str]] | None:
     """Scan any ``div.tabulator`` with qualifying-like cells (ids other than round one/two tables)."""
     best: list[dict[str, str]] | None = None
     best_n = 0
-    for root in soup.find_all("div", class_=lambda c: _frcs_class_has(c, "tabulator")):
+    for root_el in soup.find_all("div", class_=lambda c: _frcs_class_has(c, "tabulator")):
+        root = as_tag(root_el)
+        if root is None:
+            continue
         if not root.select_one("div.tabulator-row"):
             continue
         rid = root.get("id")
@@ -226,9 +233,7 @@ def _frcs_qualifying_rows_from_rr_like_tables(soup: BeautifulSoup) -> list[dict[
             cols = tr.find_all("td", class_=_FRCS_TD_COL_CLASS)
             if len(cols) < 5:
                 continue
-            cl = tr.get("class") or []
-            if isinstance(cl, str):
-                cl = cl.split()
+            cl = class_list(tr)
             is_oe = "odd" in cl or "even" in cl
             rowd = _frcs_qual_dict_from_col_td_sequence(cols)
             if rowd is None:
@@ -284,7 +289,7 @@ def _frcs_qualifying_rows_from_thead_table(soup: BeautifulSoup) -> list[dict[str
         need_max = max(idxs)
         tbody = table.find("tbody") or table
         rows_out: list[dict[str, str]] = []
-        for tr in tbody.find_all("tr"):
+        for tr in child_tags(tbody, "tr"):
             if tr.find("th"):
                 continue
             tds = tr.find_all("td")
@@ -352,11 +357,11 @@ def _frcs_table_column_labels(table: Tag) -> list[str]:
     thead = table.find("thead")
     if thead is None:
         return []
-    row = thead.find("tr")
+    row = as_tag(thead.find("tr"))
     if row is None:
         return []
     labels: list[str] = []
-    for th in row.find_all("th"):
+    for th in child_tags(row, "th"):
         abbr = th.find("abbr")
         raw = abbr.get_text(strip=True) if abbr else th.get_text(strip=True)
         labels.append(re.sub(r"\s+", " ", raw))
@@ -722,14 +727,14 @@ def _frcs_thead_labels_expanded_for_colspan(table: Tag) -> list[str]:
     thead = table.find("thead")
     if thead is None:
         return []
-    row = thead.find("tr")
+    row = as_tag(thead.find("tr"))
     if row is None:
         return []
     labels: list[str] = []
-    for th in row.find_all("th"):
+    for th in child_tags(row, "th"):
         raw = _raw_header_text_from_th(th)
         try:
-            n = int(th.get("colspan") or 1)
+            n = int(as_str(th.get("colspan") or "1"))
         except (TypeError, ValueError):
             n = 1
         for _ in range(max(1, n)):
@@ -738,10 +743,10 @@ def _frcs_thead_labels_expanded_for_colspan(table: Tag) -> list[str]:
 
 
 def _frcs_first_body_row_data_fields(table: Tag) -> list[str]:
-    tbody = table.find("tbody")
+    tbody = as_tag(table.find("tbody"))
     if tbody is None:
         return []
-    for tr in tbody.find_all("tr"):
+    for tr in child_tags(tbody, "tr"):
         cells = tr.find_all("td")
         if not cells:
             continue
@@ -854,16 +859,16 @@ def _convert_table_by_id_to_csv(
 ) -> None:
     with open(html_file_path, encoding="utf-8") as f:
         soup = BeautifulSoup(f, "html.parser")
-    table = soup.find("table", id=table_id)
+    table = as_tag(soup.find("table", id=table_id))
     if table is None:
         logging.warning("FRCS table '%s' not found in %s", table_id, html_file_path)
         File.silent_remove(csv_file_path)
         File.write_csv(csv_file_path, [], [])
         return
-    tbody = table.find("tbody")
+    tbody = as_tag(table.find("tbody"))
     rows_src = tbody if tbody is not None else table
     rows: list[tuple[str, ...]] = []
-    for tr in rows_src.find_all("tr"):
+    for tr in child_tags(rows_src, "tr"):
         cells = tr.find_all("td")
         if not cells:
             continue
@@ -900,10 +905,9 @@ class FrcsHtmlToCsv:
             return
         csv_list: list = []
         event_number = 0
-        for tr in tbody.find_all("tr"):
+        for tr in child_tags(tbody, "tr"):
             tds = {
-                td.get("data-column"): td
-                for td in tr.find_all("td", attrs={"data-column": True})
+                td.get("data-column"): td for td in tr.find_all("td", attrs={"data-column": True})
             }
             race_td = tds.get(_FRCS_SCHEDULE_RACE_COL)
             if race_td is None:
@@ -913,22 +917,27 @@ class FrcsHtmlToCsv:
                 continue
             num_td = tds.get(_FRCS_SCHEDULE_NUMBER_COL)
             if num_td is None:
-                logging.warning("FRCS schedule: row missing # column (%r); skipped", _FRCS_SCHEDULE_NUMBER_COL)
+                logging.warning(
+                    "FRCS schedule: row missing # column (%r); skipped", _FRCS_SCHEDULE_NUMBER_COL
+                )
                 continue
             week_number_raw = _frcs_schedule_cell_sort_or_text(num_td)
             if not week_number_raw:
-                logging.warning("FRCS schedule: empty # cell; skipped row with race %s", race_a.get_text(strip=True))
+                logging.warning(
+                    "FRCS schedule: empty # cell; skipped row with race %s",
+                    race_a.get_text(strip=True),
+                )
                 continue
             event_number += 1
-            week_url = race_a["href"].strip()
+            week_url = as_str(race_a.get("href")).strip()
             week_race_name = race_a.get_text(strip=True)
             track_td = tds.get(_FRCS_SCHEDULE_TRACK_COL)
-            track_a = track_td.find("a", href=True) if track_td else None
+            track_a = as_tag(track_td.find("a", href=True)) if track_td else None
             if track_a:
-                week_track = (track_a.get("title") or "").strip() or track_a.get_text(strip=True)
+                week_track = as_str(track_a.get("title")).strip() or track_a.get_text(strip=True)
             else:
                 week_track = ""
-            week_track_url = track_a["href"].strip() if track_a and track_a.get("href") else ""
+            week_track_url = as_str(track_a.get("href")).strip() if track_a else ""
             date_td = tds.get(_FRCS_SCHEDULE_DATE_COL)
             week_date = ""
             if date_td is not None:
@@ -959,21 +968,29 @@ class FrcsHtmlToCsv:
     def convert_race_results(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as f:
             soup = BeautifulSoup(f, "html.parser")
-        table = soup.find("table", id="resultsTable")
+        table = as_tag(soup.find("table", id="resultsTable"))
         if table is None:
             # Some saved pages omit ``id=resultsTable``; pick table nearest a "Race Results"
             # heading and avoid unrelated sections like "Race Infractions".
-            heading = soup.find(
-                re.compile(r"^h[1-6]$"), string=re.compile(r"Race Results", re.I)
-            )
+            heading_node = soup.find(string=re.compile(r"Race Results", re.I))
+            heading = as_tag(heading_node.parent) if heading_node is not None else None
             if heading is not None:
-                table = heading.find_next("table")
+                table = as_tag(heading.find_next("table"))
             if table is None:
-                for candidate in soup.find_all("table", class_=lambda c: c and "cupTable" in str(c)):
+                for candidate_el in soup.find_all(
+                    "table", class_=lambda c: c and "cupTable" in str(c)
+                ):
+                    candidate = as_tag(candidate_el)
+                    if candidate is None:
+                        continue
                     labels = _frcs_table_column_labels(candidate)
                     labels_norm = {re.sub(r"[^a-z0-9]+", "", x.lower()) for x in labels}
                     # Require race-results-like labels, not infractions columns.
-                    if {"fin", "st", "driver"} <= labels_norm or {"finish", "start", "driver"} <= labels_norm:
+                    if {"fin", "st", "driver"} <= labels_norm or {
+                        "finish",
+                        "start",
+                        "driver",
+                    } <= labels_norm:
                         table = candidate
                         break
         normalized_headers: list[str] = []
@@ -983,9 +1000,9 @@ class FrcsHtmlToCsv:
             normalized_headers = _frcs_unique_snake_headers(
                 [_frcs_race_results_header_to_snake(x) for x in raw_labels]
             )
-            tbody = table.find("tbody")
+            tbody = as_tag(table.find("tbody"))
             rows_src = tbody if tbody is not None else table
-            for tr in rows_src.find_all("tr"):
+            for tr in child_tags(rows_src, "tr"):
                 cells = tr.find_all("td")
                 if not cells:
                     continue
@@ -1140,7 +1157,9 @@ class FrcsHtmlToCsv:
                 "FRCS qualifying: no extractable qualifying rows in %s; trying Racing Reference parser",
                 path,
             )
-            from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
+            from include.nascar.data_sources.racing_reference_html_to_csv import (
+                RacingReferenceHtmlToCsv,
+            )
 
             RacingReferenceHtmlToCsv.convert_qualifying(path)
             return
@@ -1154,7 +1173,7 @@ class FrcsHtmlToCsv:
             return
         with open(path, encoding="utf-8") as f:
             soup = BeautifulSoup(f, "html.parser")
-        table = soup.find("table", id="loopDataTable")
+        table = as_tag(soup.find("table", id="loopDataTable"))
         headers = [
             "driver_name",
             "start",
@@ -1187,7 +1206,7 @@ class FrcsHtmlToCsv:
         def ix(key: str) -> int | None:
             return idx.get(key)
 
-        tbody = table.find("tbody")
+        tbody = as_tag(table.find("tbody"))
         rows_src = tbody if tbody is not None else table
         csv_list: list = []
         if ix("DRIVER") is None:
@@ -1216,7 +1235,7 @@ class FrcsHtmlToCsv:
             ("LAPS", "total_laps", False),
             ("DR", "driver_rating", False),
         ]
-        for tr in rows_src.find_all("tr"):
+        for tr in child_tags(rows_src, "tr"):
             cells = tr.find_all("td")
             if not cells:
                 continue
@@ -1277,7 +1296,10 @@ class FrcsHtmlToCsv:
             return cells[idx].get_text(strip=True)
 
         def _frcs_race_infractions_heading(soup: BeautifulSoup) -> Tag | None:
-            for tag in soup.find_all(re.compile(r"^h[1-6]$")):
+            for tag_el in soup.find_all(re.compile(r"^h[1-6]$")):
+                tag = as_tag(tag_el)
+                if tag is None:
+                    continue
                 if "race infractions" in tag.get_text(strip=True).lower():
                     return tag
             return None
@@ -1288,22 +1310,23 @@ class FrcsHtmlToCsv:
         heading = _frcs_race_infractions_heading(soup)
         table = None
         if heading is not None:
-            cand = heading.find_next("table", class_=lambda c: c and "cupTable" in str(c))
-            table = cand if cand is not None else heading.find_next("table")
+            cand = as_tag(heading.find_next("table", class_=lambda c: c and "cupTable" in str(c)))
+            table = cand if cand is not None else as_tag(heading.find_next("table"))
         headers_csv = ["driver_name", "lap", "flag", "infraction", "penalty"]
         csv_list: list = []
         if table is not None:
-            thead = table.find("thead")
-            header_row = thead.find("tr") if thead is not None else None
-            header_cells = header_row.find_all("th") if header_row else table.find_all("th")
+            thead = as_tag(table.find("thead"))
+            header_row = as_tag(thead.find("tr")) if thead is not None else None
+            header_cells = child_tags(header_row, "th") if header_row else child_tags(table, "th")
             header_labels = [h.get_text(strip=True) for h in header_cells]
             idx_driver = _first_idx(header_labels, {"driver", "drivername", "name"})
             idx_lap = _first_idx(header_labels, {"lap", "laps"})
             idx_flag = _first_idx(header_labels, {"flag"})
             idx_infraction = _first_idx(header_labels, {"infraction", "violation", "reason"})
             idx_penalty = _first_idx(header_labels, {"penalty", "action"})
-            tbody = table.find("tbody")
-            for tr in (tbody.find_all("tr") if tbody else table.find_all("tr")):
+            tbody = as_tag(table.find("tbody"))
+            row_parent = tbody if tbody is not None else table
+            for tr in child_tags(row_parent, "tr"):
                 cells = tr.find_all("td")
                 if len(cells) < 3:
                     continue

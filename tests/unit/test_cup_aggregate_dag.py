@@ -5,6 +5,12 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import nascar.cup.aggregate as aggregate_dag
+from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
+from nascar.cup.scraper.dag_factories import (
+    CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
+    CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
+)
+
 from include.nascar.cup.aggregate_load import (
     FINISHED_AGG_WEEKS_SQL,
     WAVE1_LOAD_TASKS,
@@ -14,11 +20,6 @@ from include.nascar.cup.aggregate_load import (
     aggregate_load_parameters,
 )
 from include.nascar.enums import NascarSeries
-from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
-from nascar.cup.scraper.dag_factories import (
-    CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
-    CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT,
-)
 
 _EXPECTED_TASK_IDS = frozenset(
     {
@@ -104,9 +105,7 @@ def test_aggregate_load_parameters_uses_incremental_sql(mock_hook_cls: MagicMock
         (NascarSeries.CUP.series_id, 20),
     ]
 
-    params = aggregate_load_parameters(
-        {}, task_id="load_agg_week_teams_results"
-    )
+    params = aggregate_load_parameters({}, task_id="load_agg_week_teams_results")
 
     assert params == {
         "series_id": NascarSeries.CUP.series_id,
@@ -127,9 +126,7 @@ def test_aggregate_load_parameters_empty_when_nothing_needed(
 ) -> None:
     mock_hook_cls.return_value.get_records.return_value = []
 
-    params = aggregate_load_parameters(
-        {}, task_id="load_agg_week_teams_results"
-    )
+    params = aggregate_load_parameters({}, task_id="load_agg_week_teams_results")
 
     assert params == {"series_id": NascarSeries.CUP.series_id, "weeks": []}
 
@@ -144,9 +141,7 @@ def test_aggregate_load_parameters_rebuild_all_uses_finished_weeks_sql(
         (NascarSeries.CUP.series_id, 5),
     ]
 
-    params = aggregate_load_parameters(
-        {}, task_id="load_agg_week_teams_results"
-    )
+    params = aggregate_load_parameters({}, task_id="load_agg_week_teams_results")
 
     assert params["weeks"] == [{"week_id": 5}]
     sql = mock_hook_cls.return_value.get_records.call_args[0][0]

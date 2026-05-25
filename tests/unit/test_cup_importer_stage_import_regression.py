@@ -30,7 +30,7 @@ def test_load_stage_practices_persists_staged_xcom_metadata() -> None:
         patch.object(importer_mod, "NascarMySqlHook", return_value=MagicMock()),
         patch.object(importer_mod, "_importer_table_suffix", return_value="202601010000"),
         patch.object(importer_mod, "_context_year", return_value=2020),
-        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 5, 6)]),
+        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 2020, 5, 6)]),
         patch.object(importer_mod, "_cup_practice_session_numbers", return_value=[1]),
         patch.object(
             importer_mod,
@@ -76,7 +76,9 @@ def test_import_practices_uses_staged_xcom_and_not_filesystem() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
         patch.object(
-            importer_mod, "_cup_practice_session_numbers", side_effect=AssertionError("should not be called")
+            importer_mod,
+            "_cup_practice_session_numbers",
+            side_effect=AssertionError("should not be called"),
         ),
     ):
         importer_mod.import_practices(**kwargs)
@@ -85,7 +87,7 @@ def test_import_practices_uses_staged_xcom_and_not_filesystem() -> None:
     assert execute_mock.call_args.args[3] == RacingReferenceSource().id
 
 
-def test_import_practices_skips_when_temp_entrylist_missing() -> None:
+def test_import_practices_raises_when_tmp_car_missing() -> None:
     staged_rows = [
         {
             "week_id": 77,
@@ -110,7 +112,8 @@ def test_import_practices_skips_when_temp_entrylist_missing() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_practices(**kwargs)
+        with pytest.raises(RuntimeError, match=r"tmp_car_77_.*practice"):
+            importer_mod.import_practices(**kwargs)
 
     assert execute_mock.call_count == 0
 
@@ -124,7 +127,7 @@ def test_load_stage_qualifyings_persists_staged_xcom_metadata() -> None:
         patch.object(importer_mod, "NascarMySqlHook", return_value=MagicMock()),
         patch.object(importer_mod, "_importer_table_suffix", return_value="202601010000"),
         patch.object(importer_mod, "_context_year", return_value=2020),
-        patch.object(importer_mod, "_pull_target_weeks", return_value=[(555, 8, None)]),
+        patch.object(importer_mod, "_pull_target_weeks", return_value=[(555, 2020, 8, None)]),
         patch.object(
             importer_mod,
             "_cup_qualifying_csv_path",
@@ -167,7 +170,9 @@ def test_import_qualifyings_uses_staged_xcom_and_not_filesystem() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
         patch.object(
-            importer_mod, "_cup_qualifying_data_source_id", side_effect=AssertionError("should not be called")
+            importer_mod,
+            "_cup_qualifying_data_source_id",
+            side_effect=AssertionError("should not be called"),
         ),
     ):
         importer_mod.import_qualifyings(**kwargs)
@@ -176,7 +181,7 @@ def test_import_qualifyings_uses_staged_xcom_and_not_filesystem() -> None:
     assert execute_mock.call_args.args[3] == RacingReferenceSource().id
 
 
-def test_import_qualifyings_skips_when_temp_entrylist_missing() -> None:
+def test_import_qualifyings_raises_when_tmp_car_missing() -> None:
     staged_rows = [
         {
             "week_id": 19,
@@ -200,7 +205,8 @@ def test_import_qualifyings_skips_when_temp_entrylist_missing() -> None:
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_qualifyings(**kwargs)
+        with pytest.raises(RuntimeError, match=r"tmp_car_19_.*qualifying"):
+            importer_mod.import_qualifyings(**kwargs)
 
     assert execute_mock.call_count == 0
 
@@ -235,7 +241,9 @@ def test_import_practices_supports_frcs_and_racing_reference_staged_sources(sour
 
 
 @pytest.mark.parametrize("source_id", [FrcsSource().id, RacingReferenceSource().id])
-def test_import_qualifyings_supports_frcs_and_racing_reference_staged_sources(source_id: str) -> None:
+def test_import_qualifyings_supports_frcs_and_racing_reference_staged_sources(
+    source_id: str,
+) -> None:
     staged_rows = [
         {
             "week_id": 88,
@@ -280,7 +288,7 @@ def test_import_tasks_execute_from_staging_when_csv_missing(fn_name: str, stg_na
         patch.object(importer_mod, "NascarMySqlHook", return_value=MagicMock()),
         patch.object(importer_mod, "_importer_table_suffix", return_value="202601010000"),
         patch.object(importer_mod, "_context_year", return_value=2020),
-        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 7, None)]),
+        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 2020, 7, None)]),
         patch.object(importer_mod.os.path, "isfile", return_value=False),
         patch.object(
             importer_mod,
@@ -306,8 +314,9 @@ def test_import_races_executes_when_both_required_csvs_exist() -> None:
         patch.object(importer_mod, "NascarMySqlHook", return_value=MagicMock()),
         patch.object(importer_mod, "_importer_table_suffix", return_value="202601010000"),
         patch.object(importer_mod, "_context_year", return_value=2020),
-        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 7, None)]),
+        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 2020, 7, None)]),
         patch.object(importer_mod.os.path, "isfile", side_effect=_isfile),
+        patch.object(importer_mod, "_nascar_staging_table_exists", return_value=True),
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
@@ -316,7 +325,7 @@ def test_import_races_executes_when_both_required_csvs_exist() -> None:
     assert execute_mock.call_count == 1
 
 
-def test_import_races_skips_when_temp_entrylist_missing() -> None:
+def test_import_races_raises_when_tmp_car_missing() -> None:
     kwargs = {"ti": _DummyTI()}
     execute_mock = MagicMock()
 
@@ -327,13 +336,14 @@ def test_import_races_skips_when_temp_entrylist_missing() -> None:
         patch.object(importer_mod, "NascarMySqlHook", return_value=MagicMock()),
         patch.object(importer_mod, "_importer_table_suffix", return_value="202601010000"),
         patch.object(importer_mod, "_context_year", return_value=2020),
-        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 7, None)]),
+        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 2020, 7, None)]),
         patch.object(importer_mod.os.path, "isfile", side_effect=_isfile),
         patch.object(importer_mod, "_nascar_staging_table_exists", return_value=False),
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
     ):
-        importer_mod.import_races(**kwargs)
+        with pytest.raises(RuntimeError, match=r"tmp_car_101_.*race"):
+            importer_mod.import_races(**kwargs)
 
     assert execute_mock.call_count == 0
 
@@ -355,7 +365,7 @@ def test_load_stage_single_file_tasks_execute_when_csv_exists(fn_name: str) -> N
         patch.object(importer_mod, "NascarMySqlHook", return_value=MagicMock()),
         patch.object(importer_mod, "_importer_table_suffix", return_value="202601010000"),
         patch.object(importer_mod, "_context_year", return_value=2020),
-        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 7, None)]),
+        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 2020, 7, None)]),
         patch.object(importer_mod.os.path, "isfile", return_value=True),
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),
@@ -376,7 +386,7 @@ def test_load_stage_races_executes_when_both_csvs_exist() -> None:
         patch.object(importer_mod, "NascarMySqlHook", return_value=MagicMock()),
         patch.object(importer_mod, "_importer_table_suffix", return_value="202601010000"),
         patch.object(importer_mod, "_context_year", return_value=2020),
-        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 7, None)]),
+        patch.object(importer_mod, "_pull_target_weeks", return_value=[(101, 2020, 7, None)]),
         patch.object(importer_mod.os.path, "isfile", side_effect=_isfile),
         patch.object(importer_mod, "_execute_templated_sql_file", execute_mock),
         patch.object(importer_mod, "_emit_cup_importer_domain_event", MagicMock()),

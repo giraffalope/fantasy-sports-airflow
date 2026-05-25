@@ -15,11 +15,9 @@ def test_draftkings_salaries_paths(monkeypatch, tmp_path) -> None:
     assert paths.draftkings_salaries_csv(2026, 10) == directory / "DKSalaries.csv"
 
 
-def test_parse_draftkings_salary_path() -> None:
-    from include.nascar.dfs.salary_import_task import _parse_draftkings_salary_path
-
-    path = Path(
-        "/home/airflow/dfs/draftkings/nascar/cup/2026/10/DKSalaries.csv"
+def test_draftkings_salaries_csv_path_matches_layout(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AIRFLOW_DFS_ROOT", str(tmp_path))
+    csv_path = paths.draftkings_salaries_csv(2026, 10)
+    assert csv_path == Path(
+        tmp_path / "draftkings" / "nascar" / "cup" / "2026" / "10" / "DKSalaries.csv"
     )
-    assert _parse_draftkings_salary_path(path) == (2026, 10)
-    assert _parse_draftkings_salary_path(path.with_name("other.csv")) is None

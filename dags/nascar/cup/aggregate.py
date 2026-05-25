@@ -24,12 +24,7 @@ from pathlib import Path
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from airflow.sdk import DAG
-from include.nascar.cup.aggregate_load import (
-    WAVE1_LOAD_TASKS,
-    WAVE2_PREV_TRACK_LOAD_TASKS,
-    aggregate_base_load_parameters,
-    make_aggregate_load_operator,
-)
+from nascar.cup.dag_defaults import CUP_DAG_DEFAULT_ARGS
 from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
 from nascar.cup.scraper.dag_factories import (
     CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
@@ -37,6 +32,12 @@ from nascar.cup.scraper.dag_factories import (
 )
 
 from airflow_utils import MySQLTemplateFileOperatorFromContext
+from include.nascar.cup.aggregate_load import (
+    WAVE1_LOAD_TASKS,
+    WAVE2_PREV_TRACK_LOAD_TASKS,
+    aggregate_base_load_parameters,
+    make_aggregate_load_operator,
+)
 
 DAG_ID = "nascar.cup.aggregate"
 
@@ -52,6 +53,7 @@ with DAG(
     schedule=CUP_SCRAPER_PROD_HOURLY_CRON,
     catchup=False,
     max_active_runs=1,
+    default_args=CUP_DAG_DEFAULT_ARGS,
     doc_md=__doc__ or "",
 ) as dag:
     wait_importer_complete = ExternalTaskSensor(
@@ -74,8 +76,7 @@ with DAG(
     )
 
     wave1_tasks = [
-        make_aggregate_load_operator(task_id, sql_root=sql_root)
-        for task_id in WAVE1_LOAD_TASKS
+        make_aggregate_load_operator(task_id, sql_root=sql_root) for task_id in WAVE1_LOAD_TASKS
     ]
     wave2_tasks = [
         make_aggregate_load_operator(task_id, sql_root=sql_root)

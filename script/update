@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+# Upgrade locked dependencies and sync the local virtualenv.
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(dirname "$0")/.."
+cd "${BASEDIR}"
+
+case "${1:-}" in
+  --help | -h)
+    printf '%s\n' \
+      "Usage: ./script/update [uv-lock-args]" \
+      "" \
+      "Runs \`uv lock --upgrade\` then \`uv sync\` using the pyenv Python from .python-version" \
+      "(same interpreter selection as script/setup)." \
+      "Examples:" \
+      "  ./script/update" \
+      "  ./script/update --upgrade-package ruff"
+    exit 0
+    ;;
+esac
+
+uv_bin="$(command -v uv)"
+if [ -z "$uv_bin" ]; then
+  echo "uv not found; install from https://docs.astral.sh/uv/ or run script/setup" >&2
+  exit 1
+fi
+
+PYENV_ROOT="${PYENV_ROOT:-${HOME}/.pyenv}"
+export PATH="${PYENV_ROOT}/bin:${HOME}/.local/bin:${PATH}"
+
+python_version=$(sed 's/#.*//' .python-version 2>/dev/null | head -n1 | tr -d ' \t\r\n' || true)
+sync_args=""
+if [ -n "$python_version" ] && command -v pyenv >/dev/null 2>&1; then
+  eval "$(pyenv init - 2>/dev/null)" || true
+  py_cmd="$(pyenv which python 2>/dev/null)" || true
+  if [ -n "$py_cmd" ] && [ -x "$py_cmd" ]; then
+    sync_args="--python $py_cmd"
+  fi
+fi
+
+echo "Upgrading lockfile..."
+"$uv_bin" lock --upgrade "$@"
+echo "Syncing virtualenv..."
+# shellcheck disable=SC2086
+"$uv_bin" sync $sync_args

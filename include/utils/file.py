@@ -98,12 +98,10 @@ class File:
         try:
             with open(filename, encoding=encoding, newline="") as f:
                 if as_dict:
-                    reader = csv.DictReader(f)
-                    rows = list(reader)
-                else:
-                    reader = csv.reader(f)
-                    rows = list(reader)
-            return rows
+                    dict_reader = csv.DictReader(f)
+                    return list(dict_reader)
+                list_reader = csv.reader(f)
+                return list(list_reader)
         except Exception as e:
             raise RuntimeError(f"Failed to read CSV file {filename}: {e}") from e
 

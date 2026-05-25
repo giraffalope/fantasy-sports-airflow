@@ -9,6 +9,7 @@ import pytest
 
 from include.nascar.dfs.salary_import_task import (
     _CURRENT_WEEK_WITH_RACE_SQL,
+    _import_csv_file,
     _normalize_driver_name,
     _read_dk_salaries_csv,
     import_draftkings_salaries_task,
@@ -74,3 +75,33 @@ def test_import_draftkings_salaries_current_week_only(tmp_path: Path) -> None:
 
     assert result["imported"] == 3
     mock_import.assert_called_once()
+
+
+def test_import_csv_file_uses_run_in_transaction_and_executemany() -> None:
+    hook = MagicMock()
+    csv_path = _FIXTURE
+
+    with (
+        patch(
+            "include.nascar.dfs.salary_import_task.resolve_week_race",
+            return_value=(1048, 99),
+        ),
+        patch(
+            "include.nascar.dfs.salary_import_task._match_car_driver_id",
+            return_value=501,
+        ),
+    ):
+        result = _import_csv_file(
+            hook,
+            str(csv_path),
+            season_year=2026,
+            week_number=16,
+        )
+
+    assert result["rows_inserted"] == 1
+    hook.run_in_transaction.assert_called_once()
+    write_fn = hook.run_in_transaction.call_args.args[0]
+    conn = MagicMock()
+    cursor = MagicMock()
+    write_fn(conn, cursor)
+    cursor.executemany.assert_called_once()

@@ -6,11 +6,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import nascar.cup.importer as importer_mod
 import pytest
 
-import nascar.cup.importer as importer_mod
-
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+from tests.integration.cup_importer_db_helpers import cleanup_week_race_results
+
+pytestmark = pytest.mark.integration
 
 _SHARED_SCRAPER_ROOT = Path("/home/airflow/scraper/nascar")
 
@@ -115,27 +117,10 @@ def _prepare_week_1_shared_csv_inputs(scraper_root: Path) -> None:
             shutil.copyfile(src, rr_base / dst_name)
 
 
-def _cleanup_week_1_race_results(hook: NascarMySqlHook, week_id: int) -> None:
-    conn = hook.get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            DELETE rr
-            FROM nascar.race_results rr
-            JOIN nascar.races r ON r.id = rr.race_id
-            WHERE r.week_id = %s
-            """,
-            (week_id,),
-        )
-        conn.commit()
-    finally:
-        cur.close()
-        conn.close()
-
-
 @pytest.mark.regression
-def test_week1_enriched_race_results_has_non_null_team_names_for_target_drivers(monkeypatch) -> None:
+def test_week1_enriched_race_results_has_non_null_team_names_for_target_drivers(
+    monkeypatch,
+) -> None:
     _require_db_conn()
     hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
     ti = _DummyTI()
@@ -149,9 +134,11 @@ def test_week1_enriched_race_results_has_non_null_team_names_for_target_drivers(
 
     ids = _cup_2010_week_1_ids(hook)
     if ids is None:
-        pytest.fail("Could not resolve CUP 2010 week 1 race/week/season ids after schedule seed/import")
+        pytest.fail(
+            "Could not resolve CUP 2010 week 1 race/week/season ids after schedule seed/import"
+        )
     race_id, week_id, season_id = ids
-    _cleanup_week_1_race_results(hook, week_id)
+    cleanup_week_race_results(hook, week_id)
 
     ctx = {
         "ti": ti,
@@ -159,7 +146,9 @@ def test_week1_enriched_race_results_has_non_null_team_names_for_target_drivers(
         "logical_date": datetime(2010, 2, 1, tzinfo=UTC),
     }
 
-    monkeypatch.setattr(importer_mod, "_pull_target_weeks", lambda *_a, **_k: [(week_id, season_id, 1, 1)])
+    monkeypatch.setattr(
+        importer_mod, "_pull_target_weeks", lambda *_a, **_k: [(week_id, season_id, 1, 1)]
+    )
     monkeypatch.setattr(importer_mod, "_emit_cup_importer_domain_event", lambda *_a, **_k: None)
 
     importer_mod.load_stage_lineup_csvs(**ctx)

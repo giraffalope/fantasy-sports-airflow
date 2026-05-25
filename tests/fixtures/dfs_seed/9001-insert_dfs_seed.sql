@@ -1,0 +1,6 @@
+-- -- Stable DraftKings row for ML (DRAFTKINGS_DFS_ID = 1).
+-- INSERT INTO nascar.dfs (id, name, url)
+-- VALUES (1, 'DraftKings', 'https://frcs.pro/dfs/draftkings/cup/race-fantasy-points/')
+-- ON DUPLICATE KEY UPDATE
+--     url = VALUES(url),
+--     deleted_at = NULL;

@@ -14,14 +14,7 @@ def dfs_root() -> Path:
 
 
 def draftkings_salaries_dir(season_year: int, week_number: int) -> Path:
-    return (
-        dfs_root()
-        / "draftkings"
-        / "nascar"
-        / CUP_DB_NAME
-        / str(season_year)
-        / str(week_number)
-    )
+    return dfs_root() / "draftkings" / "nascar" / CUP_DB_NAME / str(season_year) / str(week_number)
 
 
 def draftkings_salaries_csv(season_year: int, week_number: int) -> Path:

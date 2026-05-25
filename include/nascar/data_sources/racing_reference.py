@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from bs4 import BeautifulSoup
 
+from include.nascar.data_sources.html_parse import as_str, as_tag, child_tags
 from include.nascar.data_sources.race_week_context import is_backfill_race_week_dag
 from include.nascar.data_sources.racing_reference_html_to_csv import RacingReferenceHtmlToCsv
 from include.nascar.enums import NascarSeries
@@ -103,14 +104,14 @@ class RacingReferenceSource:
         return self.resolve_href(h)
 
     def _find_first_href_containing(self, soup: BeautifulSoup, substring: str) -> str | None:
-        table = soup.find("table", {"class": "tb"})
+        table = as_tag(soup.find("table", {"class": "tb"}))
         if table is None:
             return None
-        for row in table.find_all("tr"):
-            for cell in row.find_all("td"):
-                for a in cell.find_all("a", href=True):
+        for row in child_tags(table, "tr"):
+            for cell in child_tags(row, "td"):
+                for a in child_tags(cell, "a", href=True):
                     if substring in a["href"]:
-                        return self.resolve_href(a["href"])
+                        return self.resolve_href(as_str(a["href"]))
         return None
 
     def extract_entrylist_url(self, soup: BeautifulSoup) -> str | None:
@@ -131,11 +132,11 @@ class RacingReferenceSource:
     def iter_practice_session_urls(
         self, practice_index_soup: BeautifulSoup
     ) -> list[tuple[int, str]]:
-        select = practice_index_soup.find("select", attrs={"name": "qnum"})
+        select = as_tag(practice_index_soup.find("select", attrs={"name": "qnum"}))
         if select is None:
             return []
         out: list[tuple[int, str]] = []
-        options = select.find_all("option")[1:-1]
+        options = child_tags(select, "option")[1:-1]
         for option in options:
             raw = option.get("value")
             if not raw:
@@ -319,7 +320,9 @@ def download_practices_html_if_missing(
         if not os.path.isfile(p):
             scraper = Scraper(week_path)
             _sleep_download_jitter()
-            logging.info("Racing Reference: downloading practice session %s %s -> %s", number, session_url, p)
+            logging.info(
+                "Racing Reference: downloading practice session %s %s -> %s", number, session_url, p
+            )
             scraper.download(
                 url=session_url,
                 filename=fn,

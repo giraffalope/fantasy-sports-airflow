@@ -12,6 +12,7 @@ from datetime import datetime
 
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG
+from nascar.cup.dag_defaults import CUP_DAG_DEFAULT_ARGS
 from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
 
 from include.nascar.dfs.salary_import_task import (
@@ -28,6 +29,7 @@ with DAG(
     schedule=CUP_SCRAPER_PROD_HOURLY_CRON,
     catchup=False,
     max_active_runs=1,
+    default_args=CUP_DAG_DEFAULT_ARGS,
     doc_md=__doc__ or "",
 ) as dag:
     ensure_draftkings_week_directory = PythonOperator(

@@ -122,7 +122,9 @@ def test_linear_dependencies() -> None:
     assert bootstrap_shared_stg_car_tables.downstream_task_ids == {
         resolve_drivers_cars_manufacturers_teams.task_id
     }
-    assert resolve_drivers_cars_manufacturers_teams.downstream_task_ids == {import_practices.task_id}
+    assert resolve_drivers_cars_manufacturers_teams.downstream_task_ids == {
+        import_practices.task_id
+    }
     assert import_practices.downstream_task_ids == {import_qualifyings.task_id}
     assert import_qualifyings.downstream_task_ids == {import_lineup.task_id}
     assert import_lineup.downstream_task_ids == {import_races.task_id}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from airflow_utils.db_cursor import DbCursor
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 from include.nascar.dfs.lineup_optimizer import (
     LineupPlayer,
@@ -102,28 +103,8 @@ def _load_player_pool(
     return players
 
 
-def _soft_delete_lineups(
-    hook: NascarMySqlHook,
-    *,
-    dfs_id: int,
-    race_id: int,
-    strategy: str,
-) -> None:
-    hook.run(
-        """
-        UPDATE nascar.dfs_race_lineups
-        SET deleted_at = UTC_TIMESTAMP()
-        WHERE dfs_id = %s
-          AND race_id = %s
-          AND strategy = %s
-          AND deleted_at IS NULL
-        """,
-        parameters=(dfs_id, race_id, strategy),
-    )
-
-
-def _insert_lineup(
-    hook: NascarMySqlHook,
+def _insert_lineup_on_cursor(
+    cursor: DbCursor,
     *,
     dfs_id: int,
     race_id: int,
@@ -135,17 +116,30 @@ def _insert_lineup(
     projected_total = round(sum(p.projected_points for p in picked), 2)
     salary_total = sum(p.salary for p in picked)
 
-    lineup_id = hook.run_insert_returning_id(
+    cursor.execute(
         """
         INSERT INTO nascar.dfs_race_lineups (
             dfs_id, race_id, strategy, projected_points_total, salary_total
         ) VALUES (%s, %s, %s, %s, %s)
         """,
-        parameters=(dfs_id, race_id, strategy, projected_total, salary_total),
+        (dfs_id, race_id, strategy, projected_total, salary_total),
     )
+    lineup_id = int(cursor.lastrowid)
+    if not lineup_id:
+        raise RuntimeError("INSERT dfs_race_lineups did not return an auto-increment id")
 
-    for player in picked:
-        hook.run(
+    child_rows = [
+        (
+            lineup_id,
+            player.car_driver_id,
+            player.dfs_driver_id,
+            round(player.projected_points, 2),
+            player.salary,
+        )
+        for player in picked
+    ]
+    if child_rows:
+        cursor.executemany(
             """
             INSERT INTO nascar.dfs_race_lineups_car_drivers (
                 dfs_race_lineup_id,
@@ -155,15 +149,44 @@ def _insert_lineup(
                 salary
             ) VALUES (%s, %s, %s, %s, %s)
             """,
-            parameters=(
-                lineup_id,
-                player.car_driver_id,
-                player.dfs_driver_id,
-                round(player.projected_points, 2),
-                player.salary,
-            ),
+            child_rows,
         )
     return lineup_id
+
+
+def _persist_strategy_lineups(
+    hook: NascarMySqlHook,
+    *,
+    dfs_id: int,
+    race_id: int,
+    strategy: str,
+    players: list[LineupPlayer],
+    lineups: list[list[int]],
+) -> int:
+    def _write(_conn: object, cursor: DbCursor) -> None:
+        cursor.execute(
+            """
+            UPDATE nascar.dfs_race_lineups
+            SET deleted_at = UTC_TIMESTAMP()
+            WHERE dfs_id = %s
+              AND race_id = %s
+              AND strategy = %s
+              AND deleted_at IS NULL
+            """,
+            (dfs_id, race_id, strategy),
+        )
+        for indices in lineups:
+            _insert_lineup_on_cursor(
+                cursor,
+                dfs_id=dfs_id,
+                race_id=race_id,
+                strategy=strategy,
+                players=players,
+                indices=indices,
+            )
+
+    hook.run_in_transaction(_write)
+    return len(lineups)
 
 
 def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
@@ -246,23 +269,14 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
             top_k=top_k,
             min_diff=min_diff,
         )
-        _soft_delete_lineups(
+        count = _persist_strategy_lineups(
             hook,
             dfs_id=DRAFTKINGS_DFS_ID,
             race_id=race_id,
             strategy=strategy,
+            players=players,
+            lineups=lineups,
         )
-        count = 0
-        for indices in lineups:
-            _insert_lineup(
-                hook,
-                dfs_id=DRAFTKINGS_DFS_ID,
-                race_id=race_id,
-                strategy=strategy,
-                players=players,
-                indices=indices,
-            )
-            count += 1
         inserted_by_strategy[strategy] = count
         _LOG.info(
             "generate_draftkings_lineups: race_id=%s strategy=%s lineups=%s min_diff=%s",

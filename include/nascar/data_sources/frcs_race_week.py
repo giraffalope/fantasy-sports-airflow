@@ -32,6 +32,12 @@ from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
+from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+from include.nascar.cup.current_week import (
+    SeriesCurrentWeek,
+    resolve_series_current_week,
+    week_has_dfs_salaries,
+)
 from include.nascar.data_sources.frcs import (
     FrcsSource,
     _resolve_frcs_source,
@@ -47,14 +53,7 @@ from include.nascar.data_sources.frcs import (
     download_qualifying_html_if_missing,
     download_race_results_html_if_missing,
 )
-from airflow_utils.nascar_mysql_hook import NascarMySqlHook
-from include.nascar.cup.current_week import (
-    SeriesCurrentWeek,
-    resolve_series_current_week,
-    week_has_dfs_salaries,
-)
 from include.nascar.data_sources.race_week_context import is_backfill_race_week_dag
-from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID
 from include.nascar.data_sources.racing_reference_race_week import (
     _cup_series_schedule_year_from_context,
     parse_schedule_week_date,
@@ -62,6 +61,7 @@ from include.nascar.data_sources.racing_reference_race_week import (
     week_date_within_race_week_scrape_horizon,
 )
 from include.nascar.enums import NascarSeries
+from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID
 from include.utils.file import File
 
 _FRCS_CUP = NascarSeries.CUP
@@ -182,9 +182,7 @@ def _frcs_week_skip_if_current_week_dfs_salaries_present(
         return False
     if year != current.season_year or event_number != current.week_number:
         return False
-    if not week_has_dfs_salaries(
-        hook, week_id=current.week_id, dfs_id=DRAFTKINGS_DFS_ID
-    ):
+    if not week_has_dfs_salaries(hook, week_id=current.week_id, dfs_id=DRAFTKINGS_DFS_ID):
         return False
     _frcs_week_line(task, year, event_number, "skip (current week dfs_salaries exist)")
     return True
@@ -260,13 +258,9 @@ def cup_series_sync_weeks(**context: Any) -> None:
         if _frcs_week_skip_if_loop_csv_present(task, year, event_number, base, context):
             continue
         weeks += 1
-        _frcs_purge_week_scrape_artifacts_if_loop_incomplete(
-            task, year, event_number, base
-        )
+        _frcs_purge_week_scrape_artifacts_if_loop_incomplete(task, year, event_number, base)
         _frcs_week_line(task, year, event_number, "ensure race-results.html")
-        download_race_results_html_if_missing(
-            src, _FRCS_CUP.db_name, year, event_number, week_url
-        )
+        download_race_results_html_if_missing(src, _FRCS_CUP.db_name, year, event_number, week_url)
     _frcs_task_end(task, year, weeks)
 
 
@@ -321,9 +315,7 @@ def cup_series_sync_practices(**context: Any) -> None:
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
         _frcs_week_line(task, year, event_number, "practice HTML + CSV")
-        download_practices_html_if_missing(
-            src, _FRCS_CUP.db_name, year, event_number, race_html
-        )
+        download_practices_html_if_missing(src, _FRCS_CUP.db_name, year, event_number, race_html)
         paths = sorted(glob.glob(os.path.join(base, "practice-*.html")))
         if paths:
             logging.info("FRCS race-week: converting practice files %s", paths)

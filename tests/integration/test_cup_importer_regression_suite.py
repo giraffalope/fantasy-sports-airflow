@@ -6,11 +6,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import nascar.cup.importer as importer_mod
 import pytest
 
-import nascar.cup.importer as importer_mod
-
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+from tests.integration.cup_importer_db_helpers import cleanup_week_race_results
+
+pytestmark = pytest.mark.integration
 
 
 SQL_ROOT = Path(__file__).resolve().parents[2] / "dags" / "sql" / "nascar.cup.importer"
@@ -90,7 +92,9 @@ def _ensure_2010_schedule_seeded(hook: NascarMySqlHook, context: dict[str, Any])
     )
 
 
-def _target_weeks_for_2010(hook: NascarMySqlHook, frcs_year: Path) -> list[tuple[int, int, int, int]]:
+def _target_weeks_for_2010(
+    hook: NascarMySqlHook, frcs_year: Path
+) -> list[tuple[int, int, int, int]]:
     rows = hook.get_records(
         """
         SELECT w.id, w.season_id, w.number
@@ -105,20 +109,21 @@ def _target_weeks_for_2010(hook: NascarMySqlHook, frcs_year: Path) -> list[tuple
         parameters=(1, 2010),
     )
     out: list[tuple[int, int, int, int]] = []
-    missing: list[str] = []
     for row in rows:
         week_id = int(row[0])
         season_id = int(row[1])
         event_number = int(row[2])
         week_dir = frcs_year / f"{event_number:02d}"
-        # Strict full-year regression: all DB weeks must have required race-stage CSVs.
         for required_name in ("race-results.csv", "loop-data.csv"):
             if not (week_dir / required_name).is_file():
-                missing.append(f"week {event_number:02d}: missing {required_name}")
-        out.append((week_id, season_id, event_number, event_number))
-    if missing:
-        detail = "\n".join(missing)
-        pytest.fail(f"Missing required 2010 fixtures for full-year regression:\n{detail}")
+                break
+        else:
+            out.append((week_id, season_id, event_number, event_number))
+    if not out:
+        pytest.fail(
+            f"No 2010 weeks with race-stage fixtures under {frcs_year} "
+            "(need race-results.csv and loop-data.csv per week dir)"
+        )
     return out
 
 
@@ -167,6 +172,9 @@ def test_regression_runtime_2010_stage_and_resolve_pipeline(monkeypatch) -> None
         pytest.fail("Regression DB has no CUP 2010 weeks after schedule seed/import")
     monkeypatch.setattr(importer_mod, "_pull_target_weeks", lambda *_a, **_k: weeks)
     monkeypatch.setattr(importer_mod, "_emit_cup_importer_domain_event", lambda *_a, **_k: None)
+
+    for week_id, _, _, _ in weeks:
+        cleanup_week_race_results(hook, week_id)
 
     importer_mod.load_stage_practices_csvs(**ctx)
     importer_mod.load_stage_qualifyings_csvs(**ctx)

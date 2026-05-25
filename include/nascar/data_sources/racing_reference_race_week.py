@@ -469,7 +469,9 @@ def cup_series_sync_qualifyings(**context: Any) -> None:
         weeks += 1
         race_html = os.path.join(base, "race-results.html")
         _rr_week_line(task, year, week_number, "qualifying HTML + CSV")
-        qpath = download_qualifying_html_if_missing(src, _RR_CUP.db_name, year, week_number, race_html)
+        qpath = download_qualifying_html_if_missing(
+            src, _RR_CUP.db_name, year, week_number, race_html
+        )
         if qpath:
             logging.info("Racing Reference race-week: converting qualifying %s", qpath)
         conv.convert_qualifying(qpath)

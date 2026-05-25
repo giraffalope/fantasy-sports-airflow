@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from unittest.mock import MagicMock
-
-import pytest
 
 for _name in (
     "airflow",
@@ -17,7 +14,7 @@ for _name in (
 ):
     sys.modules.setdefault(_name, MagicMock())
 
-from include.nascar.ml import train_task
+from include.nascar.ml import train_task  # noqa: E402
 
 
 def test_insert_feature_set_uses_run_insert_returning_id() -> None:
@@ -57,7 +54,8 @@ def test_insert_model_uses_run_insert_returning_id() -> None:
     assert model_id == 100
     hook.run_insert_returning_id.assert_called_once()
     hook.get_records.assert_not_called()
-    params = hook.run_insert_returning_id.call_args.kwargs.get("parameters") or (
-        hook.run_insert_returning_id.call_args[0][1]
+    params = (
+        hook.run_insert_returning_id.call_args.kwargs.get("parameters")
+        or (hook.run_insert_returning_id.call_args[0][1])
     )
     assert params[0] == 99

@@ -80,4 +80,6 @@ def test_frcs_practice_2025_contains_lap_average_columns(tmp_path) -> None:
     avg_speed_idx = header.index("10_lap_average_speed")
     data_rows = rows[1:]
     assert any(r[ten_idx].strip() for r in data_rows), "expected non-empty 10-lap average times"
-    assert any(r[avg_speed_idx].strip() for r in data_rows), "expected non-empty 10-lap average speeds"
+    assert any(r[avg_speed_idx].strip() for r in data_rows), (
+        "expected non-empty 10-lap average speeds"
+    )

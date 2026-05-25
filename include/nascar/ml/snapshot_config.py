@@ -74,7 +74,9 @@ PREV_TRACK_SOURCES: tuple[PrevTrackSource, ...] = (
     PrevTrackSource("agg_week_prev_track_cg_teams_results", "cg_team_pt", "team_id"),
     PrevTrackSource("agg_week_prev_track_cgm_teams_results", "cgm_team_pt", "team_id"),
     PrevTrackSource("agg_week_prev_track_cg_manufacturers_results", "cg_mfr_pt", "manufacturer_id"),
-    PrevTrackSource("agg_week_prev_track_cgm_manufacturers_results", "cgm_mfr_pt", "manufacturer_id"),
+    PrevTrackSource(
+        "agg_week_prev_track_cgm_manufacturers_results", "cgm_mfr_pt", "manufacturer_id"
+    ),
 )
 
 PREV_TRACK_TYPES_SOURCES: tuple[PrevTrackTypesSource, ...] = (

@@ -3,21 +3,29 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import include.nascar.data_sources as nascar_data_sources
 from include.nascar.data_sources.frcs import (
     FrcsSource,
-    download_year_schedule_html as frcs_download_year_schedule_html,
+)
+from include.nascar.data_sources.frcs import (
     convert_year_schedule_html_to_csv as frcs_convert_year_schedule_html_to_csv,
+)
+from include.nascar.data_sources.frcs import (
+    download_year_schedule_html as frcs_download_year_schedule_html,
 )
 from include.nascar.data_sources.racing_reference import (
     RacingReferenceSource,
-    download_year_schedule_html as rr_download_year_schedule_html,
+)
+from include.nascar.data_sources.racing_reference import (
     convert_year_schedule_html_to_csv as rr_convert_year_schedule_html_to_csv,
+)
+from include.nascar.data_sources.racing_reference import (
+    download_year_schedule_html as rr_download_year_schedule_html,
 )
 from include.nascar.enums import NascarSeries
 from include.utils.scraper import Scraper
@@ -59,7 +67,9 @@ def test_frcs_backfill_skips_download_and_convert_when_schedule_csv_exists(
     frcs_download_year_schedule_html(backfill_context, NascarSeries.CUP.db_name, source=source)
     assert calls == []
 
-    frcs_convert_year_schedule_html_to_csv(backfill_context, NascarSeries.CUP.db_name, source=source)
+    frcs_convert_year_schedule_html_to_csv(
+        backfill_context, NascarSeries.CUP.db_name, source=source
+    )
     assert (base / "schedule.csv").read_text(encoding="utf-8").startswith("event_number")
 
 

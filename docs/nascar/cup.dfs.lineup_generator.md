@@ -23,14 +23,16 @@ builds top-K optimal lineups per strategy when predictions and DK salaries exist
 `nascar.cup.machine_learning` / `predict_upcoming_week` (same poke/timeout as
 aggregate→ML sensors).
 
-There is **no** hard dependency on `nascar.cup.dfs.salary_importer`; the generate
-task skips with a log when DK salaries are missing for the predict snapshot’s race.
+`wait_dk_salaries_complete` sensors `nascar.cup.dfs.salary_importer` /
+`import_draftkings_salaries` (same poke/timeout as the ML sensor). The generate
+task still soft-skips with a log if salaries are missing in the database.
 
 ## Tasks
 
 | Task ID | Purpose |
 | --- | --- |
 | `wait_ml_predict_complete` | `ExternalTaskSensor` on ML predict task |
+| `wait_dk_salaries_complete` | `ExternalTaskSensor` on DK salary import task |
 | `generate_draftkings_lineups` | Top-K CP-SAT lineups → `dfs_race_lineups` + child rows |
 
 ## Skip conditions

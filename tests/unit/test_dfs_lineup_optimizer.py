@@ -34,12 +34,8 @@ def test_generate_lineup_respects_cap_and_size() -> None:
 
 def test_min_diff_two_forces_more_diversity_than_one() -> None:
     players = _pool()
-    one = generate_top_k_lineups(
-        players, lineup_size=3, salary_cap=50000, top_k=2, min_diff=1
-    )
-    two = generate_top_k_lineups(
-        players, lineup_size=3, salary_cap=50000, top_k=2, min_diff=2
-    )
+    one = generate_top_k_lineups(players, lineup_size=3, salary_cap=50000, top_k=2, min_diff=1)
+    two = generate_top_k_lineups(players, lineup_size=3, salary_cap=50000, top_k=2, min_diff=2)
     assert len(one) >= 2
     assert len(two) >= 2
     overlap_one = len(set(one[0]) & set(one[1]))

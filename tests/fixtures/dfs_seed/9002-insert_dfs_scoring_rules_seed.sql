@@ -1,0 +1,11 @@
+-- -- DraftKings Cup scoring rules (matches tests/unit/test_dfs_scoring.py _DRAFTKINGS_RULES).
+-- INSERT INTO nascar.dfs_scoring_rules (dfs_id, name, version, rules)
+-- VALUES (
+--     1,
+--     'cup_default',
+--     1,
+--     '{"version":1,"components":[{"name":"finish","source":"r_finish_position","type":"finish_table","table":{"1":45,"2":42,"3":41,"4":40},"formula":{"base":41,"subtract_position":true,"min":0}},{"name":"place_diff","source":"r_place_diff","fallback":{"from":["r_start_position","r_finish_position"],"op":"subtract"},"type":"linear","multiplier":1.0},{"name":"fastest_laps","source":"r_total_fastest_laps","type":"linear","multiplier":0.45},{"name":"laps_led","source":"r_total_laps_led","type":"linear","multiplier":0.25}]}'
+-- )
+-- ON DUPLICATE KEY UPDATE
+--     rules = VALUES(rules),
+--     deleted_at = NULL;

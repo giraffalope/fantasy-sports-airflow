@@ -13,6 +13,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from include.nascar.data_sources.frcs_html_to_csv import FrcsHtmlConverters
+from include.nascar.data_sources.html_parse import as_str, as_tag
 from include.nascar.data_sources.race_week_context import is_backfill_race_week_dag
 from include.nascar.data_sources.racing_reference import RACING_REFERENCE_USER_AGENTS
 from include.nascar.enums import NascarSeries
@@ -24,6 +25,7 @@ FRCS_USER_AGENTS = RACING_REFERENCE_USER_AGENTS
 
 def _frcs_random_user_agent() -> str:
     return random.choice(RACING_REFERENCE_USER_AGENTS)
+
 
 DEFAULT_NASCAR_SCRAPER_ROOT = "/home/airflow/scraper/nascar"
 
@@ -74,10 +76,10 @@ class FrcsSource:
         return self.resolve_href(h)
 
     def _first_href_matching(self, soup: BeautifulSoup, needle: str) -> str | None:
-        a = soup.find("a", href=lambda h: h and needle in h)
-        if a is None or not a.get("href"):
+        link = as_tag(soup.find("a", href=lambda h: h and needle in h))
+        if link is None or not link.get("href"):
             return None
-        return self.resolve_href(str(a["href"]).strip())
+        return self.resolve_href(as_str(link.get("href")).strip())
 
     def extract_entrylist_url(self, soup: BeautifulSoup) -> str | None:
         return self._first_href_matching(soup, "/races/entrylist/")

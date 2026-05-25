@@ -10,7 +10,6 @@ import pytest
 
 from include.nascar.ml import model_scope as ms
 
-
 _FEATURE_KEYS = [
     "r_start_position",
     "cd_pt_finish_avg",

@@ -7,12 +7,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 import nascar.cup.importer as importer_mod
+import pytest
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 from include.nascar.data_sources.frcs_html_to_csv import FrcsHtmlToCsv
+from tests.integration.cup_importer_db_helpers import cleanup_week_race_results
+
+pytestmark = pytest.mark.integration
 
 
 class _DummyTI:
@@ -198,7 +200,14 @@ def _prepare_2010_week_1_csv_inputs_for_team_resolution() -> None:
     rr_base.mkdir(parents=True, exist_ok=True)
 
     # Use the same canonical week fixtures for both sources as requested.
-    for name in ["entrylist.csv", "lineup.csv", "race-results.csv", "loop-data.csv", "qualifying.csv", "practice-1.csv"]:
+    for name in [
+        "entrylist.csv",
+        "lineup.csv",
+        "race-results.csv",
+        "loop-data.csv",
+        "qualifying.csv",
+        "practice-1.csv",
+    ]:
         src = frcs_base / name
         if src.is_file():
             shutil.copyfile(src, rr_base / name)
@@ -260,7 +269,8 @@ def test_importer_runtime_populates_practice_and_qualifying_results_in_db(monkey
     )
 
     importer_mod.load_stage_entrylist_csvs(**ctx)
-    importer_mod.import_entrylist(**ctx)
+    importer_mod.bootstrap_shared_stg_car_tables(**ctx)
+    importer_mod.resolve_drivers_cars_manufacturers_teams(**ctx)
     importer_mod.load_stage_practices_csvs(**ctx)
     importer_mod.import_practices(**ctx)
     importer_mod.load_stage_qualifyings_csvs(**ctx)
@@ -330,7 +340,8 @@ def test_importer_runtime_filters_rows_with_null_best_time_or_speed(monkeypatch)
     )
 
     importer_mod.load_stage_entrylist_csvs(**ctx)
-    importer_mod.import_entrylist(**ctx)
+    importer_mod.bootstrap_shared_stg_car_tables(**ctx)
+    importer_mod.resolve_drivers_cars_manufacturers_teams(**ctx)
     importer_mod.load_stage_practices_csvs(**ctx)
     importer_mod.import_practices(**ctx)
     importer_mod.load_stage_qualifyings_csvs(**ctx)
@@ -391,6 +402,7 @@ def test_importer_runtime_week1_enriched_race_results_has_non_null_team_names(mo
     if ids is None:
         pytest.skip("Could not resolve CUP 2010 week 1 race/week/season ids")
     race_id, week_id, season_id = ids
+    cleanup_week_race_results(hook, week_id)
 
     ti = _DummyTI()
     ctx = {
@@ -399,7 +411,9 @@ def test_importer_runtime_week1_enriched_race_results_has_non_null_team_names(mo
         "logical_date": datetime(2010, 2, 1, tzinfo=UTC),
     }
 
-    monkeypatch.setattr(importer_mod, "_pull_target_weeks", lambda *_a, **_k: [(week_id, season_id, 1, 1)])
+    monkeypatch.setattr(
+        importer_mod, "_pull_target_weeks", lambda *_a, **_k: [(week_id, season_id, 1, 1)]
+    )
     monkeypatch.setattr(importer_mod, "_emit_cup_importer_domain_event", lambda *_a, **_k: None)
 
     importer_mod.load_stage_lineup_csvs(**ctx)

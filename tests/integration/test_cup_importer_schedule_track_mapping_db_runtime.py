@@ -6,18 +6,19 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+import nascar.cup.importer as importer_mod
 import pytest
 
-import nascar.cup.importer as importer_mod
-
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+
+pytestmark = pytest.mark.integration
 
 
 _CANONICAL_NAME = "Schedule Mapping Canonical Track"
 _TRUNCATED_NAME = "Schedule Mapping Canon…"
 _RR_NAME = "Schedule Map RR"
 _TEST_YEAR = 2098
-_TEST_EVENT = 998
+_TEST_EVENT = 248
 _TABLE_SUFFIX = "209801011200"
 
 
@@ -122,8 +123,7 @@ def test_import_schedule_uses_data_sources_tracks_mapping_not_truncated_name() -
                     "SELECT id FROM nascar.data_sources WHERE name = %s LIMIT 1",
                     (source_name,),
                 )
-                row = cur.fetchone()
-            source_id = int(row[0])
+                cur.fetchone()
 
         cur.execute("SELECT id FROM nascar.data_sources WHERE name = 'frcs' LIMIT 1")
         frcs_source_id = int(cur.fetchone()[0])

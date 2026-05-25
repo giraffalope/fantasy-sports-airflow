@@ -17,8 +17,8 @@ for _name in (
 ):
     sys.modules.setdefault(_name, MagicMock())
 
-from include.nascar.ml.snapshot_config import SNAPSHOT_KIND_TRAIN
-from include.nascar.ml.training_targets import load_training_frame
+from include.nascar.ml.snapshot_config import SNAPSHOT_KIND_TRAIN  # noqa: E402
+from include.nascar.ml.training_targets import load_training_frame  # noqa: E402
 
 
 def _import_train_task():

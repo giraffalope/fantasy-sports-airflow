@@ -16,7 +16,9 @@ from typing import Any
 
 import numpy as np
 
+from airflow_utils.db_cursor import DbCursor
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+from include.nascar.enums import NascarSeries
 from include.nascar.ml.model_scope import (
     SCOPE_GLOBAL,
     SCOPE_TRACK,
@@ -24,7 +26,6 @@ from include.nascar.ml.model_scope import (
     global_fallback_enabled,
 )
 from include.nascar.ml.scoring import compute_dfs_points_from_targets
-from include.nascar.enums import NascarSeries
 from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID, SNAPSHOT_KIND_PREDICT
 from include.nascar.ml.xgb_train_pipeline import DEFAULT_TARGETS, PRIMARY_TARGET
 
@@ -88,6 +89,7 @@ def _latest_predict_snapshot(
           AND s.dfs_scoring_rules_id = %s
           AND s.deleted_at IS NULL
           AND s.series_id = %s
+        ORDER BY s.id DESC
         LIMIT 1
         """,
         parameters=(SNAPSHOT_KIND_PREDICT, rules_id, series_id),
@@ -372,33 +374,55 @@ def predict_upcoming_week_task(**_context: object) -> dict[str, Any]:
         )
 
     primary_model_id = model_ids.get(PRIMARY_TARGET) or next(iter(model_ids.values()))
-    _soft_delete_existing_predictions(
-        hook,
-        model_id=primary_model_id,
-        snapshot_id=snapshot["id"],
-    )
-
-    inserted = 0
+    insert_params: list[tuple[Any, ...]] = []
     for i, row in enumerate(rows):
         predicted_targets = {
-            target: float(predictions[i])
-            for target, predictions in target_predictions.items()
+            target: float(predictions[i]) for target, predictions in target_predictions.items()
         }
         total, breakdown = compute_dfs_points_from_targets(
             row.get("r_start_position"),
             predicted_targets,
             scoring_rules,
         )
-        _insert_prediction(
-            hook,
-            model_id=primary_model_id,
-            snapshot_id=snapshot["id"],
-            car_driver_id=row["car_driver_id"],
-            predicted_targets=predicted_targets,
-            predicted_breakdown=breakdown,
-            predicted_total=float(total),
+        insert_params.append(
+            (
+                primary_model_id,
+                snapshot["id"],
+                row["car_driver_id"],
+                json.dumps(predicted_targets),
+                json.dumps(breakdown),
+                round(float(total), 3),
+            )
         )
-        inserted += 1
+
+    def _write_predictions(_conn: object, cursor: DbCursor) -> None:
+        cursor.execute(
+            """
+            UPDATE nascar.ml_predictions
+            SET deleted_at = UTC_TIMESTAMP()
+            WHERE ml_model_id = %s
+              AND ml_training_snapshot_id = %s
+              AND deleted_at IS NULL
+            """,
+            (primary_model_id, snapshot["id"]),
+        )
+        if insert_params:
+            cursor.executemany(
+                """
+                INSERT INTO nascar.ml_predictions (
+                    ml_model_id,
+                    ml_training_snapshot_id,
+                    car_driver_id,
+                    predicted_targets_json,
+                    predicted_dfs_points_breakdown,
+                    predicted_dfs_points
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                insert_params,
+            )
+
+    hook.run_in_transaction(_write_predictions)
+    inserted = len(insert_params)
 
     _LOG.info(
         "predict_upcoming_week_task: snapshot_id=%s week_id=%s rows=%s primary_model=%s",

@@ -34,9 +34,7 @@ def test_schedule_url(source: FrcsSource) -> None:
 
 def test_storage_paths(source: FrcsSource) -> None:
     cup = NascarSeries.CUP.db_name
-    assert source.storage_path_series_year(cup, 2026) == (
-        "/tmp/scraper/nascar/frcs.pro/cup/2026"
-    )
+    assert source.storage_path_series_year(cup, 2026) == ("/tmp/scraper/nascar/frcs.pro/cup/2026")
     assert source.storage_path_week(cup, 2026, 3) == "/tmp/scraper/nascar/frcs.pro/cup/2026/03"
 
 

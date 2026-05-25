@@ -114,7 +114,9 @@ def test_emit_noop_default(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_emit_log_backend(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_emit_log_backend(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.setenv("NASCAR_DOMAIN_EVENTS_BACKEND", "log")
     caplog.set_level(logging.INFO)
     de.reset_backend_cache_for_tests()

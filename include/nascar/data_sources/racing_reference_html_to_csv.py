@@ -10,6 +10,7 @@ from datetime import datetime
 
 from bs4 import BeautifulSoup
 
+from include.nascar.data_sources.html_parse import as_str, as_tag, child_tags, require_tag, tag_text
 from include.nascar.schedule_week_date_csv import week_date_for_schedule_csv
 from include.nascar.time_csv import normalize_time_to_hhmmss_mmm as _normalize_time_to_hhmmss_mmm
 from include.utils.file import File
@@ -85,8 +86,8 @@ class RacingReferenceHtmlToCsv:
 
     def __init__(self, html: str):
         self.html = html
-        self.soup = None
-        self.data: list = []
+        self.soup: BeautifulSoup | None = None
+        self.data: list[list[str]] = []
 
     def parse_html(self) -> None:
         self.soup = BeautifulSoup(self.html, "html.parser")
@@ -108,26 +109,29 @@ class RacingReferenceHtmlToCsv:
     def convert_schedule(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
-        rows = soup.find_all("div", {"class": "table-row"})
+        rows = child_tags(soup, "div", {"class": "table-row"})
         csv_list: list = []
         csv_row: dict[str, str] = {}
         for row in rows:
-            raceweek_number_div = row.find("div", {"class": "race-number"})
-            raceweek_number = raceweek_number_div.get_text()
+            raceweek_number_div = require_tag(
+                row.find("div", {"class": "race-number"}), context="race-number"
+            )
+            raceweek_number = tag_text(raceweek_number_div)
             raceweek_url = ""
-            if raceweek_number_div.find("a"):
-                raceweek_url = raceweek_number_div.find("a").get("href")
+            number_link = as_tag(raceweek_number_div.find("a"))
+            if number_link is not None:
+                raceweek_url = as_str(number_link.get("href"))
             raceweek_title = ""
-            if raceweek_number_div.find("a"):
-                raceweek_title = raceweek_number_div.find("a").get("title")
+            if number_link is not None:
+                raceweek_title = as_str(number_link.get("title"))
             else:
                 upcoming = row.find("div", {"class": "upcoming"})
-                raceweek_title = upcoming.get_text().strip() if upcoming else ""
-                raceweek_title = re.findall('"([^"]*)"', raceweek_title)
-                raceweek_title = raceweek_title[0] if len(raceweek_title) else ""
-            date_div = row.find("div", {"class": "date"})
-            raceweek_date = date_div.get_text() if date_div else ""
-            ds = date_div.get("data-sort") if date_div else None
+                upcoming_text = tag_text(upcoming)
+                title_matches = re.findall('"([^"]*)"', upcoming_text)
+                raceweek_title = title_matches[0] if title_matches else ""
+            date_div = as_tag(row.find("div", {"class": "date"}))
+            raceweek_date = tag_text(date_div)
+            ds = date_div.get("data-sort") if date_div is not None else None
             if ds and str(ds).strip():
                 week_date = week_date_for_schedule_csv(str(ds), raceweek_date.strip())
                 if not week_date:
@@ -138,8 +142,10 @@ class RacingReferenceHtmlToCsv:
                 week_date = datetime.strptime(raceweek_date.strip(), "%m/%d/%y").strftime(
                     "%Y-%m-%d"
                 )
-            raceweek_track = row.find("div", {"class": "track"}).find("a").get_text()
-            raceweek_track_url = row.find("div", {"class": "track"}).find("a")["href"]
+            track_div = require_tag(row.find("div", {"class": "track"}), context="track")
+            track_link = require_tag(track_div.find("a"), context="track link")
+            raceweek_track = tag_text(track_link)
+            raceweek_track_url = as_str(track_link.get("href"))
             csv_row = {
                 "week_number": raceweek_number.strip(),
                 "week_url": raceweek_url.strip(),
@@ -183,12 +189,8 @@ class RacingReferenceHtmlToCsv:
             return cells[i].get_text(strip=True) if i < n else ""
 
         sponsor_cell = cells[4]
-        sponsor = (
-            sponsor_cell.find("b").get_text(strip=True) if sponsor_cell.find("b") else ""
-        )
-        owner = (
-            sponsor_cell.find("a").get_text(strip=True) if sponsor_cell.find("a") else ""
-        )
+        sponsor = sponsor_cell.find("b").get_text(strip=True) if sponsor_cell.find("b") else ""
+        owner = sponsor_cell.find("a").get_text(strip=True) if sponsor_cell.find("a") else ""
 
         first = txt(0).lower()
         if first in ("pos", "fin", "pst", "#", "st") or first.startswith("pos"):
@@ -244,7 +246,7 @@ class RacingReferenceHtmlToCsv:
     def convert_race_results(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
-        results_table = soup.find("table", {"class": "race-results-tbl"})
+        results_table = as_tag(soup.find("table", {"class": "race-results-tbl"}))
         csv_list: list = []
         headers = [
             "position",
@@ -261,9 +263,9 @@ class RacingReferenceHtmlToCsv:
             "playoff_points",
         ]
         if results_table is not None:
-            tbody = results_table.find("tbody")
+            tbody = as_tag(results_table.find("tbody"))
             row_container = tbody or results_table
-            for row in row_container.find_all("tr"):
+            for row in child_tags(row_container, "tr"):
                 if row.find("td") is None and row.find("th") is not None:
                     continue
                 cells = RacingReferenceHtmlToCsv._race_results_row_cells(row)
@@ -274,16 +276,16 @@ class RacingReferenceHtmlToCsv:
         _sort_rr_rows_by_header_column(csv_list, headers, "position", reverse=False)
         _write_rr_csv_or_remove(csv_file_path, csv_list, headers)
         if csv_list:
-            logging.info("Racing Reference: race results %d rows -> %s", len(csv_list), csv_file_path)
+            logging.info(
+                "Racing Reference: race results %d rows -> %s", len(csv_list), csv_file_path
+            )
 
     @staticmethod
     def convert_prerace_penalties(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
-        or_cell = soup.find("td", {"class": "otherResultsTbl"})
-        other_results_tables = (
-            or_cell.find_all("table", {"class": "tb"}) if or_cell is not None else []
-        )
+        or_cell = as_tag(soup.find("td", {"class": "otherResultsTbl"}))
+        other_results_tables = child_tags(or_cell, "table", {"class": "tb"}) if or_cell else []
         tableIndex = None
         index = 0
         csv_list: list = []
@@ -318,10 +320,8 @@ class RacingReferenceHtmlToCsv:
     def convert_caution_flags(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
-        or_cell = soup.find("td", {"class": "otherResultsTbl"})
-        other_results_tables = (
-            or_cell.find_all("table", {"class": "tb"}) if or_cell is not None else []
-        )
+        or_cell = as_tag(soup.find("td", {"class": "otherResultsTbl"}))
+        other_results_tables = child_tags(or_cell, "table", {"class": "tb"}) if or_cell else []
         tableIndex = None
         index = 0
         csv_list: list = []
@@ -341,7 +341,7 @@ class RacingReferenceHtmlToCsv:
                 if len(cols) < 6:
                     continue
                 img_tag = cols[0].find("img")
-                src = img_tag.get("src") if img_tag is not None else None
+                src = as_str(img_tag.get("src")) if img_tag is not None else ""
                 if src:
                     condition = os.path.splitext(os.path.basename(src))[0].replace("_flag", "")
                 else:
@@ -373,10 +373,8 @@ class RacingReferenceHtmlToCsv:
     def convert_lap_leaders(html_file_path: str, csv_file_path: str) -> None:
         with open(html_file_path, encoding="utf-8") as html_file:
             soup = BeautifulSoup(html_file, "html.parser")
-        or_cell = soup.find("td", {"class": "otherResultsTbl"})
-        other_results_tables = (
-            or_cell.find_all("table", {"class": "tb"}) if or_cell is not None else []
-        )
+        or_cell = as_tag(soup.find("td", {"class": "otherResultsTbl"}))
+        other_results_tables = child_tags(or_cell, "table", {"class": "tb"}) if or_cell else []
         tableIndex = None
         index = 0
         csv_list: list = []
@@ -494,7 +492,9 @@ class RacingReferenceHtmlToCsv:
             for table in tables:
                 nh = table.find("td", {"class": "newhead"})
                 table_heading = nh.get_text().strip().lower() if nh else ""
-                logging.debug("Racing Reference: practice table_heading=%r path=%s", table_heading, path)
+                logging.debug(
+                    "Racing Reference: practice table_heading=%r path=%s", table_heading, path
+                )
                 if "practice" in table_heading and "results" in table_heading:
                     tableIndex = index
                     break
@@ -607,14 +607,16 @@ class RacingReferenceHtmlToCsv:
                 if len(cols) > 1:
                     c1 = cols[1]
                     a1 = c1.find("a")
-                    driver_name = (
-                        a1.get_text().strip() if a1 is not None else c1.get_text().strip()
-                    )
+                    driver_name = a1.get_text().strip() if a1 is not None else c1.get_text().strip()
                 else:
                     driver_name = ""
                 number = cols[2].get_text().strip() if len(cols) > 2 else ""
                 manufacturer = cols[3].get_text().strip() if len(cols) > 3 else ""
-                lap_time = _normalize_time_to_hhmmss_mmm(cols[4].get_text().strip()) if len(cols) > 4 else ""
+                lap_time = (
+                    _normalize_time_to_hhmmss_mmm(cols[4].get_text().strip())
+                    if len(cols) > 4
+                    else ""
+                )
                 lap_speed = cols[5].get_text().strip() if len(cols) > 5 else ""
                 csv_list.append(
                     {
@@ -779,9 +781,9 @@ class RacingReferenceHtmlToCsv:
                         else ""
                     )
                     lap = cols[2].get_text().strip()
-                    flag = os.path.splitext(os.path.basename(cols[3].find("img").get("src")))[
-                        0
-                    ].replace("_flag", "")
+                    img = as_tag(cols[3].find("img"))
+                    flag_src = as_str(img.get("src")) if img is not None else ""
+                    flag = os.path.splitext(os.path.basename(flag_src))[0].replace("_flag", "")
                     infraction = cols[4].get_text().strip()
                     penalty = cols[5].get_text().strip()
                     csv_list.append(

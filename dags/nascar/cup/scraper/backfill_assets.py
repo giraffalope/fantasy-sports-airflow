@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from airflow.sdk import Asset, DAG
+from airflow.sdk import DAG, Asset
 
 _ENABLE_BACKFILL_DAGS_ENV = "FS_ENABLE_BACKFILL_DAGS"
 

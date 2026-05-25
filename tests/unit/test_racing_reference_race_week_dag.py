@@ -82,24 +82,15 @@ def test_linear_dependencies() -> None:
 
 def test_python_callables_match_operators() -> None:
     dag = race_week_dag.dag
-    assert (
-        dag.get_task("sync_weeks").python_callable is cup_series_sync_weeks
-    )
+    assert dag.get_task("sync_weeks").python_callable is cup_series_sync_weeks
     assert dag.get_task("sync_entrylists").python_callable is cup_series_sync_entrylists
     assert dag.get_task("sync_practices").python_callable is cup_series_sync_practices
+    assert dag.get_task("sync_qualifyings").python_callable is cup_series_sync_qualifyings
     assert (
-        dag.get_task("sync_qualifyings").python_callable is cup_series_sync_qualifyings
+        dag.get_task("sync_prerace_penalties").python_callable is cup_series_sync_prerace_penalties
     )
-    assert (
-        dag.get_task("sync_prerace_penalties").python_callable
-        is cup_series_sync_prerace_penalties
-    )
-    assert (
-        dag.get_task("sync_caution_flags").python_callable is cup_series_sync_caution_flags
-    )
-    assert (
-        dag.get_task("sync_race_results").python_callable is cup_series_sync_race_results
-    )
+    assert dag.get_task("sync_caution_flags").python_callable is cup_series_sync_caution_flags
+    assert dag.get_task("sync_race_results").python_callable is cup_series_sync_race_results
     assert (
         dag.get_task("sync_penalties_and_lap_leaders").python_callable
         is cup_series_sync_penalties_and_lap_leaders

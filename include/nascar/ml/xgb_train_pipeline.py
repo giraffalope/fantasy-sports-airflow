@@ -216,9 +216,7 @@ def predicted_dfs_mae_on_holdout(
     abs_errors: list[float] = []
     for pos, frame_idx in enumerate(holdout_indices):
         row = frame[frame_idx]
-        predicted_targets = {
-            target: float(preds[pos]) for target, preds in target_to_preds.items()
-        }
+        predicted_targets = {target: float(preds[pos]) for target, preds in target_to_preds.items()}
         predicted_total, _ = compute_dfs_points_from_targets(
             row.get("r_start_position"),
             predicted_targets,

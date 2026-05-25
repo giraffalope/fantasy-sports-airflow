@@ -25,8 +25,17 @@ def test_wait_sensor_targets_ml_predict() -> None:
     assert wait.timeout == CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT.total_seconds()
 
 
+def test_wait_sensor_targets_dk_salary_import() -> None:
+    dag = lineup_dag.dag
+    wait = dag.get_task("wait_dk_salaries_complete")
+    assert wait.external_dag_id == "nascar.cup.dfs.salary_importer"
+    assert wait.external_task_id == "import_draftkings_salaries"
+
+
 def test_task_chain() -> None:
     dag = lineup_dag.dag
-    wait = dag.get_task("wait_ml_predict_complete")
+    wait_ml = dag.get_task("wait_ml_predict_complete")
+    wait_salaries = dag.get_task("wait_dk_salaries_complete")
     generate = dag.get_task("generate_draftkings_lineups")
-    assert wait.downstream_task_ids == {generate.task_id}
+    assert wait_ml.downstream_task_ids == {generate.task_id}
+    assert wait_salaries.downstream_task_ids == {generate.task_id}

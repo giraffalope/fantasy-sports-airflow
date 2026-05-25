@@ -157,19 +157,11 @@ def test_python_callables_match_operators() -> None:
     assert dag.get_task("sync_weeks").python_callable is cup_series_sync_weeks
     assert dag.get_task("sync_entrylists").python_callable is cup_series_sync_entrylists
     assert dag.get_task("sync_practices").python_callable is cup_series_sync_practices
-    assert (
-        dag.get_task("sync_qualifyings").python_callable is cup_series_sync_qualifyings
-    )
+    assert dag.get_task("sync_qualifyings").python_callable is cup_series_sync_qualifyings
     assert dag.get_task("sync_lineups").python_callable is cup_series_sync_lineups
     assert dag.get_task("sync_pit_stops").python_callable is cup_series_sync_pit_stops
-    assert (
-        dag.get_task("sync_draftkings").python_callable
-        is cup_series_sync_draftkings
-    )
-    assert (
-        dag.get_task("sync_fanduel").python_callable
-        is cup_series_sync_fanduel
-    )
+    assert dag.get_task("sync_draftkings").python_callable is cup_series_sync_draftkings
+    assert dag.get_task("sync_fanduel").python_callable is cup_series_sync_fanduel
     assert (
         dag.get_task("sync_pit_stall_selections").python_callable
         is cup_series_sync_pit_stall_selections

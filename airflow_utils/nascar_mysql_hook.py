@@ -11,10 +11,13 @@ collation without a separate ``SET NAMES``. If neither ``collation`` nor ``init_
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import Any, cast
 
 from airflow.providers.mysql.hooks.mysql import MySqlHook
+
+from airflow_utils.db_cursor import DbCursor
+from airflow_utils.mysql_connection import connection_set_autocommit
 
 _DEFAULT_CHARSET = "utf8mb4"
 _DEFAULT_COLLATION = "utf8mb4_uca1400_ai_ci"
@@ -70,3 +73,21 @@ class NascarMySqlHook(MySqlHook):
         if not insert_id:
             raise RuntimeError("INSERT did not return an auto-increment id")
         return int(insert_id)
+
+    def run_in_transaction(self, write_fn: Callable[[Any, DbCursor], None]) -> None:
+        """Run ``write_fn(conn, cursor)`` in one transaction (commit or rollback)."""
+        conn = self.get_conn()
+        try:
+            connection_set_autocommit(conn, False)
+            with conn.cursor() as cursor:
+                write_fn(conn, cast(DbCursor, cursor))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            try:
+                connection_set_autocommit(conn, True)
+            except Exception:
+                pass
+            conn.close()

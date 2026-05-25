@@ -87,6 +87,20 @@ SELECT
 
 ---
 
+-- Abort when Racing Reference has week_numbers absent from FRCS staging.
+SELECT
+    CASE
+        WHEN (
+            SELECT rr_rows_must_match_frcs
+            FROM nascar.tmp_cup_schedule_rr_match_guard_{{ table_suffix }}
+            LIMIT 1
+        ) IS NULL
+        THEN (SELECT 1 / 0)
+        ELSE 1
+    END AS schedule_rr_frcs_guard_ok;
+
+---
+
 DROP TABLE IF EXISTS nascar.tmp_cup_schedule_merged_{{ table_suffix }};
 
 ---

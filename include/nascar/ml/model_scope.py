@@ -16,7 +16,8 @@ pick the right artifact for an upcoming race week. This module owns:
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 SCOPE_TRACK = "track"
 SCOPE_TRACK_TYPE = "track_type"
@@ -111,9 +112,7 @@ def features_for_scope(
         return keys
     if scope == SCOPE_TRACK:
         return [
-            name
-            for name in keys
-            if _is_per_track_key(name) or not _is_per_track_type_key(name)
+            name for name in keys if _is_per_track_key(name) or not _is_per_track_type_key(name)
         ]
     if scope == SCOPE_TRACK_TYPE:
         if track_type_id is None:

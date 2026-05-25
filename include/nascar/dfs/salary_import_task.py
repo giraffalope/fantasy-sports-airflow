@@ -9,8 +9,8 @@ from typing import Any
 
 import pandas as pd
 
+from airflow_utils.db_cursor import DbCursor
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
-from include.nascar.cup.current_week import resolve_series_current_week
 from include.nascar.dfs.paths import draftkings_salaries_csv, draftkings_salaries_dir
 from include.nascar.enums import NascarSeries
 from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID
@@ -214,18 +214,7 @@ def _import_csv_file(
         _LOG.warning("import_draftkings_salaries: skip %s: %s", path, exc)
         return {"path": path, "skipped": True, "reason": str(exc)}
 
-    hook.run(
-        """
-        UPDATE nascar.dfs_salaries
-        SET deleted_at = UTC_TIMESTAMP()
-        WHERE dfs_id = %s
-          AND race_id = %s
-          AND deleted_at IS NULL
-        """,
-        parameters=(DRAFTKINGS_DFS_ID, race_id),
-    )
-
-    inserted = 0
+    insert_rows: list[tuple[int, int, int, int, int]] = []
     unmatched = 0
     for row in frame.itertuples(index=False):
         car_driver_id = _match_car_driver_id(
@@ -237,21 +226,39 @@ def _import_csv_file(
         if car_driver_id is None:
             unmatched += 1
             continue
-        hook.run(
-            """
-            INSERT INTO nascar.dfs_salaries (
-                dfs_id, race_id, dfs_driver_id, car_driver_id, salary
-            ) VALUES (%s, %s, %s, %s, %s)
-            """,
-            parameters=(
+        insert_rows.append(
+            (
                 DRAFTKINGS_DFS_ID,
                 race_id,
                 int(row.dfs_driver_id),
                 car_driver_id,
                 int(row.salary),
-            ),
+            )
         )
-        inserted += 1
+
+    def _write_salaries(_conn: object, cursor: DbCursor) -> None:
+        cursor.execute(
+            """
+            UPDATE nascar.dfs_salaries
+            SET deleted_at = UTC_TIMESTAMP()
+            WHERE dfs_id = %s
+              AND race_id = %s
+              AND deleted_at IS NULL
+            """,
+            (DRAFTKINGS_DFS_ID, race_id),
+        )
+        if insert_rows:
+            cursor.executemany(
+                """
+                INSERT INTO nascar.dfs_salaries (
+                    dfs_id, race_id, dfs_driver_id, car_driver_id, salary
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                insert_rows,
+            )
+
+    hook.run_in_transaction(_write_salaries)
+    inserted = len(insert_rows)
 
     return {
         "path": path,

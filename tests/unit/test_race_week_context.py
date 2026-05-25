@@ -15,7 +15,9 @@ class _FakeDag:
 
 
 def test_is_backfill_race_week_dag_true() -> None:
-    assert is_backfill_race_week_dag({"dag": _FakeDag("backfill.nascar.cup.scraper.frcs.race_week")})
+    assert is_backfill_race_week_dag(
+        {"dag": _FakeDag("backfill.nascar.cup.scraper.frcs.race_week")}
+    )
 
 
 def test_is_backfill_race_week_dag_false_prod() -> None:

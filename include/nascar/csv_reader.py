@@ -1,11 +1,18 @@
+from __future__ import annotations
+
+from typing import Any
+
+from bs4 import BeautifulSoup
+
+
 class CsvReader:
     def __init__(self, html: str):
         """
         Initialize with raw HTML content as a string.
         """
         self.html = html
-        self.soup = None
-        self.data = []
+        self.soup: BeautifulSoup | None = None
+        self.data: list[Any] = []
 
     @staticmethod
     def insert_practice_data(csv_file_path):

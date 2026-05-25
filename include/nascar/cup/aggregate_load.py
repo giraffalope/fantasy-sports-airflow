@@ -181,7 +181,5 @@ def make_aggregate_load_operator(
         task_id=task_id,
         sql_file_path=sql_root / "nascar.cup.aggregate" / f"{task_id}.sql",
         mysql_conn_id=mysql_conn_id,
-        parameters_factory=lambda ctx, tid=task_id: aggregate_load_parameters(
-            ctx, task_id=tid
-        ),
+        parameters_factory=lambda ctx, tid=task_id: aggregate_load_parameters(ctx, task_id=tid),
     )

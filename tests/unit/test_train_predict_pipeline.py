@@ -144,10 +144,6 @@ def test_pipeline_selects_features_and_serializes(
         reloaded = XGBRegressor()
         reloaded.load_model(str(entry.artifact_path))
 
-        feature_index = {name: i for i, name in enumerate(
-            sorted({k for row in synthetic_frame for k in row["features"].keys()})
-        )}
-        cols = [feature_index[name] for name in entry.selected_features]
         sample = np.zeros((1, len(entry.selected_features)), dtype=float)
         first = synthetic_frame[0]["features"]
         for j, name in enumerate(entry.selected_features):
@@ -219,7 +215,13 @@ def test_predicted_dfs_mae_on_holdout_runs(
     )
     assert mae is not None
     assert mae >= 0.0
-    assert n == len([r for r in synthetic_frame if r["week_id"] == max(row["week_id"] for row in synthetic_frame)])
+    assert n == len(
+        [
+            r
+            for r in synthetic_frame
+            if r["week_id"] == max(row["week_id"] for row in synthetic_frame)
+        ]
+    )
 
 
 def test_primary_target_constant_is_in_default_targets() -> None:

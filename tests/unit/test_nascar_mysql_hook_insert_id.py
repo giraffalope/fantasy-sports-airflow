@@ -2,42 +2,9 @@
 
 from __future__ import annotations
 
-import sys
-from types import ModuleType
 from unittest.mock import MagicMock
 
-
-class _MySqlHookStub:
-    def __init__(self, mysql_conn_id: str | None = None, **_: object) -> None:
-        self.mysql_conn_id = mysql_conn_id
-
-
-def _install_airflow_stubs() -> None:
-    mysql_hooks = ModuleType("airflow.providers.mysql.hooks.mysql")
-    mysql_hooks.MySqlHook = _MySqlHookStub  # type: ignore[attr-defined]
-    providers_mysql_hooks = ModuleType("airflow.providers.mysql.hooks")
-    providers_mysql_hooks.mysql = mysql_hooks  # type: ignore[attr-defined]
-    providers_mysql = ModuleType("airflow.providers.mysql")
-    providers_mysql.hooks = providers_mysql_hooks  # type: ignore[attr-defined]
-    providers = ModuleType("airflow.providers")
-    providers.mysql = providers_mysql  # type: ignore[attr-defined]
-    airflow = ModuleType("airflow")
-    airflow.providers = providers  # type: ignore[attr-defined]
-
-    for name, module in (
-        ("airflow", airflow),
-        ("airflow.providers", providers),
-        ("airflow.providers.mysql", providers_mysql),
-        ("airflow.providers.mysql.hooks", providers_mysql_hooks),
-        ("airflow.providers.mysql.hooks.mysql", mysql_hooks),
-    ):
-        sys.modules[name] = module
-
-
-_install_airflow_stubs()
-
-# Import after stubs so NascarMySqlHook subclasses _MySqlHookStub, not MagicMock.
-from airflow_utils.nascar_mysql_hook import NascarMySqlHook  # noqa: E402
+from airflow_utils.nascar_mysql_hook import NascarMySqlHook  # rebound by airflow_hook_stub fixture
 
 
 def test_run_insert_returning_id_uses_lastrowid_on_same_connection() -> None:

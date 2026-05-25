@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from decimal import Decimal
-from typing import Any, Mapping
+from typing import Any
 
 Number = int | float | Decimal | None
 
@@ -23,10 +24,10 @@ def _component_has_place_diff_fallback(component: Mapping[str, Any]) -> bool:
     if component.get("source") != DERIVED_PLACE_DIFF_SOURCE:
         return False
     fallback = component.get("fallback") or {}
-    return (
-        fallback.get("op") == "subtract"
-        and fallback.get("from") == ["r_start_position", "r_finish_position"]
-    )
+    return fallback.get("op") == "subtract" and fallback.get("from") == [
+        "r_start_position",
+        "r_finish_position",
+    ]
 
 
 def target_keys_for_rules(scoring_rules: Mapping[str, Any] | str) -> list[str]:

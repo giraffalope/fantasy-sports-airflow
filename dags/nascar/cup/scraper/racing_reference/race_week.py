@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from airflow.sdk import Asset, DAG
+from airflow.sdk import DAG, Asset
 from nascar.cup.scraper.backfill_assets import (
     BACKFILL_END_DATE,
     BACKFILL_RACING_REFERENCE_CUP_RACE_WEEK_ASSET,
@@ -35,8 +35,7 @@ NASCAR_RACING_REFERENCE_CUP_RACE_WEEK_ASSET = Asset(
 _BACKFILL_DOC = (
     "Historical Cup Racing Reference per-week HTML → CSV (2010–2025). Yearly cron "
     "with ``wait_upstream_schedule_convert`` on "
-    "``backfill.nascar.cup.scraper.racing_reference.schedule``.\n\n"
-    + (__doc__ or "")
+    "``backfill.nascar.cup.scraper.racing_reference.schedule``.\n\n" + (__doc__ or "")
 )
 
 dag = register_racing_reference_race_week_dag(

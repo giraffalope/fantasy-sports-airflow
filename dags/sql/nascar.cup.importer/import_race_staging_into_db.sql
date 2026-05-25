@@ -123,9 +123,18 @@ SET t.race_id = r.id;
 
 ---
 
-DELETE rr FROM nascar.race_results rr
-INNER JOIN nascar.races r ON r.id = rr.race_id
-WHERE r.week_id = {{ week_id }};
+-- Re-runs: remove prior race-only shells (no finish stats). Lineup-only rows from
+-- ``import_lineup`` keep ``total_laps_completed IS NULL`` and are not deleted here.
+DELETE rr
+FROM nascar.race_results rr
+INNER JOIN nascar.races r
+    ON r.id = rr.race_id
+WHERE r.week_id = {{ week_id }}
+    AND r.deleted_at IS NULL
+    AND rr.deleted_at IS NULL
+    AND rr.total_laps_completed IS NULL
+    AND rr.finish_position IS NULL
+;
 
 ---
 

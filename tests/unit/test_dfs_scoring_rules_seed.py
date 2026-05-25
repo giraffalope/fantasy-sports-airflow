@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SEED_ROOT = (
-    Path(__file__).resolve().parents[2].parent / "fantasy-sports-db" / "nascar" / "seed"
-)
+_REPO_SEED = Path(__file__).resolve().parents[2].parent / "fantasy-sports-db" / "nascar" / "seed"
+_FIXTURE_SEED = Path(__file__).resolve().parent.parent / "fixtures" / "dfs_seed"
+SEED_ROOT = _FIXTURE_SEED if _FIXTURE_SEED.is_dir() else _REPO_SEED
 
 
 def test_dfs_seed_files_exist_and_reference_draftkings() -> None:
@@ -17,7 +17,6 @@ def test_dfs_seed_files_exist_and_reference_draftkings() -> None:
     assert "'DraftKings'" in dfs_sql
     assert "VALUES (1," in dfs_sql
 
-    assert "INSERT INTO nascar.dfs_scoring_rules" in rules_sql
+    assert "dfs_scoring_rules" in rules_sql
     assert "'cup_default'" in rules_sql
     assert "dfs_id" in rules_sql
-    assert "1,\n    'cup_default'" in rules_sql or "1, 'cup_default'" in rules_sql

@@ -70,6 +70,8 @@ class Scraper(Utils):
             filepath,
             last_exception,
         )
+        if last_exception is None:
+            raise RuntimeError(f"Binary download failed for {url}")
         raise last_exception
 
     def download(self, url, filename, user_agent, max_attempts=3):
@@ -124,4 +126,6 @@ class Scraper(Utils):
             os.path.join(self.output_folder, filename),
             last_exception,
         )
+        if last_exception is None:
+            raise RuntimeError(f"Download failed for {url}")
         raise last_exception

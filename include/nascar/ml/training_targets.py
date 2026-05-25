@@ -160,10 +160,15 @@ def _load_training_frame_filtered(
                 WHERE deleted_at IS NULL
                 GROUP BY track_id
             ) tt2 ON tt2.track_id = s2.track_id
-            WHERE {" AND ".join(
-                f.replace("s.", "s2.").replace("r.", "r2.").replace("l.", "l2.").replace("tt.", "tt2.")
+            WHERE {
+            " AND ".join(
+                f.replace("s.", "s2.")
+                .replace("r.", "r2.")
+                .replace("l.", "l2.")
+                .replace("tt.", "tt2.")
                 for f in filters
-            )}
+            )
+        }
             ORDER BY s2.week_id DESC
             LIMIT %s
         ),

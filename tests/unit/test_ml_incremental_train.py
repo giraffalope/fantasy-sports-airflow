@@ -17,13 +17,13 @@ for _name in (
 ):
     sys.modules.setdefault(_name, MagicMock())
 
-from include.nascar.cup.current_week import (
-    SeriesCurrentWeekTrackContext,
+from include.nascar.cup.current_week import (  # noqa: E402
     _CURRENT_WEEK_TRACK_CONTEXT_SQL,
+    SeriesCurrentWeekTrackContext,
     resolve_current_week_track_context,
 )
-from include.nascar.ml.model_scope import SCOPE_GLOBAL, SCOPE_TRACK, SCOPE_TRACK_TYPE
-from include.nascar.ml.train_task import (
+from include.nascar.ml.model_scope import SCOPE_GLOBAL, SCOPE_TRACK, SCOPE_TRACK_TYPE  # noqa: E402
+from include.nascar.ml.train_task import (  # noqa: E402
     ScopeSpec,
     _predict_ready,
     _predict_routing_chain,
@@ -51,12 +51,15 @@ def test_predict_routing_chain_cold_track_omits_track_scope() -> None:
     hook = MagicMock()
     hook.get_records.return_value = []
     ctx = SeriesCurrentWeekTrackContext(series_id=1, track_id=10, track_type_id=3)
-    with patch(
-        "include.nascar.ml.train_task._track_meets_threshold",
-        return_value=False,
-    ), patch(
-        "include.nascar.ml.train_task._track_type_meets_threshold",
-        return_value=True,
+    with (
+        patch(
+            "include.nascar.ml.train_task._track_meets_threshold",
+            return_value=False,
+        ),
+        patch(
+            "include.nascar.ml.train_task._track_type_meets_threshold",
+            return_value=True,
+        ),
     ):
         chain = _predict_routing_chain(
             hook, 7, 1, ctx, track_threshold=3, type_threshold=3, enable_global=True
@@ -70,12 +73,15 @@ def test_predict_routing_chain_cold_track_omits_track_scope() -> None:
 def test_predict_ready_when_first_scope_current() -> None:
     hook = MagicMock()
     chain = [ScopeSpec(SCOPE_TRACK, 10, None)]
-    with patch(
-        "include.nascar.ml.train_task._scope_model_exists",
-        return_value=True,
-    ), patch(
-        "include.nascar.ml.train_task._scope_covered_week",
-        return_value=200,
+    with (
+        patch(
+            "include.nascar.ml.train_task._scope_model_exists",
+            return_value=True,
+        ),
+        patch(
+            "include.nascar.ml.train_task._scope_covered_week",
+            return_value=200,
+        ),
     ):
         assert _predict_ready(hook, 7, 1, chain, 200) is True
 
@@ -86,12 +92,15 @@ def test_scopes_needing_refresh_returns_first_stale_only() -> None:
         ScopeSpec(SCOPE_TRACK, 10, None),
         ScopeSpec(SCOPE_TRACK_TYPE, None, 3),
     ]
-    with patch(
-        "include.nascar.ml.train_task._scope_model_exists",
-        return_value=True,
-    ), patch(
-        "include.nascar.ml.train_task._scope_covered_week",
-        side_effect=[100, 50],
+    with (
+        patch(
+            "include.nascar.ml.train_task._scope_model_exists",
+            return_value=True,
+        ),
+        patch(
+            "include.nascar.ml.train_task._scope_covered_week",
+            side_effect=[100, 50],
+        ),
     ):
         needing = _scopes_needing_refresh(hook, 7, 1, chain, 200)
     assert needing == [ScopeSpec(SCOPE_TRACK, 10, None)]
@@ -110,9 +119,7 @@ class TestTrainModelsIncremental:
         ]
         return hook
 
-    def test_predict_ready_skips_without_train_scope(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_predict_ready_skips_without_train_scope(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from include.nascar.ml import train_task
 
         hook = self._setup_hook()
@@ -151,9 +158,7 @@ class TestTrainModelsIncremental:
         assert result.get("skipped") == "predict_ready"
         assert train_calls == []
 
-    def test_stale_track_trains_one_scope_only(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_stale_track_trains_one_scope_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from include.nascar.ml import train_task
 
         hook = self._setup_hook()
@@ -192,6 +197,7 @@ class TestTrainModelsIncremental:
             "_scopes_needing_refresh",
             lambda *a, **k: [ScopeSpec(SCOPE_TRACK, 10, None)],
         )
+
         def _fake_load(**kw: Any) -> list[dict[str, Any]]:
             load_calls.append(dict(kw))
             return [{"ml_training_snapshot_id": 1, "week_id": 100}]

@@ -36,11 +36,9 @@ temp tables for this run whose names end with that suffix.
 from __future__ import annotations
 
 import glob
-import json
 import logging
 import os
 import re
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -198,7 +196,6 @@ def _emit_cup_schedule_staged_domain_event(context: dict[str, Any]) -> None:
             "data_source": racing_reference.id,
         },
     )
-    
 
 
 def _emit_cup_schedule_imported_domain_event(context: dict[str, Any]) -> None:
@@ -271,6 +268,23 @@ def _nascar_staging_table_exists(hook: NascarMySqlHook, table_name: str) -> bool
         parameters=(table_name,),
     )
     return row is not None
+
+
+def _require_car_map_table(
+    hook: NascarMySqlHook,
+    *,
+    week_id: int,
+    suffix: str,
+    context: str,
+) -> str:
+    """Return ``tmp_car_{week_id}_{suffix}`` or raise if the resolver did not build it."""
+    temp_car_map = f"tmp_car_{week_id}_{suffix}"
+    if not _nascar_staging_table_exists(hook, temp_car_map):
+        raise RuntimeError(
+            f"Cup importer: missing {temp_car_map} for {context} (week_id={week_id}); "
+            "resolve_drivers_cars_manufacturers_teams must run first"
+        )
+    return temp_car_map
 
 
 def _target_weeks(hook: NascarMySqlHook, *, series_id: int, year: int) -> list[tuple[int, int]]:
@@ -372,7 +386,12 @@ def _push_staged_practices(kwargs: dict[str, Any], rows: list[dict[str, Any]]) -
 
 
 def _pull_staged_practices(kwargs: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = kwargs["ti"].xcom_pull(task_ids="load_stage_practices_csvs", key="importer_staged_practices") or []
+    raw = (
+        kwargs["ti"].xcom_pull(
+            task_ids="load_stage_practices_csvs", key="importer_staged_practices"
+        )
+        or []
+    )
     out: list[dict[str, Any]] = []
     for row in raw:
         out.append(
@@ -394,7 +413,9 @@ def _push_staged_qualifyings(kwargs: dict[str, Any], rows: list[dict[str, Any]])
 
 def _pull_staged_qualifyings(kwargs: dict[str, Any]) -> list[dict[str, Any]]:
     raw = (
-        kwargs["ti"].xcom_pull(task_ids="load_stage_qualifyings_csvs", key="importer_staged_qualifyings")
+        kwargs["ti"].xcom_pull(
+            task_ids="load_stage_qualifyings_csvs", key="importer_staged_qualifyings"
+        )
         or []
     )
     out: list[dict[str, Any]] = []
@@ -579,9 +600,7 @@ def _cup_practice_data_source_id(
     rr_week_number: int | None,
 ) -> str:
     """``data_sources.name`` for the CSV used for this practice session (FRCS vs Racing Reference)."""
-    _, src = _cup_practice_csv_for_session(
-        series, year, event_number, session_num, rr_week_number
-    )
+    _, src = _cup_practice_csv_for_session(series, year, event_number, session_num, rr_week_number)
     if src == "racing_reference":
         return RacingReferenceSource().id
     return FrcsSource().id
@@ -599,7 +618,9 @@ def _cup_qualifying_csv_path(
     frcs = FrcsSource()
     rr = RacingReferenceSource()
     rr_disk = _rr_week_disk_folder_index(rr_week_number, event_number)
-    frcs_csv = os.path.join(frcs.storage_path_week(series.db_name, year, event_number), "qualifying.csv")
+    frcs_csv = os.path.join(
+        frcs.storage_path_week(series.db_name, year, event_number), "qualifying.csv"
+    )
     if os.path.isfile(frcs_csv):
         return frcs_csv, "frcs"
     rr_csv = os.path.join(rr.storage_path_week(series.db_name, year, rr_disk), "qualifying.csv")
@@ -664,9 +685,7 @@ def load_stage_practices_csvs(**kwargs) -> None:
     suffix = _importer_table_suffix(kwargs)
     year = _context_year(kwargs)
     series = NascarSeries.CUP
-    stage_sql = (
-        _sql_root() / "nascar.cup.importer" / "load_practice_csv_into_staging_table.sql"
-    )
+    stage_sql = _sql_root() / "nascar.cup.importer" / "load_practice_csv_into_staging_table.sql"
     staged_rows: list[dict[str, Any]] = []
     target_weeks = _pull_target_weeks(kwargs)
     _LOG.info("Cup importer: load_stage_practices target_weeks=%s", len(target_weeks))
@@ -734,17 +753,9 @@ def import_practices(**kwargs) -> None:
         stg = row["staged_table_name"]
         if not _nascar_staging_table_exists(hook, stg):
             continue
-        temp_car_map = f"tmp_car_{week_id}_{suffix}"
-        has_car_map_temp = _nascar_staging_table_exists(hook, temp_car_map)
-        if not has_car_map_temp:
-            _LOG.warning(
-                "Cup importer: skipping practice import week_id=%s session=%s: missing %s "
-                "(resolver did not materialize canonical tmp_car for this run)",
-                week_id,
-                n,
-                temp_car_map,
-            )
-            continue
+        _require_car_map_table(
+            hook, week_id=week_id, suffix=suffix, context=f"practice session={n}"
+        )
         _execute_templated_sql_file(
             hook,
             sql,
@@ -786,9 +797,7 @@ def load_stage_qualifyings_csvs(**kwargs) -> None:
     suffix = _importer_table_suffix(kwargs)
     year = _context_year(kwargs)
     series = NascarSeries.CUP
-    stage_sql = (
-        _sql_root() / "nascar.cup.importer" / "load_qualifying_csv_into_staging_table.sql"
-    )
+    stage_sql = _sql_root() / "nascar.cup.importer" / "load_qualifying_csv_into_staging_table.sql"
     staged_rows: list[dict[str, Any]] = []
     for week_id, season_id, event_number, rr_week_number in _pull_target_weeks(kwargs):
         csv, src = _cup_qualifying_csv_path(series, year, event_number, rr_week_number)
@@ -797,7 +806,14 @@ def load_stage_qualifyings_csvs(**kwargs) -> None:
             _execute_templated_sql_file(
                 hook,
                 stage_sql,
-                {"week_id": week_id, "season_id": season_id, "qualifying_csv_file_path": csv, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
+                {
+                    "week_id": week_id,
+                    "season_id": season_id,
+                    "qualifying_csv_file_path": csv,
+                    "table_suffix": suffix,
+                    "frcs_source_name": FrcsSource().id,
+                    "racing_reference_source_name": RacingReferenceSource().id,
+                },
                 source_id,
             )
             staged_rows.append(
@@ -837,20 +853,17 @@ def import_qualifyings(**kwargs) -> None:
         stg = row["staged_table_name"]
         if not _nascar_staging_table_exists(hook, stg):
             continue
-        temp_car_map = f"tmp_car_{week_id}_{suffix}"
-        has_car_map_temp = _nascar_staging_table_exists(hook, temp_car_map)
-        if not has_car_map_temp:
-            _LOG.warning(
-                "Cup importer: skipping qualifying import week_id=%s: missing %s "
-                "(resolver did not materialize canonical tmp_car for this run)",
-                week_id,
-                temp_car_map,
-            )
-            continue
+        _require_car_map_table(hook, week_id=week_id, suffix=suffix, context="qualifying")
         _execute_templated_sql_file(
             hook,
             sql,
-            {"week_id": week_id, "series_id": series.series_id, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
+            {
+                "week_id": week_id,
+                "series_id": series.series_id,
+                "table_suffix": suffix,
+                "frcs_source_name": FrcsSource().id,
+                "racing_reference_source_name": RacingReferenceSource().id,
+            },
             source_id,
         )
         _emit_cup_importer_domain_event(
@@ -885,12 +898,21 @@ def load_stage_lineup_csvs(**kwargs) -> None:
     source = FrcsSource()
     stage_sql = _sql_root() / "nascar.cup.importer" / "load_lineup_csv_into_staging_table.sql"
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "lineup.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "lineup.csv"
+        )
         if os.path.isfile(csv):
             _execute_templated_sql_file(
                 hook,
                 stage_sql,
-                {"week_id": week_id, "season_id": season_id, "lineup_csv_file_path": csv, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
+                {
+                    "week_id": week_id,
+                    "season_id": season_id,
+                    "lineup_csv_file_path": csv,
+                    "table_suffix": suffix,
+                    "frcs_source_name": FrcsSource().id,
+                    "racing_reference_source_name": RacingReferenceSource().id,
+                },
                 source.id,
             )
             _emit_cup_importer_domain_event(
@@ -916,7 +938,9 @@ def load_stage_entrylist_csvs(**kwargs) -> None:
     source = FrcsSource()
     stage_sql = _sql_root() / "nascar.cup.importer" / "load_entrylist_csv_into_staging_table.sql"
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "entrylist.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "entrylist.csv"
+        )
         if os.path.isfile(csv):
             _execute_templated_sql_file(
                 hook,
@@ -933,7 +957,7 @@ def load_stage_entrylist_csvs(**kwargs) -> None:
             )
             _emit_cup_importer_domain_event(
                 kwargs,
-                event_type=CupImporterEventType.LINEUP_STAGED,
+                event_type=CupImporterEventType.ENTRYLIST_STAGED,
                 entity_tables=("stg_frcs_entrylist",),
                 payload={
                     "week_id": week_id,
@@ -954,7 +978,9 @@ def import_lineup(**kwargs) -> None:
     sql = _sql_root() / "nascar.cup.importer" / "import_lineup_staging_into_db.sql"
     source = FrcsSource()
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "lineup.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "lineup.csv"
+        )
         stg = f"stg_frcs_lineup_{week_id}_{suffix}"
         if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
             continue
@@ -1046,16 +1072,7 @@ def import_races(**kwargs) -> None:
         race_csv = os.path.join(base, "race-results.csv")
         loop_csv = os.path.join(base, "loop-data.csv")
         if os.path.isfile(race_csv) and os.path.isfile(loop_csv):
-            temp_car_map = f"tmp_car_{week_id}_{suffix}"
-            has_car_map_temp = _nascar_staging_table_exists(hook, temp_car_map)
-            if not has_car_map_temp:
-                _LOG.warning(
-                    "Cup importer: skipping race import week_id=%s: missing %s "
-                    "(resolver did not materialize canonical tmp_car for this run)",
-                    week_id,
-                    temp_car_map,
-                )
-                continue
+            _require_car_map_table(hook, week_id=week_id, suffix=suffix, context="race")
             _execute_templated_sql_file(
                 hook,
                 sql,
@@ -1098,12 +1115,21 @@ def load_stage_penalties_csvs(**kwargs) -> None:
     source = FrcsSource()
     stage_sql = _sql_root() / "nascar.cup.importer" / "load_penalties_csv_into_staging_table.sql"
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "penalties.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "penalties.csv"
+        )
         if os.path.isfile(csv):
             _execute_templated_sql_file(
                 hook,
                 stage_sql,
-                {"week_id": week_id, "season_id": season_id, "penalties_csv_file_path": csv, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
+                {
+                    "week_id": week_id,
+                    "season_id": season_id,
+                    "penalties_csv_file_path": csv,
+                    "table_suffix": suffix,
+                    "frcs_source_name": FrcsSource().id,
+                    "racing_reference_source_name": RacingReferenceSource().id,
+                },
                 source.id,
             )
             _emit_cup_importer_domain_event(
@@ -1129,14 +1155,22 @@ def import_penalties(**kwargs) -> None:
     sql = _sql_root() / "nascar.cup.importer" / "import_penalties_staging_into_db.sql"
     source = FrcsSource()
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "penalties.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "penalties.csv"
+        )
         stg = f"stg_frcs_penalties_{week_id}_{suffix}"
         if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
             continue
         _execute_templated_sql_file(
             hook,
             sql,
-            {"week_id": week_id, "source_name": source.id, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
+            {
+                "week_id": week_id,
+                "source_name": source.id,
+                "table_suffix": suffix,
+                "frcs_source_name": FrcsSource().id,
+                "racing_reference_source_name": RacingReferenceSource().id,
+            },
             source.id,
         )
         _emit_cup_importer_domain_event(
@@ -1171,7 +1205,14 @@ def load_stage_pitstops_csvs(**kwargs) -> None:
             _execute_templated_sql_file(
                 hook,
                 stage_sql,
-                {"week_id": week_id, "season_id": season_id, "pit_stops_detail_csv_file_path": csv, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
+                {
+                    "week_id": week_id,
+                    "season_id": season_id,
+                    "pit_stops_detail_csv_file_path": csv,
+                    "table_suffix": suffix,
+                    "frcs_source_name": FrcsSource().id,
+                    "racing_reference_source_name": RacingReferenceSource().id,
+                },
                 source.id,
             )
             _emit_cup_importer_domain_event(
@@ -1203,45 +1244,18 @@ def import_pitstops(**kwargs) -> None:
         stg = f"stg_frcs_pit_stops_detail_{week_id}_{suffix}"
         if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
             continue
-        try:
-            _execute_templated_sql_file(
-                hook,
-                sql,
-                {"week_id": week_id, "source_name": source.id, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
-                source.id,
-            )
-        except Exception as exc:
-            # #region agent log
-            try:
-                with open(
-                    "/home/jackalope/bin/.cursor/debug-d4461a.log",
-                    "a",
-                    encoding="utf-8",
-                ) as _dbg_fp:
-                    _dbg_fp.write(
-                        json.dumps(
-                            {
-                                "sessionId": "d4461a",
-                                "hypothesisId": "H-pitstops-import",
-                                "location": "importer.py:import_pitstops",
-                                "message": "import_pitstops SQL failed",
-                                "data": {
-                                    "week_id": week_id,
-                                    "event_number": event_number,
-                                    "table_suffix": suffix,
-                                    "error_type": type(exc).__name__,
-                                    "error": str(exc),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            default=str,
-                        )
-                        + "\n"
-                    )
-            except OSError:
-                pass
-            # #endregion
-            raise
+        _execute_templated_sql_file(
+            hook,
+            sql,
+            {
+                "week_id": week_id,
+                "source_name": source.id,
+                "table_suffix": suffix,
+                "frcs_source_name": FrcsSource().id,
+                "racing_reference_source_name": RacingReferenceSource().id,
+            },
+            source.id,
+        )
         _emit_cup_importer_domain_event(
             kwargs,
             event_type=CupImporterEventType.PIT_STOPS_IMPORTED,
@@ -1263,16 +1277,23 @@ def load_stage_draftkings_csvs(**kwargs) -> None:
     year = _context_year(kwargs)
     series = NascarSeries.CUP
     source = FrcsSource()
-    stage_sql = (
-        _sql_root() / "nascar.cup.importer" / "load_draftkings_csv_into_staging_table.sql"
-    )
+    stage_sql = _sql_root() / "nascar.cup.importer" / "load_draftkings_csv_into_staging_table.sql"
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "draftkings.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "draftkings.csv"
+        )
         if os.path.isfile(csv):
             _execute_templated_sql_file(
                 hook,
                 stage_sql,
-                {"week_id": week_id, "season_id": season_id, "draftkings_csv_file_path": csv, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
+                {
+                    "week_id": week_id,
+                    "season_id": season_id,
+                    "draftkings_csv_file_path": csv,
+                    "table_suffix": suffix,
+                    "frcs_source_name": FrcsSource().id,
+                    "racing_reference_source_name": RacingReferenceSource().id,
+                },
                 source.id,
             )
             _emit_cup_importer_domain_event(
@@ -1298,7 +1319,9 @@ def import_draftkings(**kwargs) -> None:
     source = FrcsSource()
     sql = _sql_root() / "nascar.cup.importer" / "import_draftkings_staging_into_db.sql"
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "draftkings.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "draftkings.csv"
+        )
         stg = f"stg_frcs_draftkings_{week_id}_{suffix}"
         if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
             continue
@@ -1334,16 +1357,23 @@ def load_stage_fanduel_csvs(**kwargs) -> None:
     year = _context_year(kwargs)
     series = NascarSeries.CUP
     source = FrcsSource()
-    stage_sql = (
-        _sql_root() / "nascar.cup.importer" / "load_fanduel_csv_into_staging_table.sql"
-    )
+    stage_sql = _sql_root() / "nascar.cup.importer" / "load_fanduel_csv_into_staging_table.sql"
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "fanduel.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "fanduel.csv"
+        )
         if os.path.isfile(csv):
             _execute_templated_sql_file(
                 hook,
                 stage_sql,
-                {"week_id": week_id, "season_id": season_id, "fanduel_csv_file_path": csv, "table_suffix": suffix, "frcs_source_name": FrcsSource().id, "racing_reference_source_name": RacingReferenceSource().id},
+                {
+                    "week_id": week_id,
+                    "season_id": season_id,
+                    "fanduel_csv_file_path": csv,
+                    "table_suffix": suffix,
+                    "frcs_source_name": FrcsSource().id,
+                    "racing_reference_source_name": RacingReferenceSource().id,
+                },
                 source.id,
             )
             _emit_cup_importer_domain_event(
@@ -1369,7 +1399,9 @@ def import_fanduel(**kwargs) -> None:
     source = FrcsSource()
     sql = _sql_root() / "nascar.cup.importer" / "import_fanduel_staging_into_db.sql"
     for week_id, season_id, event_number, _ in _pull_target_weeks(kwargs):
-        csv = os.path.join(source.storage_path_week(series.db_name, year, event_number), "fanduel.csv")
+        csv = os.path.join(
+            source.storage_path_week(series.db_name, year, event_number), "fanduel.csv"
+        )
         stg = f"stg_frcs_fanduel_{week_id}_{suffix}"
         if not os.path.isfile(csv) and not _nascar_staging_table_exists(hook, stg):
             continue
@@ -1463,11 +1495,7 @@ def resolve_drivers_cars_manufacturers_teams(**kwargs) -> None:
     suffix = _importer_table_suffix(kwargs)
     frcs = FrcsSource()
     rr = RacingReferenceSource()
-    sql = (
-        _sql_root()
-        / "nascar.cup.importer"
-        / "resolve_drivers_cars_manufacturers_teams.sql"
-    )
+    sql = _sql_root() / "nascar.cup.importer" / "resolve_drivers_cars_manufacturers_teams.sql"
     for week_id, season_id, _, _ in _pull_target_weeks(kwargs):
         _assert_resolver_staging_ready(
             hook,
@@ -1497,32 +1525,6 @@ def cleanup_importer_staging_and_temp_tables(**kwargs: Any) -> None:
     ``table_suffix`` (``_importer_table_suffix`` / schedule load anchor).
     """
     suffix = _importer_table_suffix(kwargs)
-    # #region agent log
-    try:
-        dis = kwargs.get("data_interval_start")
-        log_anchor = {
-            "sessionId": "0954fc",
-            "hypothesisId": "H1",
-            "location": "importer.py:cleanup_importer_staging_and_temp_tables",
-            "message": "resolved_suffix_and_context_times",
-            "data": {
-                "suffix": suffix,
-                "suffix_valid": bool(_TABLE_SUFFIX_RE.fullmatch(suffix)),
-                "data_interval_start": dis.isoformat() if dis is not None else None,
-                "logical_date": kwargs.get("logical_date").isoformat()
-                if kwargs.get("logical_date") is not None
-                else None,
-                "run_id": getattr(kwargs.get("dag_run"), "run_id", None),
-            },
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(
-            "/home/jackalope/bin/.cursor/debug-0954fc.log", "a", encoding="utf-8"
-        ) as _agent_dbg:
-            _agent_dbg.write(json.dumps(log_anchor) + "\n")
-    except OSError:
-        pass
-    # #endregion
     if not _TABLE_SUFFIX_RE.fullmatch(suffix):
         raise ValueError(f"refusing cleanup: invalid table_suffix {suffix!r}")
 
@@ -1555,37 +1557,6 @@ def cleanup_importer_staging_and_temp_tables(**kwargs: Any) -> None:
     """
     hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
     rows = hook.get_records(list_sql, parameters=tuple(like_patterns)) or []
-    # #region agent log
-    try:
-        raw_names: list[str] = []
-        if rows:
-            for row in rows:
-                if not row:
-                    continue
-                r0 = row[0]
-                raw_names.append(r0 if isinstance(r0, str) else str(r0))
-        with open(
-            "/home/jackalope/bin/.cursor/debug-0954fc.log", "a", encoding="utf-8"
-        ) as _agent_dbg:
-            _agent_dbg.write(
-                json.dumps(
-                    {
-                        "sessionId": "0954fc",
-                        "hypothesisId": "H2",
-                        "location": "importer.py:cleanup_importer_staging_and_temp_tables",
-                        "message": "information_schema_candidates",
-                        "data": {
-                            "row_count": len(rows),
-                            "sample_table_names": raw_names[:30],
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # #endregion
     tail = f"_{suffix}"
     names: list[str] = []
     skipped_suffix: list[str] = []
@@ -1608,34 +1579,6 @@ def cleanup_importer_staging_and_temp_tables(**kwargs: Any) -> None:
             continue
         names.append(name)
 
-    # #region agent log
-    try:
-        with open(
-            "/home/jackalope/bin/.cursor/debug-0954fc.log", "a", encoding="utf-8"
-        ) as _agent_dbg:
-            _agent_dbg.write(
-                json.dumps(
-                    {
-                        "sessionId": "0954fc",
-                        "hypothesisId": "H3",
-                        "location": "importer.py:cleanup_importer_staging_and_temp_tables",
-                        "message": "after_suffix_and_prefix_filters",
-                        "data": {
-                            "tail": tail,
-                            "names_to_drop_count": len(names),
-                            "names_to_drop": names[:40],
-                            "skipped_suffix_sample": skipped_suffix,
-                            "skipped_prefix_sample": skipped_prefix,
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # #endregion
-
     if not names:
         _LOG.info(
             "Cup importer cleanup: no tables for this run (suffix=%s); nothing to drop", suffix
@@ -1651,27 +1594,6 @@ def cleanup_importer_staging_and_temp_tables(**kwargs: Any) -> None:
             _LOG.info("Cup importer cleanup: %s", drop_sql)
             cur.execute(drop_sql)
         conn.commit()
-        # #region agent log
-        try:
-            with open(
-                "/home/jackalope/bin/.cursor/debug-0954fc.log", "a", encoding="utf-8"
-            ) as _agent_dbg:
-                _agent_dbg.write(
-                    json.dumps(
-                        {
-                            "sessionId": "0954fc",
-                            "hypothesisId": "H4",
-                            "location": "importer.py:cleanup_importer_staging_and_temp_tables",
-                            "message": "drop_statements_committed",
-                            "data": {"dropped_count": len(names)},
-                            "timestamp": int(time.time() * 1000),
-                        }
-                    )
-                    + "\n"
-                )
-        except OSError:
-            pass
-        # #endregion
     finally:
         try:
             cur.execute("SET FOREIGN_KEY_CHECKS=1")
@@ -1692,6 +1614,8 @@ def _register_cup_importer_dag(
     wait_frcs_race_week_dag_id: str,
     wait_rr_race_week_dag_id: str,
 ) -> DAG:
+    from nascar.cup.dag_defaults import CUP_DAG_DEFAULT_ARGS
+
     with DAG(
         dag_id=dag_id,
         start_date=start_date,
@@ -1699,6 +1623,7 @@ def _register_cup_importer_dag(
         schedule=schedule,
         catchup=catchup,
         max_active_runs=1,
+        default_args=CUP_DAG_DEFAULT_ARGS,
         doc_md=doc_md,
     ) as dag:
         _build_cup_importer_task_graph(

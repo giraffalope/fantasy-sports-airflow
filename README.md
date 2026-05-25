@@ -93,5 +93,8 @@ These scripts are thin wrappers run from the **repository root** (they `cd` to t
 | `script/test` | Builds **`Dockerfile.unit-tests`** and runs **pytest** in a container for **`tests/unit`**, **`tests/integration`**, or both. Supports **`--unit`**, **`--integration`**, and **`--help`**. Set **`UNIT_TESTS_IMAGE`** to override the image tag. |
 | `script/lint` | Runs **[Ruff](https://docs.astral.sh/ruff/)** **`check`** then **`format --check`** on **`dags/`**, **`include/`**, **`airflow_utils/`**, and **`tests/`** (requires **`uv`** and dev deps from **`script/setup`**). Use **`./script/lint --fix`** to apply safe auto-fixes; **`./script/lint --help`** for usage. |
 | `script/format` | Runs **`ruff format`** on the same paths (writes files). Extra args are passed to **`ruff format`** (e.g. **`--diff`**). See **`./script/format --help`**. |
+| `script/typecheck` | Runs **[mypy](https://mypy.readthedocs.io/)** on **`dags/`**, **`include/`**, and **`airflow_utils/`** (config in **`pyproject.toml`**). See **`./script/typecheck --help`**. |
+| `script/deadcode` | Runs **[Vulture](https://github.com/jendrikseipp/vulture)** to flag likely unused code in the same trees. See **`./script/deadcode --help`**. |
+| `script/update` | Runs **`uv lock --upgrade`** then **`uv sync`** to refresh dependencies (optional **`--upgrade-package`** args). See **`./script/update --help`**. |
 
 When adding a new workflow, prefer a new executable under `script/` with a short header comment describing usage and assumptions (paths, profiles, env vars).

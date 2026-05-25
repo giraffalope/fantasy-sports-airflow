@@ -268,9 +268,7 @@ def _predict_routing_chain(
     enable_global: bool,
 ) -> list[ScopeSpec]:
     chain: list[ScopeSpec] = []
-    if _track_meets_threshold(
-        hook, rules_id, series_id, ctx.track_id, track_threshold
-    ):
+    if _track_meets_threshold(hook, rules_id, series_id, ctx.track_id, track_threshold):
         chain.append(ScopeSpec(SCOPE_TRACK, ctx.track_id, None))
     if ctx.track_type_id is not None and _track_type_meets_threshold(
         hook, rules_id, series_id, ctx.track_type_id, type_threshold
@@ -658,7 +656,9 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
 
     rules = _active_rules(hook, dfs_id)
     if rules is None:
-        _LOG.warning("train_models_if_needed_task: no active dfs_scoring_rules for dfs_id=%s", dfs_id)
+        _LOG.warning(
+            "train_models_if_needed_task: no active dfs_scoring_rules for dfs_id=%s", dfs_id
+        )
         return {"skipped": "no_active_rules"}
     rules_id, scoring_rules = rules
 
@@ -757,9 +757,7 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
             continue
 
         all_series_predict_ready = False
-        scopes_to_train = _scopes_needing_refresh(
-            hook, rules_id, series_id, chain, series_latest
-        )
+        scopes_to_train = _scopes_needing_refresh(hook, rules_id, series_id, chain, series_latest)
         for spec in scopes_to_train:
             if spec.scope == SCOPE_TRACK:
                 feature_keys = features_for_scope(all_feature_keys, scope=SCOPE_TRACK)

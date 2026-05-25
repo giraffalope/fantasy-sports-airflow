@@ -5,6 +5,7 @@ from typing import Any
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 from airflow.sdk import BaseOperator
 
+from airflow_utils.mysql_template_file_executor import execute_sql_statements_transactional
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 
 
@@ -55,19 +56,10 @@ class MySQLTemplateFileOperator(BaseOperator):
             else MySqlHook(mysql_conn_id=self.mysql_conn_id)
         )
 
-        conn = hook.get_conn()
-        cursor = conn.cursor()
-
-        statements = rendered_sql.strip().split("---")
-        for stmt in statements:
-            stmt = stmt.strip()
-            if stmt:
-                self.log.info("Executing statement:\n%s", stmt)
-                cursor.execute(stmt)
-
-        conn.commit()
-        cursor.close()
-        conn.close()
+        statements = [stmt.strip() for stmt in rendered_sql.strip().split("---") if stmt.strip()]
+        for idx, stmt in enumerate(statements, start=1):
+            self.log.info("Executing statement %s/%s:\n%s", idx, len(statements), stmt)
+        execute_sql_statements_transactional(hook, statements)
 
 
 class MySQLTemplateFileOperatorFromContext(MySQLTemplateFileOperator):
@@ -80,7 +72,7 @@ class MySQLTemplateFileOperatorFromContext(MySQLTemplateFileOperator):
     (e.g. from ``dag_run.run_id``, ``triggering_asset_events``, etc.).
     """
 
-    template_fields = ()
+    template_fields: tuple[str, ...] = ()  # type: ignore[assignment]
 
     def __init__(
         self,

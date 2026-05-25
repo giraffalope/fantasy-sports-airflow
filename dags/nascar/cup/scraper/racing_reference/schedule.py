@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from airflow.sdk import Asset, DAG
+from airflow.sdk import DAG, Asset
 from nascar.cup.scraper.backfill_assets import (
     BACKFILL_END_DATE,
     BACKFILL_RACING_REFERENCE_CUP_SCHEDULE_ASSET,

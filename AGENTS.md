@@ -70,7 +70,7 @@ If host environment tooling is missing, prefer `uv run ...` for project-local ex
 ## Operational Notes
 
 - Prefer existing repository scripts and conventions:
-  - `script/setup`, `script/format`, `script/lint`, `script/test`
+  - `script/setup`, `script/format`, `script/lint`, `script/typecheck`, `script/deadcode`, `script/update`, `script/test`
   - `uv run ...` for deterministic local execution
 - In final responses, include concise evidence of:
   - changed files
