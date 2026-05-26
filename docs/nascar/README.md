@@ -2,10 +2,10 @@
 
 This directory contains one markdown file per DAG source file under
 [`dags/nascar/cup/`](../../dags/nascar/cup/). Each source file registers a
-production DAG plus (for everything except `aggregate` and
-`machine_learning`) a `backfill.*` twin built from the same factory call; the
-backfill variant is documented in a dedicated section of the same file rather
-than duplicating the task graph.
+production DAG plus (for everything except `aggregate` and the
+`machine_learning.models.*` DAGs) a `backfill.*` twin built from the same
+factory call; the backfill variant is documented in a dedicated section of
+the same file rather than duplicating the task graph.
 
 ## Schema and migrations
 
@@ -21,8 +21,9 @@ flowchart TB
   RrRaceWeek[nascar.cup.scraper.racing_reference.race_week]
   Importer[nascar.cup.importer]
   Aggregate[nascar.cup.aggregate]
-  MachineLearning[nascar.cup.machine_learning]
-  MachineLearningBacktest[nascar.cup.machine_learning.backtest]
+  MachineLearningModels[nascar.cup.machine_learning.models]
+  MachineLearningModelsBacktest[nascar.cup.machine_learning.models.backtest]
+  MachineLearningModelsMonteCarlo[nascar.cup.machine_learning.models.monte_carlo]
   DfsSalary[nascar.cup.dfs.salary_importer]
   DfsLineup[nascar.cup.dfs.lineup_generator]
 
@@ -31,9 +32,10 @@ flowchart TB
   FrcsRaceWeek -->|"wait_frcs_race_week_sync_race_results"| Importer
   RrRaceWeek -->|"wait_racing_reference_race_week_sync_race_results"| Importer
   Importer -->|"wait_importer_complete"| Aggregate
-  Aggregate -->|"wait_aggregate_complete"| MachineLearning
-  MachineLearning -->|"wait_ml_predict_complete"| DfsLineup
-  MachineLearning -->|"wait_ml_predict_complete"| MachineLearningBacktest
+  Aggregate -->|"wait_aggregate_complete"| MachineLearningModels
+  MachineLearningModels -->|"wait_ml_predict_complete"| MachineLearningModelsBacktest
+  MachineLearningModels -->|"wait_ml_predict_complete"| MachineLearningModelsMonteCarlo
+  MachineLearningModelsMonteCarlo -->|"wait_mc_complete"| DfsLineup
 ```
 
 `nascar.cup.dfs.salary_importer` runs hourly in parallel (no sensor edge); drop
@@ -54,8 +56,9 @@ and external-sensor targets differ.
 | `nascar.cup.scraper.racing_reference.race_week` (+ backfill) | [cup.scraper.racing_reference.race_week.md](./cup.scraper.racing_reference.race_week.md) | [dags/nascar/cup/scraper/racing_reference/race_week.py](../../dags/nascar/cup/scraper/racing_reference/race_week.py) |
 | `nascar.cup.importer` (+ backfill) | [cup.importer.md](./cup.importer.md) | [dags/nascar/cup/importer.py](../../dags/nascar/cup/importer.py) |
 | `nascar.cup.aggregate` | [cup.aggregate.md](./cup.aggregate.md) | [dags/nascar/cup/aggregate.py](../../dags/nascar/cup/aggregate.py) |
-| `nascar.cup.machine_learning` | [cup.machine_learning.md](./cup.machine_learning.md) | [dags/nascar/cup/machine_learning.py](../../dags/nascar/cup/machine_learning.py) |
-| `nascar.cup.machine_learning.backtest` | [cup.machine_learning.backtest.md](./cup.machine_learning.backtest.md) | [dags/nascar/cup/machine_learning_backtest.py](../../dags/nascar/cup/machine_learning_backtest.py) |
+| `nascar.cup.machine_learning.models` | [cup.machine_learning.models.md](./cup.machine_learning.models.md) | [dags/nascar/cup/machine_learning_models.py](../../dags/nascar/cup/machine_learning_models.py) |
+| `nascar.cup.machine_learning.models.backtest` | [cup.machine_learning.models.backtest.md](./cup.machine_learning.models.backtest.md) | [dags/nascar/cup/machine_learning_models_backtest.py](../../dags/nascar/cup/machine_learning_models_backtest.py) |
+| `nascar.cup.machine_learning.models.monte_carlo` | [cup.machine_learning.models.monte_carlo.md](./cup.machine_learning.models.monte_carlo.md) | [dags/nascar/cup/machine_learning_models_monte_carlo.py](../../dags/nascar/cup/machine_learning_models_monte_carlo.py) |
 | `nascar.cup.dfs.salary_importer` | [cup.dfs.salary_importer.md](./cup.dfs.salary_importer.md) | [dags/nascar/cup/dfs/salary_importer.py](../../dags/nascar/cup/dfs/salary_importer.py) |
 | `nascar.cup.dfs.lineup_generator` | [cup.dfs.lineup_generator.md](./cup.dfs.lineup_generator.md) | [dags/nascar/cup/dfs/lineup_generator.py](../../dags/nascar/cup/dfs/lineup_generator.py) |
 

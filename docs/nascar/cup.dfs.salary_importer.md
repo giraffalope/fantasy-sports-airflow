@@ -53,4 +53,4 @@ normalized driver name against `race_results` for that week’s race.
 ## Related
 
 - Lineup DAG: [cup.dfs.lineup_generator.md](./cup.dfs.lineup_generator.md)
-- ML predictions: [cup.machine_learning.md](./cup.machine_learning.md)
+- ML predictions: [cup.machine_learning.models.md](./cup.machine_learning.models.md)

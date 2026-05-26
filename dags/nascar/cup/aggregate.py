@@ -12,7 +12,7 @@ table, plus ``current_week`` every run. ``current_week`` comes from
 teams) runs in parallel after the base load; wave 2 (prior-track entity,
 manufacturer, and CG/CGM aggregate tables, 34 parallel tasks) runs after wave 1
 completes; the terminal ``aggregate_done`` sentinel fans-in from every wave 2 task
-so downstream DAGs (such as ``nascar.cup.machine_learning``) can wait on a single
+so downstream DAGs (such as ``nascar.cup.machine_learning.models``) can wait on a single
 stable task id.
 """
 

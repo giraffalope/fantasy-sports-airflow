@@ -1,8 +1,8 @@
-"""Unit tests for DAG ``nascar.cup.machine_learning.backtest``."""
+"""Unit tests for DAG ``nascar.cup.machine_learning.models.monte_carlo``."""
 
 from __future__ import annotations
 
-import nascar.cup.machine_learning_backtest as ml_backtest_dag
+import nascar.cup.machine_learning_models_monte_carlo as mc_dag
 from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
 from nascar.cup.scraper.dag_factories import (
     CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
@@ -12,28 +12,29 @@ from nascar.cup.scraper.dag_factories import (
 _EXPECTED_TASK_IDS = frozenset(
     {
         "wait_ml_predict_complete",
-        "run_ml_backtest",
+        "run_monte_carlo_simulation",
+        "validate_simulation_batch",
     }
 )
 
 
 def test_dag_metadata() -> None:
-    dag = ml_backtest_dag.dag
-    assert dag.dag_id == "nascar.cup.machine_learning.backtest"
+    dag = mc_dag.dag
+    assert dag.dag_id == "nascar.cup.machine_learning.models.monte_carlo"
     assert dag.catchup is False
     assert dag.max_active_runs == 1
     assert dag.schedule == CUP_SCRAPER_PROD_HOURLY_CRON
 
 
 def test_task_ids() -> None:
-    dag = ml_backtest_dag.dag
+    dag = mc_dag.dag
     assert set(dag.task_dict.keys()) == _EXPECTED_TASK_IDS
 
 
 def test_wait_sensor_targets_ml_predict() -> None:
-    dag = ml_backtest_dag.dag
+    dag = mc_dag.dag
     wait = dag.get_task("wait_ml_predict_complete")
-    assert wait.external_dag_id == "nascar.cup.machine_learning"
+    assert wait.external_dag_id == "nascar.cup.machine_learning.models"
     assert wait.external_task_id == "predict_upcoming_week"
     assert wait.mode == "reschedule"
     assert wait.poke_interval == CUP_EXTERNAL_SENSOR_POKE_INTERVAL.total_seconds()
@@ -41,10 +42,13 @@ def test_wait_sensor_targets_ml_predict() -> None:
 
 
 def test_linear_task_chain() -> None:
-    dag = ml_backtest_dag.dag
+    dag = mc_dag.dag
     wait = dag.get_task("wait_ml_predict_complete")
-    backtest = dag.get_task("run_ml_backtest")
+    run = dag.get_task("run_monte_carlo_simulation")
+    validate = dag.get_task("validate_simulation_batch")
 
-    assert wait.downstream_task_ids == {backtest.task_id}
-    assert backtest.upstream_task_ids == {wait.task_id}
-    assert backtest.downstream_task_ids == set()
+    assert wait.downstream_task_ids == {run.task_id}
+    assert run.upstream_task_ids == {wait.task_id}
+    assert run.downstream_task_ids == {validate.task_id}
+    assert validate.upstream_task_ids == {run.task_id}
+    assert validate.downstream_task_ids == set()

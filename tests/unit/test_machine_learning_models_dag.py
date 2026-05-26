@@ -1,8 +1,8 @@
-"""Unit tests for DAG ``nascar.cup.machine_learning``."""
+"""Unit tests for DAG ``nascar.cup.machine_learning.models``."""
 
 from __future__ import annotations
 
-import nascar.cup.machine_learning as ml_dag
+import nascar.cup.machine_learning_models as ml_dag
 from nascar.cup.scraper.backfill_assets import CUP_SCRAPER_PROD_HOURLY_CRON
 from nascar.cup.scraper.dag_factories import (
     CUP_EXTERNAL_SENSOR_POKE_INTERVAL,
@@ -21,7 +21,7 @@ _EXPECTED_TASK_IDS = frozenset(
 
 def test_dag_metadata() -> None:
     dag = ml_dag.dag
-    assert dag.dag_id == "nascar.cup.machine_learning"
+    assert dag.dag_id == "nascar.cup.machine_learning.models"
     assert dag.catchup is False
     assert dag.max_active_runs == 1
     assert dag.schedule == CUP_SCRAPER_PROD_HOURLY_CRON

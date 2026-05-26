@@ -41,11 +41,13 @@ def test_latest_train_week_for_retrain_returns_int() -> None:
 def test_latest_predict_snapshot_sql_joins_current_week_view() -> None:
     hook = MagicMock()
     hook.get_records.return_value = [
-        (10, 1, 1048, 5, 2, '["f1"]'),
+        (10, 1, 1048, 5, '["f1"]'),
     ]
     result = _latest_predict_snapshot(hook, rules_id=1, series_id=1)
     assert result is not None
     assert result["week_id"] == 1048
+    assert result["track_id"] == 5
+    assert "track_type_id" not in result
     sql = hook.get_records.call_args[0][0]
     assert "v_series_current_week" in sql
     assert "ORDER BY s.week_id DESC" not in sql

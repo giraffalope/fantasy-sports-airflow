@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import nascar.cup.aggregate as aggregate_dag
 import nascar.cup.importer as importer_dag
-import nascar.cup.machine_learning as ml_dag
-import nascar.cup.machine_learning_backtest as ml_backtest_dag
+import nascar.cup.machine_learning_models as ml_dag
+import nascar.cup.machine_learning_models_backtest as ml_backtest_dag
 import pytest
 from nascar.cup.dag_defaults import CUP_DAG_DEFAULT_ARGS
 

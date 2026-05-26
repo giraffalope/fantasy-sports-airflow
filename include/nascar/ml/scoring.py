@@ -12,6 +12,19 @@ Number = int | float | Decimal | None
 DERIVED_PLACE_DIFF_SOURCE = "r_place_diff"
 
 
+class MissingStartPositionError(ValueError):
+    """Raised when ``r_place_diff`` needs ``start_position`` and it is ``None``.
+
+    B4: ``compute_dfs_points_from_targets`` previously swallowed this state —
+    ``_resolve_source`` returned ``None`` for the derived place_diff fallback,
+    ``_finish_points`` saw ``None`` and emitted 0.0, and the DFS total looked
+    like a legitimate score with the place-diff component silently zeroed
+    out. Raising a typed error here turns that silent bias into a loud
+    failure the caller can either prevent (provide ``start_position``) or
+    catch and zero-fall back to deliberately.
+    """
+
+
 def _as_float(value: Number) -> float | None:
     if value is None:
         return None
@@ -97,12 +110,51 @@ def build_scoring_row(
     return row
 
 
+def _rules_need_start_position_for_place_diff(
+    scoring_rules: Mapping[str, Any] | str,
+) -> bool:
+    """True when any component derives ``r_place_diff`` from start/finish.
+
+    Mirrors :func:`_component_has_place_diff_fallback` over the full rule
+    list. Used by :func:`compute_dfs_points_from_targets` to decide whether
+    a ``None`` ``start_position`` should raise :class:`MissingStartPositionError`.
+    """
+    if isinstance(scoring_rules, str):
+        rules = json.loads(scoring_rules)
+    else:
+        rules = scoring_rules
+    for component in rules.get("components") or []:
+        if _component_has_place_diff_fallback(component):
+            return True
+    return False
+
+
 def compute_dfs_points_from_targets(
     start_position: Number,
     targets: Mapping[str, Number],
     scoring_rules: Mapping[str, Any] | str,
 ) -> tuple[Decimal, dict[str, float]]:
-    """Apply scoring rules to predicted/actual stat targets plus pre-race start position."""
+    """Apply scoring rules to predicted/actual stat targets plus pre-race start position.
+
+    B4: when the active rules derive ``r_place_diff`` from
+    ``r_start_position - r_finish_position``, ``start_position`` is
+    required. Passing ``None`` raises :class:`MissingStartPositionError`
+    instead of silently emitting 0 for the place-diff component (which
+    would shave roughly 5-15 DFS points off a typical projection without
+    any warning). Any ``r_place_diff`` passed inside ``targets`` is
+    stripped by :func:`build_scoring_row` when the derived fallback is in
+    play, so this assertion is the only signal callers get for that
+    misuse.
+    """
+    if (
+        start_position is None
+        and _rules_need_start_position_for_place_diff(scoring_rules)
+    ):
+        raise MissingStartPositionError(
+            "compute_dfs_points_from_targets: r_place_diff is derived from "
+            "(r_start_position - r_finish_position) under the active rules; "
+            "start_position must not be None"
+        )
     row = build_scoring_row(start_position, targets, scoring_rules=scoring_rules)
     return compute_dfs_points(row, scoring_rules)
 

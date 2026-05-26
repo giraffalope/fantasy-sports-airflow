@@ -38,6 +38,18 @@ TIME_COLUMN_SUFFIXES = ("_time",)
 ANCHOR_PRELOCK_EXPLICIT_COLUMNS: tuple[str, ...] = ("r_start_position",)
 ANCHOR_PRELOCK_PREFIXES: tuple[str, ...] = ("q_", "pt_", "pf_")
 
+DRIVER_FORM_PREFIX = "df_"
+FIELD_STRENGTH_PREFIX = "qf_"
+SEASON_PREFIX = "season_"
+TRACK_ATTRIBUTE_PREFIX = "track_attr_"
+
+ANCHOR_LEVEL_FEATURE_PREFIXES: tuple[str, ...] = (
+    DRIVER_FORM_PREFIX,
+    FIELD_STRENGTH_PREFIX,
+    SEASON_PREFIX,
+    TRACK_ATTRIBUTE_PREFIX,
+)
+
 
 @dataclass(frozen=True)
 class PrevTrackSource:

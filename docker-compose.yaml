@@ -98,6 +98,36 @@ x-airflow-common:
     FS_MC_N_SIMULATIONS: ${FS_MC_N_SIMULATIONS:-1000}
     FS_MC_RANDOM_SEED: ${FS_MC_RANDOM_SEED:-}
     FS_DK_MC_OBJECTIVE: ${FS_DK_MC_OBJECTIVE:-p50}
+    FS_ML_MIN_COHORT_WEEKS: ${FS_ML_MIN_COHORT_WEEKS:-2}
+    FS_ML_BLEND_WEIGHTS: ${FS_ML_BLEND_WEIGHTS:-inverse_mae}
+    FS_ML_DEV_WEEKS: ${FS_ML_DEV_WEEKS:-1}
+    FS_ML_STRICT_FEATURES: ${FS_ML_STRICT_FEATURES:-0}
+    FS_ML_PRIMARY_RANK_OBJECTIVE: ${FS_ML_PRIMARY_RANK_OBJECTIVE:-0}
+    FS_ML_INTERVAL_METHOD: ${FS_ML_INTERVAL_METHOD:-conformal}
+    # Memory tuning (12 GB / 4-core worker default). XGBoost ``tree_method='hist'``
+    # allocates per-thread histogram buffers; capping the BLAS / OpenMP thread
+    # count from 4 -> 2 halves that peak and leaves room for the Python parent
+    # process. Override per-deployment via .env when running on a larger host.
+    OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
+    MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
+    OPENBLAS_NUM_THREADS: ${OPENBLAS_NUM_THREADS:-2}
+    # Hyperparameter search budget (Phase 1 of the OOM mitigation): lowered from
+    # 25 / 4 to 15 / 3 cuts the worst-case CV fit count per target from 100 to
+    # 45 while leaving the search wide enough for the cohort sizes we hit.
+    FS_ML_TUNE_N_ITER: ${FS_ML_TUNE_N_ITER:-15}
+    FS_ML_TUNE_CV_SPLITS: ${FS_ML_TUNE_CV_SPLITS:-3}
+    # Boruta + XGBoost intra-task parallelism (Phase 4): drops Boruta's iteration
+    # cap from 50 -> 30 and pins XGBoost ``n_jobs`` to 2 to match the OpenMP cap
+    # above. Set FS_ML_XGB_N_JOBS=1 as the next lever if cohorts still spike.
+    FS_ML_BORUTA_MAX_ITER: ${FS_ML_BORUTA_MAX_ITER:-30}
+    FS_ML_BORUTA_SMALL_COHORT_MAX_ITER: ${FS_ML_BORUTA_SMALL_COHORT_MAX_ITER:-10}
+    FS_ML_XGB_N_JOBS: ${FS_ML_XGB_N_JOBS:-2}
+    # Cap the cohort's training horizon at ``FS_ML_MAX_TRAIN_WEEKS`` most-recent
+    # weeks (unset = all available history). Trim aggressively when a future
+    # cohort grows unexpectedly large; the SQL window subselect keeps the DB
+    # filter cheap. See docs/nascar/cup.machine_learning.models.md "Memory
+    # tuning" for the full pressure-release order.
+    FS_ML_MAX_TRAIN_WEEKS: ${FS_ML_MAX_TRAIN_WEEKS:-}
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
@@ -210,6 +240,24 @@ services:
       # Required to handle warm shutdown of the celery workers properly
       # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
       DUMB_INIT_SETSID: "0"
+      # Recycle the Celery prefork child after each task so the next task
+      # starts with a clean glibc heap. ``build_ml_training_snapshots`` and
+      # ``train_models_if_needed`` are the two main offenders: the former
+      # allocates GBs of transient feature dicts while rebuilding hundreds
+      # of week snapshots, and glibc's per-arena pinning keeps those
+      # mappings resident long after the task returns. Without this knob,
+      # the next task on the same worker child sees a polluted heap that
+      # tips the cgroup limit. ``=1`` is the canonical Celery memory-leak
+      # workaround; cost per task is one fork() (~ms, COW-cheap on Linux).
+      AIRFLOW__CELERY__WORKER_MAX_TASKS_PER_CHILD: ${AIRFLOW__CELERY__WORKER_MAX_TASKS_PER_CHILD:-1}
+      # Run each ML cohort's frame load + train in a spawned subprocess so
+      # the per-cohort working set (Boruta shadow matrix, XGBoost models,
+      # feature dicts) is reclaimed by the OS on child exit. Belt-and-
+      # suspenders with the worker-recycle knob above: that one resets
+      # heap between tasks, this one resets it between cohorts inside the
+      # same task. Set to 0 to fall back to the legacy in-process path
+      # (tests / local debugging).
+      FS_ML_TRAIN_COHORT_ISOLATION: ${FS_ML_TRAIN_COHORT_ISOLATION:-1}
     restart: always
     depends_on:
       <<: *airflow-common-depends-on

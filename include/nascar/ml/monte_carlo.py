@@ -14,15 +14,26 @@ the simulated DFS distribution reflects scoring-rule non-linearities (the
 finish-position table dominates) rather than a single dispersion around the
 point estimate.
 
+E2 rank-coupled Monte Carlo: the simulator argsorts each iteration's raw
+finish-position draws across the entire field so the per-iteration
+``r_finish_position`` assignment is always a permutation of
+``1..field_size``. Two drivers can no longer share the same finish slot in
+a draw, which matches NASCAR rules and de-biases the finish-table component
+of the DFS score (which is the dominant term).
+
 Constraints applied per draw:
 
-* ``r_finish_position`` is clipped to ``[1, field_size]`` and rounded to int.
+* ``r_finish_position`` raw samples are jointly argsort'd across drivers,
+  then assigned integer ranks ``1..field_size`` (lowest raw sample =
+  predicted winner = rank 1).
 * ``r_total_laps_led`` and ``r_total_fastest_laps`` are clipped at ``0`` and
-  rounded to int.
+  rounded to int **independently per driver** because counts can co-vary
+  freely.
 
-Drivers are treated as independent conditional on features (v1). The plan
-documents this as a known limitation; rank coupling (e.g. Gumbel-max on finish
-logits) would land in a later iteration.
+Per-driver σ supplied on :class:`MonteCarloDriverInput.target_sigmas` is the
+recommended path so the Phase E1 conformal intervals can size each driver's
+spread independently. Callers without conformal store (cold start) can keep
+broadcasting a single σ across all drivers; the math degrades gracefully.
 """
 
 from __future__ import annotations
@@ -73,8 +84,25 @@ class MonteCarloDriverSummary:
     max_dfs_points: float
 
 
+def _apply_count_constraint(value: float) -> float:
+    """Round a non-negative count target to int with a 0 floor."""
+    rounded = int(round(value))
+    if rounded < 0:
+        rounded = 0
+    return float(rounded)
+
+
 def _apply_constraints(target: str, value: float, *, field_size: int) -> float:
-    """Project a perturbed target value back into its physically valid range."""
+    """Project a perturbed target value back into its physically valid range.
+
+    Kept for backwards compatibility with helpers / tests that expect the
+    legacy per-target clip semantics. The E2 rank-coupled simulator path
+    replaces the ``r_finish_position`` branch with a cross-driver argsort
+    inside :func:`simulate_driver_distributions`, so this function is no
+    longer called for finishes in the production loop — it lives here as
+    a labeled helper for tooling that operates on a single value
+    (lineage replay, DFS scoring smoke tests).
+    """
     if target == FINISH_POSITION_TARGET:
         rounded = int(round(value))
         if rounded < 1:
@@ -83,37 +111,26 @@ def _apply_constraints(target: str, value: float, *, field_size: int) -> float:
             rounded = field_size
         return float(rounded)
     if target in NON_NEGATIVE_INT_TARGETS:
-        rounded = int(round(value))
-        if rounded < 0:
-            rounded = 0
-        return float(rounded)
+        return _apply_count_constraint(value)
     return float(value)
 
 
-def _simulate_driver_dfs_points(
-    driver: MonteCarloDriverInput,
-    *,
-    scoring_rules: Mapping[str, Any],
-    n_simulations: int,
-    field_size: int,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """Return an ``(n_simulations,)`` array of simulated DFS points for one driver."""
-    samples = np.empty(n_simulations, dtype=float)
-    targets = dict(driver.predicted_targets)
-    for s in range(n_simulations):
-        perturbed: dict[str, float] = {}
-        for target, mean in targets.items():
-            sigma = float(driver.target_sigmas.get(target, 0.0) or 0.0)
-            raw = float(mean) + (rng.normal(0.0, sigma) if sigma > 0.0 else 0.0)
-            perturbed[target] = _apply_constraints(target, raw, field_size=field_size)
-        total, _breakdown = compute_dfs_points_from_targets(
-            driver.r_start_position,
-            perturbed,
-            scoring_rules,
-        )
-        samples[s] = float(total)
-    return samples
+def _reconcile_finish_ranks(raw_finishes: np.ndarray) -> np.ndarray:
+    """E2: argsort raw finish-position samples and reassign integer ranks.
+
+    Returns an integer array of shape ``(n_drivers,)`` whose ``i``-th entry
+    is the predicted rank ``1..n_drivers`` for the ``i``-th driver in this
+    iteration. Lower raw sample => predicted-better finish => lower rank
+    (NASCAR convention). Stable argsort breaks ties by driver index, which
+    keeps the math deterministic for a given seed.
+    """
+    n = raw_finishes.size
+    if n == 0:
+        return np.zeros(0, dtype=int)
+    order = np.argsort(raw_finishes, kind="stable")
+    ranks = np.empty(n, dtype=int)
+    ranks[order] = np.arange(1, n + 1, dtype=int)
+    return ranks
 
 
 def _summarize(car_driver_id: int, samples: np.ndarray) -> MonteCarloDriverSummary:
@@ -146,6 +163,12 @@ def simulate_driver_distributions(
     same field the lineup generator sees). ``seed`` constructs the
     ``numpy.random.Generator`` so each batch is reproducible.
 
+    E2 rank-coupling: each iteration draws all drivers' raw finish positions
+    in parallel, argsorts them within the iteration, and assigns integer
+    ranks ``1..field_size`` so no two drivers share a finish. Secondary
+    targets (``r_total_laps_led``, ``r_total_fastest_laps``) are still drawn
+    independently per driver because counts can co-vary freely.
+
     Raises ``ValueError`` for ``n_simulations < MIN_SIMULATIONS``; the validate
     task also asserts this so the constraint surfaces twice.
     """
@@ -160,14 +183,80 @@ def simulate_driver_distributions(
         raise ValueError(f"field_size must be >= 1 (got {resolved_field_size})")
 
     rng = np.random.default_rng(seed)
-    summaries: list[MonteCarloDriverSummary] = []
-    for driver in drivers:
-        samples = _simulate_driver_dfs_points(
-            driver,
-            scoring_rules=scoring_rules,
-            n_simulations=n_simulations,
-            field_size=resolved_field_size,
-            rng=rng,
+    n_drivers = len(drivers)
+
+    # Pre-extract per-driver vectors for vectorized sampling. ``finish_mean``
+    # and ``finish_sigma`` are the only target-coupled across drivers; the
+    # rest are sampled independently below.
+    finish_mean = np.zeros(n_drivers, dtype=float)
+    finish_sigma = np.zeros(n_drivers, dtype=float)
+    for i, driver in enumerate(drivers):
+        finish_mean[i] = float(
+            driver.predicted_targets.get(FINISH_POSITION_TARGET, 0.0) or 0.0
         )
-        summaries.append(_summarize(driver.car_driver_id, samples))
+        finish_sigma[i] = float(
+            driver.target_sigmas.get(FINISH_POSITION_TARGET, 0.0) or 0.0
+        )
+
+    secondary_target_specs: list[tuple[str, np.ndarray, np.ndarray]] = []
+    secondary_target_names = set()
+    for driver in drivers:
+        secondary_target_names.update(driver.predicted_targets.keys())
+    secondary_target_names.discard(FINISH_POSITION_TARGET)
+    for target in sorted(secondary_target_names):
+        means = np.array(
+            [
+                float(driver.predicted_targets.get(target, 0.0) or 0.0)
+                for driver in drivers
+            ],
+            dtype=float,
+        )
+        sigmas = np.array(
+            [
+                float(driver.target_sigmas.get(target, 0.0) or 0.0)
+                for driver in drivers
+            ],
+            dtype=float,
+        )
+        secondary_target_specs.append((target, means, sigmas))
+
+    samples_per_driver = np.zeros((n_drivers, n_simulations), dtype=float)
+    start_positions = [driver.r_start_position for driver in drivers]
+
+    for s in range(n_simulations):
+        # Vectorized draws across the entire field for the finish target.
+        # ``rng.normal`` sized at the whole field at once keeps the seed
+        # progression identical to ``np.random.default_rng`` semantics
+        # (single advance per iteration).
+        finish_noise = rng.normal(0.0, 1.0, size=n_drivers) * finish_sigma
+        raw_finishes = finish_mean + finish_noise
+        # E2: cross-driver argsort -> integer permutation ranks.
+        ranks = _reconcile_finish_ranks(raw_finishes)
+
+        # Cap secondary draws here once per iteration so the per-driver
+        # rng draws below stay consistent and deterministic.
+        per_target_iter_samples: list[tuple[str, np.ndarray]] = []
+        for target, means, sigmas in secondary_target_specs:
+            noise = rng.normal(0.0, 1.0, size=n_drivers) * sigmas
+            raw = means + noise
+            per_target_iter_samples.append((target, raw))
+
+        for i in range(n_drivers):
+            perturbed: dict[str, float] = {FINISH_POSITION_TARGET: float(ranks[i])}
+            for target, raw_vec in per_target_iter_samples:
+                value = float(raw_vec[i])
+                if target in NON_NEGATIVE_INT_TARGETS:
+                    perturbed[target] = _apply_count_constraint(value)
+                else:
+                    perturbed[target] = value
+            total, _breakdown = compute_dfs_points_from_targets(
+                start_positions[i],
+                perturbed,
+                scoring_rules,
+            )
+            samples_per_driver[i, s] = float(total)
+
+    summaries: list[MonteCarloDriverSummary] = []
+    for i, driver in enumerate(drivers):
+        summaries.append(_summarize(driver.car_driver_id, samples_per_driver[i]))
     return summaries

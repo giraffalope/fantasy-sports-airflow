@@ -1,9 +1,8 @@
-"""Unit tests for the predict-time scope routing chain.
+"""Unit tests for the predict-time cohort blend.
 
-Exercises ``_resolve_model_for_target`` against a fake hook so we can confirm
-that track -> track_type -> global is honored, that the global fallback flag
-is respected, that mis-typed snapshots fall through correctly, and that
-``series_id`` isolation prevents cross-series leakage.
+Replaces the old track / track_type / global routing chain with assertions
+that ``_predict_values_for_target`` blends per-cohort models for the current
+track's ``track_type_id`` set per ``FS_ML_BLEND_WEIGHTS``.
 """
 
 from __future__ import annotations
@@ -15,39 +14,33 @@ import numpy as np
 import pytest
 
 from include.nascar.ml import predict_task
-from include.nascar.ml.model_scope import (
-    SCOPE_GLOBAL,
-    SCOPE_TRACK,
-    SCOPE_TRACK_TYPE,
-    SCOPE_TRACK_TYPE_BLEND,
-)
+from include.nascar.ml.model_scope import SCOPE_TRACK_TYPE
 
-# Default Cup series id used by most fixtures.
 _CUP_SERIES_ID = 1
 
 
 def _make_hook(
-    catalog: dict[tuple[str, int, str, Any], dict[str, Any] | None],
+    catalog: dict[tuple[str, int, int], dict[str, Any] | None],
+    *,
+    holdout_mae: dict[int, float] | None = None,
 ) -> MagicMock:
-    """Build a hook whose ``get_records`` returns rows shaped like ``_scope_lookup``.
+    """Build a hook whose ``get_records`` answers ``_scope_lookup`` lookups.
 
-    ``catalog`` is keyed by ``(target, series_id, scope, scope_key)`` where
-    ``scope_key`` is ``track_id`` for track scope, ``track_type_id`` for
-    track_type, and ``None`` for global. Values are the model dict the lookup
-    should return (or ``None`` to simulate a miss).
+    ``catalog`` is keyed by ``(target, series_id, track_type_id)``.
     """
-
+    holdout_mae = holdout_mae or {}
     hook = MagicMock()
 
     def get_records(sql: str, parameters: tuple = ()) -> list[tuple]:
+        if "ml_model_evaluations" in sql:
+            model_id = int(parameters[0])
+            mae = holdout_mae.get(model_id)
+            return [] if mae is None else [(mae,)]
+        # _scope_lookup
         series_id = int(parameters[0])
-        target = parameters[1]
-        scope = parameters[2]
-        if scope in (SCOPE_TRACK, SCOPE_TRACK_TYPE):
-            key: Any = parameters[3]
-        else:
-            key = None
-        entry = catalog.get((target, series_id, scope, key))
+        target = parameters[3]
+        track_type_id = int(parameters[2])
+        entry = catalog.get((target, series_id, track_type_id))
         if entry is None:
             return []
         return [
@@ -56,9 +49,10 @@ def _make_hook(
                 entry["artifact_uri"],
                 "{}",
                 entry.get("series_id", series_id),
-                entry["model_scope"],
-                entry.get("track_id"),
-                entry.get("track_type_id"),
+                SCOPE_TRACK_TYPE,
+                None,
+                entry.get("track_type_id", track_type_id),
+                entry.get("cohort_n_weeks", 0),
                 "[]",
             )
         ]
@@ -67,401 +61,358 @@ def _make_hook(
     return hook
 
 
-def test_resolver_prefers_track_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    hook = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK, 7): {
-                "id": 11,
-                "artifact_uri": "/tmp/track.json",
-                "model_scope": SCOPE_TRACK,
-                "track_id": 7,
-            },
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 3): {
-                "id": 22,
-                "artifact_uri": "/tmp/type.json",
-                "model_scope": SCOPE_TRACK_TYPE,
-                "track_type_id": 3,
-            },
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_GLOBAL, None): {
-                "id": 33,
-                "artifact_uri": "/tmp/global.json",
-                "model_scope": SCOPE_GLOBAL,
-            },
-        }
-    )
-    resolved = predict_task._resolve_model_for_target(
-        hook,
-        target="r_finish_position",
-        series_id=_CUP_SERIES_ID,
-        track_id=7,
-        track_type_id=3,
-    )
-    assert resolved is not None
-    assert resolved["id"] == 11
-    assert resolved["model_scope"] == SCOPE_TRACK
-    assert resolved["series_id"] == _CUP_SERIES_ID
-
-
-def test_resolver_falls_back_to_track_type(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    hook = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 3): {
-                "id": 22,
-                "artifact_uri": "/tmp/type.json",
-                "model_scope": SCOPE_TRACK_TYPE,
-                "track_type_id": 3,
-            },
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_GLOBAL, None): {
-                "id": 33,
-                "artifact_uri": "/tmp/global.json",
-                "model_scope": SCOPE_GLOBAL,
-            },
-        }
-    )
-    resolved = predict_task._resolve_model_for_target(
-        hook,
-        target="r_finish_position",
-        series_id=_CUP_SERIES_ID,
-        track_id=99,
-        track_type_id=3,
-    )
-    assert resolved is not None
-    assert resolved["id"] == 22
-    assert resolved["model_scope"] == SCOPE_TRACK_TYPE
-
-
-def test_resolver_falls_back_to_global_when_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    hook = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_GLOBAL, None): {
-                "id": 33,
-                "artifact_uri": "/tmp/global.json",
-                "model_scope": SCOPE_GLOBAL,
-            },
-        }
-    )
-    resolved = predict_task._resolve_model_for_target(
-        hook,
-        target="r_finish_position",
-        series_id=_CUP_SERIES_ID,
-        track_id=99,
-        track_type_id=42,
-    )
-    assert resolved is not None
-    assert resolved["id"] == 33
-    assert resolved["model_scope"] == SCOPE_GLOBAL
-
-
-def test_resolver_returns_none_when_global_fallback_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "0")
-    hook = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_GLOBAL, None): {
-                "id": 33,
-                "artifact_uri": "/tmp/global.json",
-                "model_scope": SCOPE_GLOBAL,
-            },
-        }
-    )
-    resolved = predict_task._resolve_model_for_target(
-        hook,
-        target="r_finish_position",
-        series_id=_CUP_SERIES_ID,
-        track_id=99,
-        track_type_id=42,
-    )
-    assert resolved is None
-
-
-def test_resolver_skips_track_when_artifact_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A registry row with NULL artifact_uri should not be considered usable."""
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    hook = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK, 7): {
-                "id": 11,
-                "artifact_uri": None,
-                "model_scope": SCOPE_TRACK,
-                "track_id": 7,
-            },
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 3): {
-                "id": 22,
-                "artifact_uri": "/tmp/type.json",
-                "model_scope": SCOPE_TRACK_TYPE,
-                "track_type_id": 3,
-            },
-        }
-    )
-    resolved = predict_task._resolve_model_for_target(
-        hook,
-        target="r_finish_position",
-        series_id=_CUP_SERIES_ID,
-        track_id=7,
-        track_type_id=3,
-    )
-    assert resolved is not None
-    assert resolved["id"] == 22
-
-
-def test_resolver_handles_missing_track_type_id_on_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Unmapped track => skip track_type lookup, drop straight to global."""
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    hook = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_GLOBAL, None): {
-                "id": 33,
-                "artifact_uri": "/tmp/global.json",
-                "model_scope": SCOPE_GLOBAL,
-            },
-        }
-    )
-    resolved = predict_task._resolve_model_for_target(
-        hook,
-        target="r_finish_position",
-        series_id=_CUP_SERIES_ID,
-        track_id=None,
-        track_type_id=None,
-    )
-    assert resolved is not None
-    assert resolved["model_scope"] == SCOPE_GLOBAL
-
-
-def test_resolver_does_not_cross_series_boundary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A Cup track model must never resolve for an Xfinity predict snapshot.
-
-    The catalog only has Cup (series=1) entries; an Xfinity (series=2)
-    lookup at the same track_id / track_type_id must return ``None`` because
-    the routing chain filters on ``series_id`` first.
-    """
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    cup_only = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK, 7): {
-                "id": 11,
-                "artifact_uri": "/tmp/cup_track.json",
-                "model_scope": SCOPE_TRACK,
-                "track_id": 7,
-            },
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 3): {
-                "id": 22,
-                "artifact_uri": "/tmp/cup_type.json",
-                "model_scope": SCOPE_TRACK_TYPE,
-                "track_type_id": 3,
-            },
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_GLOBAL, None): {
-                "id": 33,
-                "artifact_uri": "/tmp/cup_global.json",
-                "model_scope": SCOPE_GLOBAL,
-            },
-        }
-    )
-    resolved = predict_task._resolve_model_for_target(
-        cup_only,
-        target="r_finish_position",
-        series_id=2,  # Xfinity
-        track_id=7,
-        track_type_id=3,
-    )
-    assert resolved is None
-
-
-def test_resolver_uses_series_specific_model_when_available(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When both Cup and Xfinity track models exist, route to the right one."""
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    hook = _make_hook(
-        {
-            ("r_finish_position", 1, SCOPE_TRACK, 7): {
-                "id": 11,
-                "artifact_uri": "/tmp/cup_track.json",
-                "model_scope": SCOPE_TRACK,
-                "series_id": 1,
-                "track_id": 7,
-            },
-            ("r_finish_position", 2, SCOPE_TRACK, 7): {
-                "id": 211,
-                "artifact_uri": "/tmp/xfinity_track.json",
-                "model_scope": SCOPE_TRACK,
-                "series_id": 2,
-                "track_id": 7,
-            },
-        }
-    )
-
-    cup = predict_task._resolve_model_for_target(
-        hook,
-        target="r_finish_position",
-        series_id=1,
-        track_id=7,
-        track_type_id=None,
-    )
-    assert cup is not None
-    assert cup["id"] == 11
-    assert cup["series_id"] == 1
-
-    xfinity = predict_task._resolve_model_for_target(
-        hook,
-        target="r_finish_position",
-        series_id=2,
-        track_id=7,
-        track_type_id=None,
-    )
-    assert xfinity is not None
-    assert xfinity["id"] == 211
-    assert xfinity["series_id"] == 2
-
-
-def test_cold_track_blend_averages_type_model_predictions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    hook = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 3): {
-                "id": 22,
-                "artifact_uri": "/tmp/type3.json",
-                "model_scope": SCOPE_TRACK_TYPE,
-                "track_type_id": 3,
-            },
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 5): {
-                "id": 25,
-                "artifact_uri": "/tmp/type5.json",
-                "model_scope": SCOPE_TRACK_TYPE,
-                "track_type_id": 5,
-            },
-        }
-    )
-    rows = [
-        {"car_driver_id": 1, "features": {"a": 1.0}},
-        {"car_driver_id": 2, "features": {"a": 2.0}},
-    ]
-
-    monkeypatch.setattr(predict_task, "is_cold_track", lambda *a, **k: True)
-    monkeypatch.setattr(predict_task, "track_type_ids_for_track", lambda _h, _t: [3, 5])
-
+def _patch_predict(monkeypatch: pytest.MonkeyPatch, predictions_by_model: dict[int, np.ndarray]) -> None:
     def _fake_predict(
         _rows: list[dict[str, Any]],
         entry: dict[str, Any],
         *,
         booster_cls: type,
     ) -> np.ndarray:
-        if entry["id"] == 22:
-            return np.array([10.0, 12.0])
-        return np.array([20.0, 24.0])
+        return predictions_by_model[entry["id"]]
 
     monkeypatch.setattr(predict_task, "_predict_with_model", _fake_predict)
+
+
+def test_multi_type_track_blends_with_equal_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FS_ML_BLEND_WEIGHTS", "equal")
+    hook = _make_hook(
+        {
+            ("r_finish_position", _CUP_SERIES_ID, 3): {
+                "id": 22,
+                "artifact_uri": "/tmp/c3.json",
+                "track_type_id": 3,
+                "cohort_n_weeks": 4,
+            },
+            ("r_finish_position", _CUP_SERIES_ID, 5): {
+                "id": 25,
+                "artifact_uri": "/tmp/c5.json",
+                "track_type_id": 5,
+                "cohort_n_weeks": 6,
+            },
+        }
+    )
+    rows = [{"car_driver_id": 1, "features": {}}, {"car_driver_id": 2, "features": {}}]
+    _patch_predict(
+        monkeypatch,
+        {22: np.array([10.0, 12.0]), 25: np.array([20.0, 24.0])},
+    )
 
     preds, meta, model_id = predict_task._predict_values_for_target(
         hook,
         target="r_finish_position",
         series_id=_CUP_SERIES_ID,
         track_id=99,
-        track_type_id=3,
-        rules_id=7,
         rows=rows,
         booster_cls=MagicMock,
+        type_ids=[3, 5],
+        strategy="equal",
     )
     assert preds is not None
     np.testing.assert_allclose(preds, [15.0, 18.0])
     assert meta is not None
-    assert meta["model_scope"] == SCOPE_TRACK_TYPE_BLEND
+    assert meta["model_scope"] == SCOPE_TRACK_TYPE
     assert meta["track_type_ids"] == [3, 5]
-    assert meta["n_models"] == 2
+    assert meta["model_ids"] == [22, 25]
+    assert meta["weights"] == [0.5, 0.5]
+    assert meta["blend_strategy_used"] == "equal"
     assert model_id == 22
 
 
-def test_warm_track_without_track_model_uses_single_track_type(
+def test_inverse_mae_strategy_weights_lower_mae_higher(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
+    monkeypatch.setenv("FS_ML_BLEND_WEIGHTS", "inverse_mae")
     hook = _make_hook(
         {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 3): {
+            ("r_finish_position", _CUP_SERIES_ID, 3): {
                 "id": 22,
-                "artifact_uri": "/tmp/type.json",
-                "model_scope": SCOPE_TRACK_TYPE,
+                "artifact_uri": "/tmp/c3.json",
+                "track_type_id": 3,
+                "cohort_n_weeks": 4,
+            },
+            ("r_finish_position", _CUP_SERIES_ID, 5): {
+                "id": 25,
+                "artifact_uri": "/tmp/c5.json",
+                "track_type_id": 5,
+                "cohort_n_weeks": 6,
+            },
+        },
+        holdout_mae={22: 2.0, 25: 1.0},
+    )
+    rows = [{"car_driver_id": 1, "features": {}}]
+    _patch_predict(monkeypatch, {22: np.array([10.0]), 25: np.array([20.0])})
+
+    preds, meta, _ = predict_task._predict_values_for_target(
+        hook,
+        target="r_finish_position",
+        series_id=_CUP_SERIES_ID,
+        track_id=99,
+        rows=rows,
+        booster_cls=MagicMock,
+        type_ids=[3, 5],
+        strategy="inverse_mae",
+    )
+    assert preds is not None
+    # weights = (1/2, 1/1)/(1/2+1/1) = (1/3, 2/3); blend = 10*1/3 + 20*2/3
+    np.testing.assert_allclose(preds, [10.0 * (1 / 3) + 20.0 * (2 / 3)])
+    assert meta is not None
+    np.testing.assert_allclose(meta["weights"], [1 / 3, 2 / 3], atol=1e-6)
+    assert meta["maes"] == [2.0, 1.0]
+    assert meta["blend_strategy_used"] == "inverse_mae"
+
+
+def test_inverse_mae_missing_falls_back_to_equal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FS_ML_BLEND_WEIGHTS", "inverse_mae")
+    hook = _make_hook(
+        {
+            ("r_finish_position", _CUP_SERIES_ID, 3): {
+                "id": 22,
+                "artifact_uri": "/tmp/c3.json",
                 "track_type_id": 3,
             },
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_TRACK_TYPE, 5): {
+            ("r_finish_position", _CUP_SERIES_ID, 5): {
                 "id": 25,
-                "artifact_uri": "/tmp/type5.json",
-                "model_scope": SCOPE_TRACK_TYPE,
+                "artifact_uri": "/tmp/c5.json",
                 "track_type_id": 5,
+            },
+        },
+        holdout_mae={22: 2.0},  # 25 missing
+    )
+    rows = [{"car_driver_id": 1, "features": {}}]
+    _patch_predict(monkeypatch, {22: np.array([10.0]), 25: np.array([20.0])})
+
+    preds, meta, _ = predict_task._predict_values_for_target(
+        hook,
+        target="r_finish_position",
+        series_id=_CUP_SERIES_ID,
+        track_id=99,
+        rows=rows,
+        booster_cls=MagicMock,
+        type_ids=[3, 5],
+        strategy="inverse_mae",
+    )
+    assert preds is not None
+    np.testing.assert_allclose(preds, [15.0])
+    assert meta is not None
+    np.testing.assert_allclose(meta["weights"], [0.5, 0.5])
+    assert meta["blend_strategy_used"] == "equal_fallback"
+
+
+def test_sample_count_strategy_weights_by_cohort_n_weeks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hook = _make_hook(
+        {
+            ("r_finish_position", _CUP_SERIES_ID, 3): {
+                "id": 22,
+                "artifact_uri": "/tmp/c3.json",
+                "track_type_id": 3,
+                "cohort_n_weeks": 4,
+            },
+            ("r_finish_position", _CUP_SERIES_ID, 5): {
+                "id": 25,
+                "artifact_uri": "/tmp/c5.json",
+                "track_type_id": 5,
+                "cohort_n_weeks": 12,
             },
         }
     )
     rows = [{"car_driver_id": 1, "features": {}}]
+    _patch_predict(monkeypatch, {22: np.array([10.0]), 25: np.array([20.0])})
 
-    monkeypatch.setattr(predict_task, "is_cold_track", lambda *a, **k: False)
-    monkeypatch.setattr(
-        predict_task,
-        "_predict_with_model",
-        lambda _rows, _entry, booster_cls: np.array([7.0]),
+    preds, meta, _ = predict_task._predict_values_for_target(
+        hook,
+        target="r_finish_position",
+        series_id=_CUP_SERIES_ID,
+        track_id=99,
+        rows=rows,
+        booster_cls=MagicMock,
+        type_ids=[3, 5],
+        strategy="sample_count",
     )
+    assert preds is not None
+    # weights = (4, 12)/16 = (0.25, 0.75)
+    np.testing.assert_allclose(preds, [10.0 * 0.25 + 20.0 * 0.75])
+    assert meta is not None
+    np.testing.assert_allclose(meta["weights"], [0.25, 0.75])
+    assert meta["blend_strategy_used"] == "sample_count"
+    assert meta["cohort_n_weeks"] == [4, 12]
+
+
+def test_single_type_track_passes_predictions_through_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hook = _make_hook(
+        {
+            ("r_finish_position", _CUP_SERIES_ID, 3): {
+                "id": 22,
+                "artifact_uri": "/tmp/c3.json",
+                "track_type_id": 3,
+                "cohort_n_weeks": 5,
+            },
+        },
+        holdout_mae={22: 1.5},
+    )
+    rows = [{"car_driver_id": 1, "features": {}}]
+    _patch_predict(monkeypatch, {22: np.array([7.5])})
 
     preds, meta, model_id = predict_task._predict_values_for_target(
         hook,
         target="r_finish_position",
         series_id=_CUP_SERIES_ID,
         track_id=99,
-        track_type_id=3,
-        rules_id=7,
         rows=rows,
         booster_cls=MagicMock,
+        type_ids=[3],
+        strategy="inverse_mae",
     )
     assert preds is not None
-    assert float(preds[0]) == 7.0
+    np.testing.assert_allclose(preds, [7.5])
     assert meta is not None
-    assert meta["model_scope"] == SCOPE_TRACK_TYPE
-    assert meta["track_type_id"] == 3
+    assert meta["track_type_ids"] == [3]
+    assert meta["weights"] == [1.0]
     assert model_id == 22
 
 
-def test_cold_track_blend_falls_back_to_global_when_no_type_models(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "1")
-    hook = _make_hook(
-        {
-            ("r_finish_position", _CUP_SERIES_ID, SCOPE_GLOBAL, None): {
-                "id": 33,
-                "artifact_uri": "/tmp/global.json",
-                "model_scope": SCOPE_GLOBAL,
-            },
-        }
-    )
-    rows = [{"car_driver_id": 1, "features": {}}]
-
-    monkeypatch.setattr(predict_task, "is_cold_track", lambda *a, **k: True)
-    monkeypatch.setattr(predict_task, "track_type_ids_for_track", lambda _h, _t: [3, 5])
-    monkeypatch.setattr(
-        predict_task,
-        "_predict_with_model",
-        lambda _rows, _entry, booster_cls: np.array([42.0]),
-    )
+def test_no_cohort_models_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    hook = _make_hook({})
+    _patch_predict(monkeypatch, {})
 
     preds, meta, model_id = predict_task._predict_values_for_target(
         hook,
         target="r_finish_position",
         series_id=_CUP_SERIES_ID,
         track_id=99,
-        track_type_id=3,
-        rules_id=7,
-        rows=rows,
+        rows=[{"car_driver_id": 1, "features": {}}],
         booster_cls=MagicMock,
+        type_ids=[3, 5],
+        strategy="inverse_mae",
     )
-    assert preds is not None
-    assert float(preds[0]) == 42.0
-    assert meta is not None
-    assert meta["model_scope"] == SCOPE_GLOBAL
-    assert model_id == 33
+    assert preds is None
+    assert meta is None
+    assert model_id is None
+
+
+def test_no_type_ids_short_circuits(monkeypatch: pytest.MonkeyPatch) -> None:
+    hook = _make_hook({})
+    preds, meta, model_id = predict_task._predict_values_for_target(
+        hook,
+        target="r_finish_position",
+        series_id=_CUP_SERIES_ID,
+        track_id=99,
+        rows=[{"car_driver_id": 1, "features": {}}],
+        booster_cls=MagicMock,
+        type_ids=[],
+        strategy="equal",
+    )
+    assert preds is None
+    assert meta is None
+    assert model_id is None
+
+
+class TestCohortTrainTargetMeanFallback:
+    """B3: secondaries without a cohort model fall back to ``ml_models.train_target_mean``.
+
+    The fallback chain is ``type-scoped average -> series-wide average -> None``.
+    These tests stub ``hook.get_records`` to return realistic shapes for each
+    branch.
+    """
+
+    def test_returns_type_scoped_average_when_present(self) -> None:
+        hook = MagicMock()
+        hook.get_records.return_value = [(4.5,)]
+
+        mean = predict_task._cohort_train_target_mean(
+            hook,
+            target="r_total_laps_led",
+            series_id=1,
+            track_type_ids=[3, 5],
+        )
+
+        assert mean == 4.5
+        sql, kwargs = hook.get_records.call_args.args, hook.get_records.call_args.kwargs
+        # Type-scoped query gets called first; its IN list must include both type_ids.
+        assert "track_type_id IN" in sql[0]
+        params = kwargs["parameters"]
+        # First call exhausts the type-scoped branch — no fall-through needed.
+        assert hook.get_records.call_count == 1
+        assert 3 in params and 5 in params
+
+    def test_falls_through_to_series_wide_when_type_scoped_empty(self) -> None:
+        hook = MagicMock()
+        # First call (type-scoped) -> empty; second call (series-wide) -> 3.2.
+        hook.get_records.side_effect = [[(None,)], [(3.2,)]]
+
+        mean = predict_task._cohort_train_target_mean(
+            hook,
+            target="r_total_laps_led",
+            series_id=1,
+            track_type_ids=[3, 5],
+        )
+
+        assert mean == 3.2
+        assert hook.get_records.call_count == 2
+
+    def test_returns_none_when_no_cohort_models_have_train_target_mean(self) -> None:
+        hook = MagicMock()
+        hook.get_records.side_effect = [[(None,)], [(None,)]]
+
+        mean = predict_task._cohort_train_target_mean(
+            hook,
+            target="r_total_laps_led",
+            series_id=1,
+            track_type_ids=[3, 5],
+        )
+
+        assert mean is None
+        assert hook.get_records.call_count == 2
+
+    def test_track_type_ids_optional_uses_series_wide_only(self) -> None:
+        hook = MagicMock()
+        hook.get_records.return_value = [(2.7,)]
+
+        mean = predict_task._cohort_train_target_mean(
+            hook,
+            target="r_total_laps_led",
+            series_id=1,
+            track_type_ids=None,
+        )
+
+        assert mean == 2.7
+        # No type-scoped query — only the series-wide one.
+        assert hook.get_records.call_count == 1
+        assert "track_type_id IN" not in hook.get_records.call_args.args[0]
+
+
+def test_models_for_unrelated_series_are_invisible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cup cohort artifacts must not resolve when the snapshot series is Xfinity."""
+    hook = _make_hook(
+        {
+            ("r_finish_position", _CUP_SERIES_ID, 3): {
+                "id": 22,
+                "artifact_uri": "/tmp/cup.json",
+                "track_type_id": 3,
+            },
+        }
+    )
+    _patch_predict(monkeypatch, {})
+
+    preds, meta, model_id = predict_task._predict_values_for_target(
+        hook,
+        target="r_finish_position",
+        series_id=2,  # Xfinity
+        track_id=99,
+        rows=[{"car_driver_id": 1, "features": {}}],
+        booster_cls=MagicMock,
+        type_ids=[3],
+        strategy="equal",
+    )
+    assert preds is None
+    assert meta is None
+    assert model_id is None

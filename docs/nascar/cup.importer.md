@@ -2,7 +2,7 @@
 
 Hourly importer that turns the per-week FRCS and Racing Reference CSVs into
 normalized rows in the `nascar` MySQL schema. Bridges the gap between the
-scraper DAGs and `nascar.cup.aggregate` / `nascar.cup.machine_learning`.
+scraper DAGs and `nascar.cup.aggregate` / `nascar.cup.machine_learning.models`.
 
 - **DAG IDs:** `nascar.cup.importer`, `backfill.nascar.cup.importer`
 - **Source:** [dags/nascar/cup/importer.py](../../dags/nascar/cup/importer.py)

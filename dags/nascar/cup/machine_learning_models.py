@@ -1,5 +1,5 @@
 """
-Cup machine-learning DAG.
+Cup ML models DAG.
 
 **Schedule:** hourly, aligned with ``nascar.cup.aggregate``. Waits for that DAG's
 terminal ``aggregate_done`` sentinel, then:
@@ -8,12 +8,14 @@ terminal ``aggregate_done`` sentinel, then:
    rows for all finished weeks (``kind='train'``) and the **current week** only
    for predict (``kind='predict'``, via ``v_series_current_week``).
 2. ``train_models_if_needed`` — per DraftKings target stat, retrains an XGBoost
-   regressor when models do not yet cover the latest train week through
+   regressor when cohort models do not yet cover the latest train week through
    ``v_series_before_current_week`` and ``v_series_current_week``.
 3. ``predict_upcoming_week`` — scores the current week's ``kind='predict'``
    snapshot and writes ``ml_predictions`` rows with derived DFS-point breakdowns.
 
-Walk-forward backtest runs in ``nascar.cup.machine_learning.backtest`` (waits on
+Walk-forward backtest runs in ``nascar.cup.machine_learning.models.backtest``
+and the race-outcome Monte Carlo runs in
+``nascar.cup.machine_learning.models.monte_carlo`` (both sensor
 ``predict_upcoming_week`` here).
 """
 
@@ -35,7 +37,7 @@ from include.nascar.ml.predict_task import predict_upcoming_week_task
 from include.nascar.ml.train_task import train_models_if_needed_task
 from include.nascar.ml.training_snapshot_task import build_ml_training_snapshots_task
 
-DAG_ID = "nascar.cup.machine_learning"
+DAG_ID = "nascar.cup.machine_learning.models"
 
 
 with DAG(

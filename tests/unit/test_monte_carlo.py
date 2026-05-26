@@ -167,8 +167,20 @@ def test_simulate_holds_target_constant_when_sigma_is_zero() -> None:
 
 
 def test_simulate_finish_position_stays_inside_field() -> None:
-    """The simulator must never re-score with finish positions outside ``[1, field_size]``."""
-    drivers = [_driver(1, finish=1.0, sigma_finish=20.0, sigma_laps_led=0.0, sigma_fastest_laps=0.0)]
+    """The simulator must never re-score with finish positions outside ``[1, field_size]``.
+
+    E2 rank-coupling: the simulator argsorts each iteration's raw finish
+    draws across the entire field so every ``r_finish_position`` it sends
+    to the scorer is by construction an integer permutation of
+    ``1..len(drivers)``. We assert that here on a multi-driver field so
+    the permutation invariant — not the legacy per-driver clip — is what
+    keeps finishes inside ``[1, field_size]``.
+    """
+    drivers = [
+        _driver(i + 1, finish=float(i + 1), sigma_finish=20.0,
+                sigma_laps_led=0.0, sigma_fastest_laps=0.0)
+        for i in range(10)
+    ]
     captured: list[float] = []
 
     real_compute = (
@@ -187,12 +199,12 @@ def test_simulate_finish_position_stays_inside_field() -> None:
             drivers,
             scoring_rules=_DK_RULES_JSON,
             n_simulations=MIN_SIMULATIONS,
-            field_size=40,
+            field_size=len(drivers),
             seed=5,
         )
 
     assert captured, "expected scoring to be called at least once"
-    assert all(1.0 <= finish <= 40.0 for finish in captured)
+    assert all(1.0 <= finish <= float(len(drivers)) for finish in captured)
     assert all(float(finish).is_integer() for finish in captured)
 
 
@@ -219,27 +231,26 @@ def test_simulate_rejects_zero_field_size() -> None:
         )
 
 
-def test_summary_mean_matches_raw_samples() -> None:
-    """Cross-check the aggregated mean against a manual numpy reproduction with the same seed."""
-    drivers = [_driver(1, finish=10.0)]
-    summary = simulate_driver_distributions(
-        drivers, scoring_rules=_DK_RULES_JSON, n_simulations=MIN_SIMULATIONS, seed=99
-    )[0]
-    rng = np.random.default_rng(99)
-    samples = np.empty(MIN_SIMULATIONS)
-    real_compute = (
-        __import__("include.nascar.ml.monte_carlo", fromlist=["compute_dfs_points_from_targets"]).compute_dfs_points_from_targets
+def test_summary_mean_is_finite_and_in_range() -> None:
+    """E2 rank-coupling: summary stats must stay finite and consistent.
+
+    The legacy version of this test cross-checked the simulator against
+    a manual numpy replay tied to the per-driver loop ordering. The E2
+    refactor switched to a per-iteration-then-per-driver loop with
+    vectorized rng draws, which makes the manual replay brittle. The
+    invariants this test now defends are the only ones we actually
+    promise to downstream consumers: every per-driver summary is
+    finite, mean lies between min and max, and percentile ordering is
+    consistent.
+    """
+    drivers = [_driver(i + 1, finish=float(i + 1)) for i in range(8)]
+    summaries = simulate_driver_distributions(
+        drivers,
+        scoring_rules=_DK_RULES_JSON,
+        n_simulations=MIN_SIMULATIONS,
+        seed=99,
     )
-    for i in range(MIN_SIMULATIONS):
-        perturbed = {}
-        for target, mean in drivers[0].predicted_targets.items():
-            sigma = drivers[0].target_sigmas[target]
-            raw = float(mean) + rng.normal(0.0, sigma)
-            if target == "r_finish_position":
-                clipped = max(1, min(len(drivers), int(round(raw))))
-                perturbed[target] = float(clipped)
-            else:
-                perturbed[target] = float(max(0, int(round(raw))))
-        total, _ = real_compute(drivers[0].r_start_position, perturbed, _DK_RULES_JSON)
-        samples[i] = float(total)
-    assert summary.mean_dfs_points == pytest.approx(float(samples.mean()), abs=1e-9)
+    for s in summaries:
+        assert np.isfinite(s.mean_dfs_points)
+        assert s.min_dfs_points <= s.mean_dfs_points <= s.max_dfs_points
+        assert s.p05_dfs_points <= s.p50_dfs_points <= s.p95_dfs_points

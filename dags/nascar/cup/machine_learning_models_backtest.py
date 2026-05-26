@@ -1,10 +1,10 @@
 """
 Cup ML walk-forward backtest DAG.
 
-**Schedule:** hourly, aligned with ``nascar.cup.machine_learning``. Waits for
-``predict_upcoming_week`` on the production ML DAG, then runs an optional
-walk-forward evaluation over recent finished train weeks (logs MAE/RMSE/Spearman;
-does not write ``ml_predictions``).
+**Schedule:** hourly, aligned with ``nascar.cup.machine_learning.models``. Waits
+for ``predict_upcoming_week`` on the production ML models DAG, then runs an
+optional walk-forward evaluation over recent finished train weeks (logs
+MAE/RMSE/Spearman; does not write ``ml_predictions``).
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ from nascar.cup.scraper.dag_factories import (
 
 from include.nascar.ml.backtest_task import run_ml_backtest_task
 
-DAG_ID = "nascar.cup.machine_learning.backtest"
-ML_DAG_ID = "nascar.cup.machine_learning"
+DAG_ID = "nascar.cup.machine_learning.models.backtest"
+ML_DAG_ID = "nascar.cup.machine_learning.models"
 
 
 with DAG(

@@ -1,14 +1,14 @@
-# `nascar.cup.machine_learning.monte_carlo`
+# `nascar.cup.machine_learning.models.monte_carlo`
 
 Hourly Cup Monte Carlo race-simulation DAG. Waits for
-`nascar.cup.machine_learning` / `predict_upcoming_week`, draws at least 1,000
-simulated DraftKings-point outcomes per driver from the calibrated prediction
-uncertainty, and persists batch + per-driver summaries to MariaDB for the
-lineup generator and downstream BI.
+`nascar.cup.machine_learning.models` / `predict_upcoming_week`, draws at least
+1,000 simulated DraftKings-point outcomes per driver from the calibrated
+prediction uncertainty, and persists batch + per-driver summaries to MariaDB
+for the lineup generator and downstream BI.
 
-- **DAG ID:** `nascar.cup.machine_learning.monte_carlo` (no `backfill.*` twin)
-- **Source:** [dags/nascar/cup/machine_learning_monte_carlo.py](../../dags/nascar/cup/machine_learning_monte_carlo.py)
-- **Tests:** [tests/unit/test_machine_learning_monte_carlo_dag.py](../../tests/unit/test_machine_learning_monte_carlo_dag.py),
+- **DAG ID:** `nascar.cup.machine_learning.models.monte_carlo` (no `backfill.*` twin)
+- **Source:** [dags/nascar/cup/machine_learning_models_monte_carlo.py](../../dags/nascar/cup/machine_learning_models_monte_carlo.py)
+- **Tests:** [tests/unit/test_machine_learning_models_monte_carlo_dag.py](../../tests/unit/test_machine_learning_models_monte_carlo_dag.py),
   [tests/unit/test_monte_carlo.py](../../tests/unit/test_monte_carlo.py),
   [tests/unit/test_monte_carlo_task.py](../../tests/unit/test_monte_carlo_task.py)
 
@@ -32,7 +32,7 @@ flowchart LR
 
 ### `wait_ml_predict_complete`
 
-`ExternalTaskSensor` on `nascar.cup.machine_learning` /
+`ExternalTaskSensor` on `nascar.cup.machine_learning.models` /
 `predict_upcoming_week` (same poke / timeout as other Cup ML sensors).
 
 ### `run_monte_carlo_simulation`
@@ -138,5 +138,5 @@ migration `fantasy-sports-db/nascar/migrations/20260526T120000_ml_race_simulatio
 
 ## Related
 
-- Upstream: [cup.machine_learning.md](./cup.machine_learning.md)
+- Upstream: [cup.machine_learning.models.md](./cup.machine_learning.models.md)
 - Downstream: [cup.dfs.lineup_generator.md](./cup.dfs.lineup_generator.md)

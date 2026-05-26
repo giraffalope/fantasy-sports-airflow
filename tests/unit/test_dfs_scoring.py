@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from include.nascar.ml.scoring import (
+    MissingStartPositionError,
     build_scoring_row,
     compute_dfs_points,
     compute_dfs_points_from_targets,
@@ -213,3 +216,65 @@ def test_predicted_stats_plus_start_reproduce_draftkings_total() -> None:
     assert scoring_row["r_start_position"] == 8
     total2, _ = compute_dfs_points(scoring_row, _DRAFTKINGS_RULES)
     assert float(total2) == 114.65
+
+
+def test_b4_place_diff_requires_start_position() -> None:
+    """B4: rules deriving ``r_place_diff`` must raise when start_position is None."""
+    targets = {
+        "r_finish_position": 1.0,
+        "r_total_fastest_laps": 52.0,
+        "r_total_laps_led": 157.0,
+    }
+    with pytest.raises(MissingStartPositionError):
+        compute_dfs_points_from_targets(None, targets, _DRAFTKINGS_RULES)
+
+
+def test_b4_user_supplied_place_diff_does_not_bypass_assertion() -> None:
+    """``build_scoring_row`` strips ``r_place_diff`` when rules derive it,
+    so passing it directly does NOT let the caller skip ``start_position``."""
+    targets = {
+        "r_finish_position": 1.0,
+        "r_place_diff": 7.0,
+        "r_total_fastest_laps": 52.0,
+        "r_total_laps_led": 157.0,
+    }
+    with pytest.raises(MissingStartPositionError):
+        compute_dfs_points_from_targets(None, targets, _DRAFTKINGS_RULES)
+
+
+def test_b4_with_start_position_provides_place_diff_via_fallback() -> None:
+    """B4 assertion is a guard, not a behaviour change — happy path still works."""
+    targets = {
+        "r_finish_position": 1.0,
+        "r_total_fastest_laps": 52.0,
+        "r_total_laps_led": 157.0,
+    }
+    total, breakdown = compute_dfs_points_from_targets(
+        8, targets, _DRAFTKINGS_RULES
+    )
+    # finish=45, place_diff=7 (8-1), fastest=23.4, laps_led=39.25 = 114.65
+    assert float(total) == 114.65
+    assert breakdown["place_diff"] == 7.0
+
+
+def test_b4_rules_without_place_diff_allow_none_start_position() -> None:
+    """When the active rules don't use r_place_diff, the assertion is silent."""
+    no_place_diff_rules = {
+        "version": 1,
+        "components": [
+            {
+                "name": "finish",
+                "source": "r_finish_position",
+                "type": "finish_table",
+                "table": {"1": 45},
+                "formula": {"base": 41, "subtract_position": True, "min": 0},
+            },
+        ],
+    }
+    total, breakdown = compute_dfs_points_from_targets(
+        None,
+        {"r_finish_position": 1.0},
+        no_place_diff_rules,
+    )
+    assert breakdown["finish"] == 45.0
+    assert float(total) == 45.0

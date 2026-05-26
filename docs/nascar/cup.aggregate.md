@@ -3,7 +3,7 @@
 Hourly aggregation DAG that builds the per-week analytics tables on top of
 the importer's canonical rows. Produces `agg_week_results` and the family of
 prior-track / per-entity aggregate tables consumed by
-`nascar.cup.machine_learning`.
+`nascar.cup.machine_learning.models`.
 
 - **DAG ID:** `nascar.cup.aggregate` (no `backfill.*` twin)
 - **Source:** [dags/nascar/cup/aggregate.py](../../dags/nascar/cup/aggregate.py)
@@ -18,7 +18,7 @@ view), then fans out to parameterized SQL loaders that backfill the
 per-week prior-track and per-entity aggregate tables (drivers, cars,
 teams, manufacturers, car generations + car-generation models). The trailing
 `aggregate_done` sentinel exists so downstream DAGs (currently
-`nascar.cup.machine_learning`) can wait on a single stable task id rather
+`nascar.cup.machine_learning.models`) can wait on a single stable task id rather
 than every wave-2 task.
 
 ## Schedule and basic settings
@@ -40,7 +40,7 @@ loads + 1 sentinel).
   `nascar.cup.importer.cleanup_importer_staging_and_temp_tables` for the
   matching logical date (`mode=reschedule`, `poke_interval=30s`,
   `timeout=CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT` = 6h).
-- **Downstream:** `nascar.cup.machine_learning.wait_aggregate_complete`
+- **Downstream:** `nascar.cup.machine_learning.models.wait_aggregate_complete`
   waits on `aggregate_done`.
 
 ## Task graph
@@ -282,7 +282,7 @@ downstream = `aggregate_done`.
 - **Operator:** `EmptyOperator`.
 - **Behavior:** no-op fan-in target so any downstream DAG can wait on a
   single stable task id instead of all 34 wave-2 loads. Success of this
-  task is the heartbeat `nascar.cup.machine_learning.wait_aggregate_complete`
+  task is the heartbeat `nascar.cup.machine_learning.models.wait_aggregate_complete`
   watches.
 - **Upstream:** every wave-2 task. **Downstream:** none in this DAG.
 

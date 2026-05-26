@@ -1,10 +1,10 @@
-"""Unit tests for incremental predict-minimal train refresh."""
+"""Unit tests for the cohort train-task gating helpers."""
 
 from __future__ import annotations
 
 import sys
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,12 +22,7 @@ from include.nascar.cup.current_week import (  # noqa: E402
     SeriesCurrentWeekTrackContext,
     resolve_current_week_track_context,
 )
-from include.nascar.ml.model_scope import SCOPE_GLOBAL, SCOPE_TRACK, SCOPE_TRACK_TYPE  # noqa: E402
 from include.nascar.ml.train_task import (  # noqa: E402
-    ScopeSpec,
-    _predict_ready,
-    _predict_routing_chain,
-    _scopes_needing_refresh,
     train_models_if_needed_task,
 )
 
@@ -47,87 +42,29 @@ def test_resolve_current_week_track_context_returns_dataclass() -> None:
     assert ctx.track_type_id == 2
 
 
-def test_predict_routing_chain_cold_track_omits_track_scope() -> None:
-    hook = MagicMock()
-    hook.get_records.return_value = []
-    ctx = SeriesCurrentWeekTrackContext(series_id=1, track_id=10, track_type_id=3)
-    with (
-        patch(
-            "include.nascar.ml.train_task._track_meets_threshold",
-            return_value=False,
-        ),
-        patch(
-            "include.nascar.ml.train_task._track_type_meets_threshold",
-            return_value=True,
-        ),
-    ):
-        chain = _predict_routing_chain(
-            hook, 7, 1, ctx, track_threshold=3, type_threshold=3, enable_global=True
-        )
-    assert chain == [
-        ScopeSpec(SCOPE_TRACK_TYPE, None, 3),
-        ScopeSpec(SCOPE_GLOBAL, None, None),
-    ]
-
-
-def test_predict_ready_when_first_scope_current() -> None:
-    hook = MagicMock()
-    chain = [ScopeSpec(SCOPE_TRACK, 10, None)]
-    with (
-        patch(
-            "include.nascar.ml.train_task._scope_model_exists",
-            return_value=True,
-        ),
-        patch(
-            "include.nascar.ml.train_task._scope_covered_week",
-            return_value=200,
-        ),
-    ):
-        assert _predict_ready(hook, 7, 1, chain, 200) is True
-
-
-def test_scopes_needing_refresh_returns_all_stale_scopes() -> None:
-    hook = MagicMock()
-    chain = [
-        ScopeSpec(SCOPE_TRACK, 10, None),
-        ScopeSpec(SCOPE_TRACK_TYPE, None, 3),
-    ]
-    with (
-        patch(
-            "include.nascar.ml.train_task._scope_model_exists",
-            return_value=True,
-        ),
-        patch(
-            "include.nascar.ml.train_task._scope_covered_week",
-            side_effect=[100, 50],
-        ),
-    ):
-        needing = _scopes_needing_refresh(hook, 7, 1, chain, 200)
-    assert needing == chain
-
-
-class TestTrainModelsIncremental:
+class TestTrainModelsIfNeededCohort:
     def _ctx(self) -> SeriesCurrentWeekTrackContext:
         return SeriesCurrentWeekTrackContext(series_id=1, track_id=10, track_type_id=2)
 
     def _setup_hook(self) -> MagicMock:
         hook = MagicMock()
         hook.get_records.side_effect = [
-            [(7, '{"version": 1, "components": []}')],
-            [(1,)],
-            [('["r_start_position", "cd_pt_finish_avg"]',)],
+            [(7, '{"version": 1, "components": []}')],  # _active_rules
+            [(1,)],  # _distinct_series_ids
+            [('["r_start_position", "cd_pt_finish_avg"]',)],  # feature_keys
+            [(2,), (3,)],  # track_type_ids_for_track
         ]
         return hook
 
-    def test_predict_ready_skips_without_train_scope(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_cold_cohort_below_min_weeks_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from include.nascar.ml import train_task
 
         hook = self._setup_hook()
         monkeypatch.setattr(train_task, "NascarMySqlHook", lambda **_: hook)
         monkeypatch.setattr(
-            train_task,
-            "resolve_series_current_week",
-            lambda h, *, series_id: MagicMock(),
+            train_task, "resolve_series_current_week", lambda h, *, series_id: MagicMock()
         )
         monkeypatch.setattr(train_task, "_latest_train_week_for_retrain_gate", lambda h, r: 200)
         monkeypatch.setattr(
@@ -135,30 +72,59 @@ class TestTrainModelsIncremental:
             "resolve_current_week_track_context",
             lambda h, *, series_id: self._ctx(),
         )
-        monkeypatch.setattr(
-            train_task,
-            "latest_train_week_for_retrain",
-            lambda h, **k: 200,
-        )
-        monkeypatch.setattr(
-            train_task,
-            "_predict_routing_chain",
-            lambda *a, **k: [ScopeSpec(SCOPE_TRACK, 10, None)],
-        )
-        monkeypatch.setattr(train_task, "_predict_ready", lambda *a, **k: True)
+        monkeypatch.setattr(train_task, "latest_train_week_for_retrain", lambda h, **k: 200)
+        monkeypatch.setattr(train_task, "cohort_distinct_weeks", lambda *a, **k: 1)
+
         train_calls: list[Any] = []
         monkeypatch.setattr(
             train_task,
-            "_train_scope",
+            "_train_cohort",
+            lambda **kw: train_calls.append(kw) or {"trained_models": {}},
+        )
+        monkeypatch.setenv("FS_ML_MIN_COHORT_WEEKS", "4")
+
+        result = train_models_if_needed_task()
+
+        assert result["skipped"] == "insufficient_cohort_weeks_all_cohorts"
+        assert train_calls == []
+        cold_types = {entry["track_type_id"] for entry in result["cold_cohorts"]}
+        assert cold_types == {2, 3}
+
+    def test_fresh_cohorts_skip_training_with_predict_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from include.nascar.ml import train_task
+
+        hook = self._setup_hook()
+        monkeypatch.setattr(train_task, "NascarMySqlHook", lambda **_: hook)
+        monkeypatch.setattr(
+            train_task, "resolve_series_current_week", lambda h, *, series_id: MagicMock()
+        )
+        monkeypatch.setattr(train_task, "_latest_train_week_for_retrain_gate", lambda h, r: 200)
+        monkeypatch.setattr(
+            train_task,
+            "resolve_current_week_track_context",
+            lambda h, *, series_id: self._ctx(),
+        )
+        monkeypatch.setattr(train_task, "latest_train_week_for_retrain", lambda h, **k: 200)
+        monkeypatch.setattr(train_task, "cohort_distinct_weeks", lambda *a, **k: 8)
+        monkeypatch.setattr(train_task, "_cohort_covered_week", lambda *a, **k: 200)
+
+        train_calls: list[Any] = []
+        monkeypatch.setattr(
+            train_task,
+            "_train_cohort",
             lambda **kw: train_calls.append(kw) or {"trained_models": {}},
         )
 
         result = train_models_if_needed_task()
 
-        assert result.get("skipped") == "predict_ready"
+        assert result["skipped"] == "predict_ready"
         assert train_calls == []
 
-    def test_stale_track_trains_one_scope_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_stale_cohort_triggers_training(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from include.nascar.ml import train_task
 
         hook = self._setup_hook()
@@ -167,9 +133,7 @@ class TestTrainModelsIncremental:
 
         monkeypatch.setattr(train_task, "NascarMySqlHook", lambda **_: hook)
         monkeypatch.setattr(
-            train_task,
-            "resolve_series_current_week",
-            lambda h, *, series_id: MagicMock(),
+            train_task, "resolve_series_current_week", lambda h, *, series_id: MagicMock()
         )
         monkeypatch.setattr(train_task, "_latest_train_week_for_retrain_gate", lambda h, r: 200)
         monkeypatch.setattr(
@@ -177,43 +141,29 @@ class TestTrainModelsIncremental:
             "resolve_current_week_track_context",
             lambda h, *, series_id: self._ctx(),
         )
-        monkeypatch.setattr(
-            train_task,
-            "latest_train_week_for_retrain",
-            lambda h, **k: 200,
-        )
-        monkeypatch.setattr(
-            train_task,
-            "_predict_routing_chain",
-            lambda *a, **k: [
-                ScopeSpec(SCOPE_TRACK, 10, None),
-                ScopeSpec(SCOPE_TRACK_TYPE, None, 2),
-                ScopeSpec(SCOPE_GLOBAL, None, None),
-            ],
-        )
-        monkeypatch.setattr(train_task, "_predict_ready", lambda *a, **k: False)
-        monkeypatch.setattr(
-            train_task,
-            "_scopes_needing_refresh",
-            lambda *a, **k: [ScopeSpec(SCOPE_TRACK, 10, None)],
-        )
+        monkeypatch.setattr(train_task, "latest_train_week_for_retrain", lambda h, **k: 200)
+        monkeypatch.setattr(train_task, "cohort_distinct_weeks", lambda *a, **k: 8)
+        monkeypatch.setattr(train_task, "_cohort_covered_week", lambda *a, **k: 50)
+        monkeypatch.setattr(train_task, "sibling_track_ids_for_type", lambda *a, **k: [10])
 
         def _fake_load(**kw: Any) -> list[dict[str, Any]]:
             load_calls.append(dict(kw))
-            return [{"ml_training_snapshot_id": 1, "week_id": 100}]
+            return [{"ml_training_snapshot_id": 1, "week_id": 100, "track_id": 10}]
 
         monkeypatch.setattr(train_task, "load_training_frame", _fake_load)
         monkeypatch.setattr(
             train_task,
-            "_train_scope",
-            lambda **kw: train_calls.append(kw) or {"trained_models": {}},
+            "_train_cohort",
+            lambda **kw: train_calls.append(kw) or {
+                "trained_models": {"r_finish_position": 99},
+                "track_type_id": kw["track_type_id"],
+            },
         )
-        monkeypatch.setenv("FS_ML_ENABLE_GLOBAL_FALLBACK", "0")
 
         result = train_models_if_needed_task()
 
         assert result.get("skipped") is None
-        assert len(load_calls) == 1
-        assert load_calls[0]["track_id"] == 10
-        assert len(train_calls) == 1
-        assert train_calls[0]["scope"] == SCOPE_TRACK
+        assert len(load_calls) == 2  # one per track_type_id (2, 3)
+        assert {c["track_type_id"] for c in load_calls} == {2, 3}
+        assert all("track_id" not in c for c in load_calls)
+        assert len(train_calls) == 2

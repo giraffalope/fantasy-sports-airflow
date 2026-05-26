@@ -1,8 +1,8 @@
 """
 Cup ML Monte Carlo race-simulation DAG.
 
-**Schedule:** hourly, aligned with ``nascar.cup.machine_learning``. Waits for
-``predict_upcoming_week`` on the production ML DAG, simulates ≥ 1,000
+**Schedule:** hourly, aligned with ``nascar.cup.machine_learning.models``. Waits
+for ``predict_upcoming_week`` on the production ML models DAG, simulates ≥ 1,000
 DraftKings-point outcomes per driver from calibrated prediction uncertainty,
 and persists batch + per-driver summaries to MariaDB for the lineup generator
 and downstream BI.
@@ -27,8 +27,8 @@ from include.nascar.ml.monte_carlo_task import (
     validate_simulation_batch_task,
 )
 
-DAG_ID = "nascar.cup.machine_learning.monte_carlo"
-ML_DAG_ID = "nascar.cup.machine_learning"
+DAG_ID = "nascar.cup.machine_learning.models.monte_carlo"
+ML_DAG_ID = "nascar.cup.machine_learning.models"
 
 
 with DAG(

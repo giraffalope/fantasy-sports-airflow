@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from include.nascar.ml.xgb_tuning import xgb_n_jobs
+
 _LOG = logging.getLogger(__name__)
 
 
@@ -30,6 +32,13 @@ def select_features(
     Falls back to returning all features when Boruta selects zero features so the
     downstream XGBRegressor still has something to train on. The metadata dict
     captures support / iteration counts for ``ml_feature_sets.boruta_metadata``.
+
+    Phase 4: the inner XGBoost ``n_jobs`` is resolved via
+    :func:`include.nascar.ml.xgb_tuning.xgb_n_jobs` (env var
+    ``FS_ML_XGB_N_JOBS``, default ``-1`` outside the configured worker).
+    Boruta's shadow-feature trick already doubles the feature matrix in
+    memory; capping XGBoost's per-thread histogram buffers is the single
+    biggest dial that keeps Boruta from spiking the cohort training peak.
     """
     from boruta import BorutaPy
     from xgboost import XGBRegressor
@@ -46,7 +55,7 @@ def select_features(
         max_depth=5,
         learning_rate=0.05,
         tree_method="hist",
-        n_jobs=-1,
+        n_jobs=xgb_n_jobs(),
         random_state=random_state,
         verbosity=0,
     )

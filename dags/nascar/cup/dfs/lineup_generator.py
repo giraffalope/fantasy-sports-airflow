@@ -2,7 +2,7 @@
 Cup DraftKings DFS lineup generator DAG.
 
 **Schedule:** hourly, aligned with ML. Waits for ``validate_simulation_batch``
-on ``nascar.cup.machine_learning.monte_carlo`` (which itself waits on
+on ``nascar.cup.machine_learning.models.monte_carlo`` (which itself waits on
 ``predict_upcoming_week``), then builds top-K ILP lineups per strategy when
 Monte Carlo summaries and DraftKings salaries exist for the upcoming race.
 """
@@ -25,7 +25,7 @@ from include.nascar.dfs.lineup_generator_task import generate_draftkings_lineups
 
 DAG_ID = "nascar.cup.dfs.lineup_generator"
 SALARY_IMPORTER_DAG_ID = "nascar.cup.dfs.salary_importer"
-ML_MONTE_CARLO_DAG_ID = "nascar.cup.machine_learning.monte_carlo"
+ML_MONTE_CARLO_DAG_ID = "nascar.cup.machine_learning.models.monte_carlo"
 
 
 with DAG(

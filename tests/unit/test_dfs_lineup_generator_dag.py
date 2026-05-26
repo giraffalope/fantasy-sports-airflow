@@ -19,7 +19,7 @@ def test_dag_metadata() -> None:
 def test_wait_sensor_targets_mc_validation() -> None:
     dag = lineup_dag.dag
     wait = dag.get_task("wait_mc_complete")
-    assert wait.external_dag_id == "nascar.cup.machine_learning.monte_carlo"
+    assert wait.external_dag_id == "nascar.cup.machine_learning.models.monte_carlo"
     assert wait.external_task_id == "validate_simulation_batch"
     assert wait.poke_interval == CUP_EXTERNAL_SENSOR_POKE_INTERVAL.total_seconds()
     assert wait.timeout == CUP_IMPORTER_WAIT_RACE_WEEK_TIMEOUT.total_seconds()

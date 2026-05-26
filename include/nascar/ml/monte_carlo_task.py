@@ -20,11 +20,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any
 
 from airflow_utils.db_cursor import DbCursor
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 from include.nascar.enums import NascarSeries
+from include.nascar.ml.model_scope import (
+    INTERVAL_METHOD_CONFORMAL,
+    INTERVAL_METHOD_GLOBAL_MAE,
+    interval_method,
+)
 from include.nascar.ml.monte_carlo import (
     MIN_SIMULATIONS,
     MonteCarloDriverInput,
@@ -40,6 +46,12 @@ _LOG = logging.getLogger(__name__)
 # MAE for normally distributed residuals is σ * sqrt(2/π); converting back to σ
 # requires dividing by this factor when only MAE is available.
 _MAE_TO_SIGMA = 1.0 / 0.7978845608028654
+
+# E1 + E2: conformal half-width = (q90 - q10) / 2. Treating this as the σ of a
+# Normal that covers ~80% of holdout residuals lets the Monte Carlo draws use
+# the same shape they do today while sourcing the dispersion per-cohort. This
+# is the same trick scikit's split-conformal helpers apply.
+_CONFORMAL_QUANTILES = ("q10", "q90")
 
 
 def _parse_json(raw: Any) -> Any:
@@ -92,7 +104,8 @@ def _load_predictions(
 ) -> list[dict[str, Any]]:
     rows = hook.get_records(
         """
-        SELECT mp.car_driver_id, mtr.r_start_position, mp.predicted_targets_json
+        SELECT mp.car_driver_id, mtr.r_start_position,
+               mp.predicted_targets_json, mp.blend_metadata_json
         FROM nascar.ml_predictions mp
         JOIN nascar.ml_training_rows mtr
             ON mtr.ml_training_snapshot_id = mp.ml_training_snapshot_id
@@ -105,7 +118,7 @@ def _load_predictions(
         parameters=(snapshot_id,),
     )
     parsed: list[dict[str, Any]] = []
-    for car_driver_id, r_start_position, predicted_targets_json in rows:
+    for car_driver_id, r_start_position, predicted_targets_json, blend_meta_json in rows:
         parsed.append(
             {
                 "car_driver_id": int(car_driver_id),
@@ -113,9 +126,40 @@ def _load_predictions(
                     float(r_start_position) if r_start_position is not None else None
                 ),
                 "predicted_targets": _parse_json(predicted_targets_json) or {},
+                # E2: per-driver blend lineage. ``conformal_intervals``
+                # under this dict is the per-target ``{q05, q10, q50,
+                # q90, q95}`` already weight-averaged by predict-time
+                # blend so Monte Carlo can size each driver's σ from
+                # the cohorts that produced that driver's prediction.
+                "blend_metadata": _parse_json(blend_meta_json) or {},
             }
         )
     return parsed
+
+
+def _conformal_sigma_from_intervals(
+    intervals: Mapping[str, float] | None,
+) -> float | None:
+    """E1 + E2: ``σ ≈ (q90 - q10) / 2`` from a per-target quantile dict.
+
+    Returns ``None`` when either bound is missing or the half-width is
+    non-positive (which would shrink the Monte Carlo draws to a delta).
+    A small positive floor protects against degenerate cohorts whose
+    holdout residuals are all identical.
+    """
+    if not intervals:
+        return None
+    q10 = intervals.get(_CONFORMAL_QUANTILES[0])
+    q90 = intervals.get(_CONFORMAL_QUANTILES[1])
+    if q10 is None or q90 is None:
+        return None
+    try:
+        half_width = (float(q90) - float(q10)) / 2.0
+    except (TypeError, ValueError):
+        return None
+    if half_width <= 0.0:
+        return None
+    return half_width
 
 
 def _load_target_sigma(
@@ -162,28 +206,73 @@ def _load_target_sigma(
     return value * _MAE_TO_SIGMA
 
 
+_NON_NUMERIC_TARGET_SUFFIXES: frozenset[str] = frozenset({"r_finish_position_raw"})
+
+
+def _resolve_per_driver_sigmas(
+    row: Mapping[str, Any],
+    *,
+    method: str,
+    fallback: Mapping[str, float],
+    targets: Mapping[str, float],
+) -> dict[str, float]:
+    """E1 + E2 + E4 σ resolution for one ml_predictions row.
+
+    ``method=conformal`` (default) reads ``blend_metadata_json.conformal_intervals``
+    (a per-target ``{q05, q10, q50, q90, q95}`` dict written by predict)
+    and converts each entry to ``σ ≈ (q90 - q10) / 2``. Missing or
+    degenerate per-target slots silently fall back to the ``global_mae``
+    σ for that target — never to zero — so Monte Carlo never shrinks to
+    a delta. ``method=global_mae`` uses the legacy global σ unchanged.
+    """
+    if method == INTERVAL_METHOD_GLOBAL_MAE:
+        return {
+            target: sigma
+            for target, sigma in fallback.items()
+            if target in targets
+        }
+    intervals_root = (row.get("blend_metadata") or {}).get("conformal_intervals") or {}
+    resolved: dict[str, float] = {}
+    for target in targets:
+        sigma = _conformal_sigma_from_intervals(intervals_root.get(target))
+        if sigma is None:
+            sigma = fallback.get(target)
+        if sigma is not None and sigma > 0.0:
+            resolved[target] = float(sigma)
+    return resolved
+
+
 def _build_driver_inputs(
     predictions: list[dict[str, Any]],
     target_sigmas: dict[str, float],
+    *,
+    method: str = INTERVAL_METHOD_CONFORMAL,
 ) -> list[MonteCarloDriverInput]:
     drivers: list[MonteCarloDriverInput] = []
     for row in predictions:
         targets_raw = row["predicted_targets"] or {}
+        # D1 carries ``r_finish_position_raw`` alongside the integer rank
+        # so audits can compare the float to the reconciled int. Strip it
+        # from the target set the simulator sees — it's lineage data, not
+        # a scoring source.
         targets: dict[str, float] = {
             key: float(value)
             for key, value in targets_raw.items()
             if isinstance(value, (int, float))
+            and key not in _NON_NUMERIC_TARGET_SUFFIXES
         }
+        sigmas = _resolve_per_driver_sigmas(
+            row,
+            method=method,
+            fallback=target_sigmas,
+            targets=targets,
+        )
         drivers.append(
             MonteCarloDriverInput(
                 car_driver_id=row["car_driver_id"],
                 r_start_position=row["r_start_position"],
                 predicted_targets=targets,
-                target_sigmas={
-                    target: sigma
-                    for target, sigma in target_sigmas.items()
-                    if target in targets
-                },
+                target_sigmas=sigmas,
             )
         )
     return drivers
@@ -317,7 +406,8 @@ def run_monte_carlo_simulation_task(**_context: object) -> dict[str, Any]:
             "primary_target": PRIMARY_TARGET,
         }
 
-    drivers = _build_driver_inputs(predictions, target_sigmas)
+    method = interval_method()
+    drivers = _build_driver_inputs(predictions, target_sigmas, method=method)
     n_sims = n_simulations()
     seed = random_seed(snapshot["id"])
     field_size = len(drivers)
@@ -354,6 +444,7 @@ def run_monte_carlo_simulation_task(**_context: object) -> dict[str, Any]:
         "random_seed": seed,
         "field_size": field_size,
         "drivers": len(summaries),
+        "interval_method": method,
         "target_sigmas": {target: round(sigma, 6) for target, sigma in target_sigmas.items()},
     }
 

@@ -20,10 +20,26 @@ from decimal import Decimal
 from typing import Any
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
+from include.nascar.ml.dnf import DNF_TARGET_KEY, derive_is_dnf
+from include.nascar.ml.driver_form import (
+    DRIVER_FORM_FEATURE_KEYS,
+    compute_driver_form_features,
+    fetch_prior_race_rows,
+)
+from include.nascar.ml.field_strength import (
+    FIELD_STRENGTH_FEATURE_KEYS,
+    compute_field_strength_features,
+)
 from include.nascar.ml.scoring import (
     compute_dfs_points_from_targets,
     target_keys_for_rules,
     targets_from_agg_row,
+)
+from include.nascar.ml.season_features import (
+    SEASON_FEATURE_KEYS,
+    TRACK_ATTRIBUTE_FEATURE_KEYS,
+    fetch_season_context,
+    fetch_track_attributes,
 )
 from include.nascar.ml.snapshot_config import (
     ANCHOR_PRELOCK_EXPLICIT_COLUMNS,
@@ -388,10 +404,31 @@ def build_car_driver_training_snapshot(
         )
         return None
     rules_id, scoring_rules = rules
-    label_target_keys = target_keys_for_rules(scoring_rules)
+    # D3: the binary DNF head's label is materialized alongside the
+    # scoring-rule targets. ``r_is_dnf`` is not a scoring-rule source key,
+    # so :func:`target_keys_for_rules` excludes it; we splice it onto the
+    # persisted ``target_keys`` set so the trainer's target-resolution
+    # logic can discover it via the same metadata channel as the
+    # regression heads.
+    label_target_keys = [*target_keys_for_rules(scoring_rules), DNF_TARGET_KEY]
 
     if kind == SNAPSHOT_KIND_TRAIN:
-        anchor_filter = "AND awr.r_finish_position IS NOT NULL"
+        # B4 invariant: every labeled train anchor must have both endpoints
+        # populated. ``r_place_diff`` is derived from
+        # ``r_start_position - r_finish_position`` under the active scoring
+        # rules, so a NULL start position would either crash
+        # :func:`compute_dfs_points_from_targets` (post-B4) or silently
+        # shave 5-15 DFS points off the label (pre-B4). Historical
+        # ``agg_week_results`` rows occasionally carry
+        # ``r_start_position IS NULL`` with a populated finish — usually a
+        # lineup-import quirk that ``scripts/repair_current_week_lineup_positions.sql``
+        # patches for current weeks but not for older backfills — so we
+        # exclude them at the anchor query rather than relying on the
+        # repair script to have been run on every season.
+        anchor_filter = (
+            "AND awr.r_start_position IS NOT NULL "
+            "AND awr.r_finish_position IS NOT NULL"
+        )
     else:
         anchor_filter = "AND awr.r_start_position IS NOT NULL AND awr.r_finish_position IS NULL"
 
@@ -440,7 +477,8 @@ def build_car_driver_training_snapshot(
             awr.r_total_pitstops,
             awr.r_total_penalties,
             awr.r_total_race_laps,
-            awr.r_total_race_miles{prelock_select}
+            awr.r_total_race_miles,
+            awr.r_car_status{prelock_select}
         FROM nascar.agg_week_results awr
         WHERE awr.series_id = %s
           AND awr.week_id = %s
@@ -498,6 +536,7 @@ def build_car_driver_training_snapshot(
         "r_total_penalties",
         "r_total_race_laps",
         "r_total_race_miles",
+        "r_car_status",
         *prelock_columns,
     ]
     anchors = [dict(zip(anchor_columns, raw, strict=True)) for raw in anchor_rows]
@@ -523,6 +562,17 @@ def build_car_driver_training_snapshot(
     training_rows: list[dict[str, Any]] = []
     label_rows: list[dict[str, Any]] = []
     all_feature_keys: set[str] = set()
+
+    driver_ids = sorted({int(anchor["driver_id"]) for anchor in anchors})
+    prior_race_rows = fetch_prior_race_rows(
+        hook,
+        series_id=series_id,
+        week_id=week_id,
+        driver_ids=driver_ids,
+        scoring_rules=scoring_rules,
+    )
+    season_features = fetch_season_context(hook, week_id=week_id)
+    track_attribute_features = fetch_track_attributes(hook, track_id=track_id)
 
     for anchor in anchors:
         features: dict[str, float | None] = _anchor_prelock_features(anchor)
@@ -563,6 +613,18 @@ def build_car_driver_training_snapshot(
                 key = _prefixed_key(types_source.prefix, column)
                 features[key] = normalize_feature_value(column, value)
 
+        # C1: driver recent-form features computed from prior finished races
+        driver_form = compute_driver_form_features(
+            prior_race_rows.get(entity_ids["driver_id"], []),
+            current_season_id=season_id,
+            scoring_rules=scoring_rules,
+        )
+        features.update(driver_form)
+
+        # C4: season + track-attribute context (constant within a snapshot)
+        features.update(season_features)
+        features.update(track_attribute_features)
+
         all_feature_keys.update(features.keys())
 
         training_rows.append(
@@ -581,6 +643,16 @@ def build_car_driver_training_snapshot(
 
         if kind == SNAPSHOT_KIND_TRAIN:
             targets = targets_from_agg_row(anchor, scoring_rules)
+            # D3: persist the binary DNF label next to the scoring-rule
+            # targets so the trainer can read it via the same JSON column.
+            # We intentionally derive ``r_is_dnf`` from ``r_car_status``
+            # rather than ``r_finish_position IS NULL`` because every
+            # row that lands here already has both ``r_start_position`` and
+            # ``r_finish_position`` populated by the train-anchor filter
+            # (see B4 invariant above) — the status heuristic is the only
+            # signal that distinguishes a 38th-place crash from a
+            # 38th-place clean finish on a hard-to-pass road course.
+            targets[DNF_TARGET_KEY] = float(derive_is_dnf(anchor))
             dfs_points, breakdown = compute_dfs_points_from_targets(
                 anchor.get("r_start_position"),
                 targets,
@@ -594,6 +666,28 @@ def build_car_driver_training_snapshot(
                     "dfs_points_breakdown": breakdown,
                 }
             )
+
+    # C2: field-strength features depend on the populated df_ytd_* across all
+    # anchors in the snapshot, so they're computed after the per-row loop and
+    # then folded back into each row.
+    anchor_feature_views = [row["features_json"] for row in training_rows]
+    field_strength = compute_field_strength_features(anchor_feature_views)
+    for row, qf in zip(training_rows, field_strength, strict=True):
+        row["features_json"].update(qf)
+        all_feature_keys.update(qf.keys())
+
+    # Ensure every feature family always advertises its key set even when the
+    # snapshot happens to lack rows that populate it; this keeps
+    # ml_training_snapshots.feature_keys stable across builds and lets the
+    # feature matrix builder median-fill rather than silently drop columns.
+    for key in DRIVER_FORM_FEATURE_KEYS:
+        all_feature_keys.add(key)
+    for key in FIELD_STRENGTH_FEATURE_KEYS:
+        all_feature_keys.add(key)
+    for key in SEASON_FEATURE_KEYS:
+        all_feature_keys.add(key)
+    for key in TRACK_ATTRIBUTE_FEATURE_KEYS:
+        all_feature_keys.add(key)
 
     feature_keys = sorted(all_feature_keys)
     for row in training_rows:

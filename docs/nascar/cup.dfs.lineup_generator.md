@@ -2,7 +2,7 @@
 
 Hourly Cup DraftKings lineup generator. Waits for Monte Carlo
 `validate_simulation_batch` on
-[`nascar.cup.machine_learning.monte_carlo`](./cup.machine_learning.monte_carlo.md)
+[`nascar.cup.machine_learning.models.monte_carlo`](./cup.machine_learning.models.monte_carlo.md)
 (which itself waits on ML `predict_upcoming_week`), then builds top-K optimal
 lineups per strategy when simulation summaries and DK salaries exist.
 
@@ -22,7 +22,7 @@ lineups per strategy when simulation summaries and DK salaries exist.
 
 ## Upstream dependency
 
-`wait_mc_complete` sensors `nascar.cup.machine_learning.monte_carlo` /
+`wait_mc_complete` sensors `nascar.cup.machine_learning.models.monte_carlo` /
 `validate_simulation_batch` (same poke/timeout as aggregate→ML sensors). The
 Monte Carlo DAG itself sensors `predict_upcoming_week`, so this also blocks
 implicitly on ML predict.
