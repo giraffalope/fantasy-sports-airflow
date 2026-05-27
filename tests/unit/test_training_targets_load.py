@@ -220,6 +220,13 @@ class TestTrainModelsIfNeededCohortLoads:
             },
         )
         monkeypatch.delenv("FS_ML_MIN_COHORT_WEEKS", raising=False)
+        # Force the in-process branch so the load_training_frame /
+        # _train_cohort monkeypatches above are actually exercised.
+        # With FS_ML_TRAIN_COHORT_ISOLATION enabled (the default in
+        # production), the task forks a child via billiard and the
+        # child re-imports train_task from scratch — bypassing the
+        # parent-side monkeypatches and breaking this assertion.
+        monkeypatch.setenv("FS_ML_TRAIN_COHORT_ISOLATION", "0")
 
         result = train_task.train_models_if_needed_task()
 

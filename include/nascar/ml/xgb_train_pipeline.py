@@ -23,6 +23,7 @@ from include.nascar.ml.dnf import (
     MODEL_KIND_REGRESSION_CLEAN,
 )
 from include.nascar.ml.feature_matrix import build_feature_matrix, feature_fill_values
+from include.nascar.ml.scoring import compute_dfs_points_from_targets
 from include.nascar.ml.xgb_boruta import filter_columns, select_features
 from include.nascar.ml.xgb_tuning import (
     TASK_CLASSIFIER,

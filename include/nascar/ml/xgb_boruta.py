@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from include.nascar.ml.xgb_tuning import xgb_n_jobs
+from include.nascar.ml.xgb_tuning import xgb_device, xgb_n_jobs
 
 _LOG = logging.getLogger(__name__)
 
@@ -39,6 +39,17 @@ def select_features(
     Boruta's shadow-feature trick already doubles the feature matrix in
     memory; capping XGBoost's per-thread histogram buffers is the single
     biggest dial that keeps Boruta from spiking the cohort training peak.
+
+    GPU note: the device is resolved via
+    :func:`include.nascar.ml.xgb_tuning.xgb_device` (env var
+    ``FS_ML_XGB_DEVICE``, default ``cpu``). Boruta is the worst-case GPU
+    target in this pipeline — it calls ``estimator.fit`` up to
+    ``max_iter`` times per target on a 2× shadow-augmented matrix, and
+    each call pays the host→device transfer cost. On the cohort sizes we
+    hit (low single-digit thousands of rows) CPU is usually faster.
+    ``FS_ML_XGB_DEVICE=cuda`` is the same toggle as the rest of the
+    pipeline so an operator flipping it for ``RandomizedSearchCV``
+    automatically gets it here too; benchmark before assuming it's a win.
     """
     from boruta import BorutaPy
     from xgboost import XGBRegressor
@@ -55,6 +66,7 @@ def select_features(
         max_depth=5,
         learning_rate=0.05,
         tree_method="hist",
+        device=xgb_device(),
         n_jobs=xgb_n_jobs(),
         random_state=random_state,
         verbosity=0,

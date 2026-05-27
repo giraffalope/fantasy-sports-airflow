@@ -122,6 +122,15 @@ x-airflow-common:
     FS_ML_BORUTA_MAX_ITER: ${FS_ML_BORUTA_MAX_ITER:-30}
     FS_ML_BORUTA_SMALL_COHORT_MAX_ITER: ${FS_ML_BORUTA_SMALL_COHORT_MAX_ITER:-10}
     FS_ML_XGB_N_JOBS: ${FS_ML_XGB_N_JOBS:-2}
+    # XGBoost execution device for cohort training. Default ``cpu`` keeps
+    # the legacy ``tree_method='hist'`` CPU path; ``cuda`` (or ``cuda:N``
+    # for a specific GPU index) routes the same boosters through the GPU
+    # histogram method. Requires nvidia-container-toolkit on the host
+    # plus the ``deploy.resources.reservations.devices`` block on the
+    # services below; ``predict`` and ``monte_carlo`` are CPU-only and
+    # don't read this knob. See
+    # docs/nascar/cup.machine_learning.models.md "GPU acceleration".
+    FS_ML_XGB_DEVICE: ${FS_ML_XGB_DEVICE:-cpu}
     # Cap the cohort's training horizon at ``FS_ML_MAX_TRAIN_WEEKS`` most-recent
     # weeks (unset = all available history). Trim aggressively when a future
     # cohort grows unexpectedly large; the SQL window subselect keeps the DB
@@ -258,6 +267,20 @@ services:
       # same task. Set to 0 to fall back to the legacy in-process path
       # (tests / local debugging).
       FS_ML_TRAIN_COHORT_ISOLATION: ${FS_ML_TRAIN_COHORT_ISOLATION:-1}
+    # GPU passthrough for ``train_models_if_needed`` (XGBoost
+    # ``device=cuda``). Inert when FS_ML_XGB_DEVICE=cpu (the default) and
+    # ignored entirely when the host has no nvidia-container-toolkit
+    # installed — Compose accepts the block but Docker only honors it
+    # once the ``nvidia`` runtime is registered. Worker is the only
+    # Airflow service that actually fits estimators, so the scheduler /
+    # api-server / dag-processor / triggerer don't need GPU access.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -387,6 +410,19 @@ services:
       dockerfile: Dockerfile.unit-tests
     image: ${UNIT_TESTS_IMAGE:-fantasy-sports-airflow-unit-tests:latest}
     command: ["python", "-m", "pytest"]
+    # Mirror the worker's GPU reservation so GPU-tagged tests (currently
+    # only the env-var resolution tests in test_memory_tuning.py) can
+    # opt in without a separate compose override. The block is inert
+    # unless ``nvidia-container-toolkit`` is installed on the host; the
+    # actual pytest suite is CPU-only by default and doesn't need a GPU
+    # to pass.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   mariadb:
     build:

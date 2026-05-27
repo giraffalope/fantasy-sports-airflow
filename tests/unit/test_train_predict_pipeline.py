@@ -18,6 +18,7 @@ from include.nascar.ml.scoring import compute_dfs_points_from_targets
 from include.nascar.ml.xgb_train_pipeline import (
     DEFAULT_TARGETS,
     PRIMARY_TARGET,
+    holdout_dfs_eval_metrics,
     predicted_dfs_mae_on_holdout,
     train_models_for_targets,
 )
@@ -222,6 +223,52 @@ def test_predicted_dfs_mae_on_holdout_runs(
             if r["week_id"] == max(row["week_id"] for row in synthetic_frame)
         ]
     )
+
+
+def test_holdout_dfs_eval_metrics_resolves_scoring_symbol(
+    tmp_path: Path,
+    synthetic_frame: list[dict],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ``holdout_dfs_eval_metrics`` must resolve
+    :func:`compute_dfs_points_from_targets` at runtime.
+
+    Previously the symbol was referenced inside the function but never
+    imported at module scope, so the first cohort to actually reach the
+    DFS metric path crashed with
+    ``NameError: name 'compute_dfs_points_from_targets' is not defined``
+    in ``train_models_if_needed_task``. A real call (no mocks) is the
+    only test that exercises the binding.
+    """
+    monkeypatch.setenv("FS_ML_TUNE_DISABLE", "1")
+    trained = train_models_for_targets(
+        synthetic_frame,
+        targets=DEFAULT_TARGETS,
+        holdout_weeks=1,
+        artifact_dir=tmp_path,
+        boruta_max_iter=8,
+    )
+
+    metrics = holdout_dfs_eval_metrics(
+        synthetic_frame,
+        trained,
+        _SCORING_RULES,
+        holdout_weeks=1,
+    )
+
+    assert set(metrics.keys()) == {
+        "dfs_points_mae",
+        "dfs_points_rmse",
+        "dfs_points_spearman",
+        "n",
+    }
+    holdout_week = max(row["week_id"] for row in synthetic_frame)
+    expected_n = sum(1 for row in synthetic_frame if row["week_id"] == holdout_week)
+    assert metrics["n"] == expected_n
+    assert metrics["dfs_points_mae"] is not None
+    assert metrics["dfs_points_mae"] >= 0.0
+    assert metrics["dfs_points_rmse"] is not None
+    assert metrics["dfs_points_rmse"] >= 0.0
 
 
 def test_primary_target_constant_is_in_default_targets() -> None:

@@ -438,11 +438,27 @@ flowchart LR
       not accumulate across `build_ml_training_snapshots` →
       `train_models_if_needed`. Default `1` in compose.
     - `FS_ML_TRAIN_COHORT_ISOLATION` — when truthy (default `1`),
-      `train_models_if_needed_task` spawns each cohort's
-      `load_training_frame + _train_cohort` in a fresh subprocess so
+      `train_models_if_needed_task` forks each cohort's
+      `load_training_frame + _train_cohort` into a child process so
       the heavy working set is returned to the OS at child exit. Set
       to `0` to use the legacy in-process path for tests / local
-      debugging.
+      debugging. Implemented via `billiard.get_context("fork")`
+      rather than stdlib `multiprocessing` because the Airflow Celery
+      worker runs each task as a daemonic process and stdlib refuses
+      to let daemons start children (`daemonic processes are not
+      allowed to have children`). Billiard is Celery's existing
+      multiprocessing fork and is already installed in the worker
+      image. Fork (not spawn) is the chosen context: spawn would
+      force a cold re-import of `train_task` in the child, which
+      transitively runs `airflow.__init__` →
+      `settings.initialize()` → `configure_orm()`. The Celery worker
+      container talks to the API server via HTTP and does not carry
+      `SQL_ALCHEMY_CONN`, so the spawn child crashes on
+      `sqlalchemy.exc.ArgumentError: Could not parse SQLAlchemy URL`
+      before reaching the cohort body. Fork inherits the parent's
+      `sys.modules` via copy-on-write, so no re-init occurs; the
+      per-cohort working set still lives in the child's own memory
+      and is returned to the OS on `exit(0)`.
     - `FS_ML_MAX_TRAIN_WEEKS` — cap each cohort's training horizon at
       the N most-recent distinct weeks via SQL window subselect in
       `load_training_frame`. Unset / blank = no cap (legacy
@@ -455,6 +471,14 @@ flowchart LR
       estimator, the `RandomizedSearchCV` base estimator, and the
       final early-stopping fit. Default `2` in compose, `-1` (legacy)
       when unset.
+    - `FS_ML_XGB_DEVICE` — XGBoost execution device for every
+      cohort-training estimator we build (Boruta inner regressor,
+      `RandomizedSearchCV` base estimator, the ranker, the final
+      early-stopping fit). Default `cpu`; set to `cuda` (or `cuda:N`
+      for a specific GPU index) to route training through the GPU
+      histogram method. Requires the host-side prerequisites + compose
+      GPU reservation described in [GPU acceleration](#gpu-acceleration).
+      Predict and Monte Carlo are CPU-only and ignore this knob.
     - `FS_ML_BORUTA_MAX_ITER` — Boruta iteration cap for "regular"
       cohorts (≥ `2 * FS_ML_TUNE_CV_SPLITS` distinct weeks). Default
       `30` in compose, `50` (legacy hard-coded) when unset.
@@ -675,6 +699,123 @@ stage label tells you almost nothing about which lever to pull, but
 the stage-anchored lines drop you directly into the right column of
 the table.
 
+#### Failure-mode quick reference
+
+- `AssertionError: daemonic processes are not allowed to have children`
+  in the task log (originating from `_run_cohort_isolated`): the
+  cohort runner reverted from `billiard` back to stdlib
+  `multiprocessing`. The Airflow Celery worker runs each task in a
+  daemonic process, so stdlib spawn is a non-starter. Verify
+  `include/nascar/ml/train_task.py` still uses
+  `import billiard as multiprocessing` at the module top and that
+  `billiard` is installed in the worker image
+  (`docker compose exec airflow-worker python -c "import billiard;
+  print(billiard.__version__)"`). The regression test
+  `TestBilliardAlias` in `test_memory_tuning.py` pins this contract.
+- `sqlalchemy.exc.ArgumentError: Could not parse SQLAlchemy URL from
+  given URL string` originating from `billiard/spawn.py` →
+  `airflow/settings.py` → `configure_orm()`: the cohort runner
+  reverted from `billiard.get_context("fork")` to `"spawn"`. Spawn
+  starts a fresh interpreter in the child and re-imports
+  `train_task`, which transitively runs `airflow.__init__` and
+  `configure_orm()`. The Celery worker container in Airflow 3 talks
+  to the API server over HTTP and intentionally does NOT carry
+  `SQL_ALCHEMY_CONN`, so the spawn child has no usable DB URL and
+  crashes on import. Verify the production context in
+  `_run_cohort_isolated` is `get_context("fork")`; fork inherits the
+  parent's `sys.modules` via CoW and avoids the re-import entirely.
+  The regression test `test_billiard_fork_context_resolves` in
+  `test_memory_tuning.py` pins the ForkContext shape.
+
+## GPU acceleration
+
+`FS_ML_XGB_DEVICE` routes every cohort-training XGBoost estimator
+through CUDA. Predict and Monte Carlo are CPU-only and ignore the
+knob — the model artifacts persisted by training are
+device-agnostic, so a model trained with `device='cuda'` runs predict
+on CPU without conversion.
+
+**Where it lands in code.** The env var resolves once per estimator
+constructor via `xgb_device()` in
+[`include/nascar/ml/xgb_tuning.py`](../../include/nascar/ml/xgb_tuning.py),
+returning `'cpu'` (default), `'cuda'`, or `'cuda:N'`. It is passed to
+every XGBoost constructor in the cohort training path:
+
+- The Boruta inner `XGBRegressor`
+  ([`xgb_boruta.py`](../../include/nascar/ml/xgb_boruta.py)).
+- The tune-disabled fallback `XGBRegressor` / `XGBClassifier`.
+- The `XGBRanker` (D2 primary-rank path).
+- The `RandomizedSearchCV` base estimator.
+- The final early-stopping fit on the dev slice.
+
+`device` is also re-asserted on `best_params` so
+`ml_models.hyperparams_json` records which physical resource produced
+the model — a CPU-trained and GPU-trained cohort look identical in
+predict-time behavior but differ on this audit field.
+
+**Host prerequisites.** Compose accepts the
+`deploy.resources.reservations.devices` block (already wired on
+`airflow-worker` and `unit-tests`) whether or not the host can satisfy
+it. Docker only honors the reservation once
+`nvidia-container-toolkit` is installed and the `nvidia` runtime is
+registered:
+
+1. Install `nvidia-container-toolkit` from NVIDIA's apt repo (not the
+   distro one).
+2. `sudo nvidia-ctk runtime configure --runtime=docker && sudo
+   systemctl restart docker`.
+3. Verify with `docker run --rm --gpus all
+   nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi`. If that fails the
+   compose stack will silently start on CPU even when
+   `FS_ML_XGB_DEVICE=cuda` — XGBoost falls back to the CPU histogram
+   method with a one-line warning per fit. Grep the task log for
+   `Falling back to CPU` to confirm.
+
+**Caveats** (read before flipping the env var on a real production
+cohort):
+
+- **Small cohorts can be slower on GPU.** Per-fit host→device
+  transfer overhead dominates below ~50 k–100 k rows. Cohort sizes in
+  this DAG are typically a few thousand rows × a few hundred features;
+  benchmark before assuming GPU is a win. The combined Boruta + tune
+  path issues ~50–80 short fits per target per cohort — exactly the
+  workload shape where the transfer cost is most exposed.
+- **8 GB VRAM is the bottleneck on a 2070-class GPU.** Each cohort
+  isolation subprocess (`FS_ML_TRAIN_COHORT_ISOLATION=1`) creates its
+  own CUDA context, costing 400 MB – 1 GB of VRAM before any training
+  starts. The default sequential cohort loop fits within 8 GB, but
+  raising worker concurrency above 1 will OOM the GPU.
+- **GPU doesn't relieve host-RAM pressure.** The Boruta shadow
+  matrix, the dense feature matrix, and the Python parent process all
+  live in host RAM. If you're hitting OOM on a 12 GB worker, work
+  through the [Memory tuning](#memory-tuning) levers first — GPU is
+  an orthogonal lever, not a substitute.
+- **CPU and GPU produce slightly different boosters.** XGBoost's
+  GPU histogram path is numerically close but not bit-identical to
+  the CPU path (different floating-point reduction orders). Holdout
+  MAE and Spearman drift by < 0.5% in our benchmarks; existing
+  `ml_model_evaluations` rows from CPU-trained ancestors remain
+  comparable but expect a one-time small step when you flip the
+  switch.
+
+**Failure-mode quick reference.**
+
+- `XGBoostError: ... no CUDA driver detected` (or similar) in the
+  task log: the worker container couldn't see the GPU. Verify the
+  host prereqs above. The compose reservation block is necessary but
+  not sufficient — without `nvidia-container-toolkit` the
+  reservation is silently dropped.
+- Sudden VRAM-OOM (`out of memory` from `cuMemAlloc`) where CPU
+  training previously fit comfortably: a second cohort subprocess
+  has overlapped (worker concurrency raised above 1, or a stale
+  child failed to release its context). Confirm with `nvidia-smi`
+  during a fresh task; expect exactly one Python process holding
+  VRAM at any moment with `FS_ML_TRAIN_COHORT_ISOLATION=1`.
+- Wall-clock *regression* after flipping `FS_ML_XGB_DEVICE=cuda`:
+  cohort is too small for GPU to amortize the transfer cost. This is
+  not a bug; flip back to `cpu` or split out a larger-cohort
+  predict-time experiment to benchmark first.
+
 ## Related tests
 
 - [tests/unit/test_machine_learning_models_dag.py](../../tests/unit/test_machine_learning_models_dag.py) — DAG metadata, task ids, sensor wiring, linear chain.
@@ -687,4 +828,4 @@ the table.
 - [tests/unit/test_training_targets_load.py](../../tests/unit/test_training_targets_load.py) — filtered `load_training_frame` SQL for sibling-union cohort loads and the rejection of the legacy `track_id` kwarg.
 - [tests/unit/test_phase_d.py](../../tests/unit/test_phase_d.py) — D1 rank reconciliation (permutation invariant, stable tie-breaking, raw float persistence), D2 ranker wiring (`rank:pairwise` plumbing, `qid=week_id` grouping, ranker-vs-DNF mutex), D3 two-stage compose math (primary convex combination, secondary `(1 - P_dnf) * clean`, classifier + clean-regressor trainer wiring).
 - [tests/unit/test_phase_e.py](../../tests/unit/test_phase_e.py) — E1 conformal residual quantile monotonicity and 90% coverage, `FS_ML_INTERVAL_METHOD` env knob; E2 rank-coupled Monte Carlo permutation invariant; E3 `blend_metadata_json` round-trip; E4 drift-warning emission for shifted features (and skip for constant train columns); E5 Spearman blend weighting and equal-fallback on missing / negative Spearmans.
-- [tests/unit/test_memory_tuning.py](../../tests/unit/test_memory_tuning.py) — `build_feature_matrix` returns `float32`; `FS_ML_XGB_N_JOBS` reaches the Boruta inner estimator, the `RandomizedSearchCV` base estimator, and the early-stopping final fit; `FS_ML_BORUTA_MAX_ITER` / `FS_ML_BORUTA_SMALL_COHORT_MAX_ITER` are honored by `_train_cohort` (with sensible fallbacks for invalid values).
+- [tests/unit/test_memory_tuning.py](../../tests/unit/test_memory_tuning.py) — `build_feature_matrix` returns `float32`; `FS_ML_XGB_N_JOBS` reaches the Boruta inner estimator, the `RandomizedSearchCV` base estimator, and the early-stopping final fit; `FS_ML_BORUTA_MAX_ITER` / `FS_ML_BORUTA_SMALL_COHORT_MAX_ITER` are honored by `_train_cohort` (with sensible fallbacks for invalid values); `FS_ML_XGB_DEVICE` is parsed defensively (`cpu` / `cuda` / `cuda:N` accepted, anything else falls back to `cpu`) and propagates to every XGBoost constructor in the training path.

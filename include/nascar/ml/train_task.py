@@ -14,12 +14,20 @@ from __future__ import annotations
 
 import json
 import logging
-import multiprocessing
 import os
 import traceback
 import uuid
 from pathlib import Path
 from typing import Any, NamedTuple
+
+# Celery's multiprocessing fork. The Airflow Celery worker runs each task
+# inside a daemonic process, and stdlib multiprocessing's Process.start()
+# fails the ``daemonic processes are not allowed to have children``
+# assertion before our spawn child ever runs. ``billiard`` removes that
+# assertion (it's Celery's primary reason for forking multiprocessing in
+# the first place) while keeping the same get_context / Process / Queue
+# API surface, so the rest of this module reads identically.
+import billiard as multiprocessing
 
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
 from include.nascar.cup.current_week import (
@@ -993,19 +1001,30 @@ def _isolated_cohort_entry(
     args: dict[str, Any],
     queue: "multiprocessing.queues.Queue[dict[str, Any]]",
 ) -> None:
-    """Child-process entry: load the cohort frame and train inside one spawn.
+    """Child-process entry: load the cohort frame and train inside one fork.
 
-    Module-level (required for ``multiprocessing.get_context('spawn')`` to
-    pickle the target) and intentionally narrow: builds its own DB hook,
-    runs :func:`load_training_frame` + :func:`_train_cohort`, then puts the
-    result (or a serialized exception) on the IPC queue and exits. The
-    spawned child inherits no Python objects from the parent — every
-    cohort's working set (rows, Boruta shadow matrices, fitted boosters,
-    feature dicts) is returned to the OS on ``exit(0)``.
+    Module-level (required so :func:`_run_cohort_isolated` can hand
+    billiard's fork context a pickle-friendly target) and intentionally
+    narrow: builds its own DB hook, runs :func:`load_training_frame`
+    + :func:`_train_cohort`, then puts the result (or a serialized
+    exception) on the IPC queue and exits.
+
+    Because the runner uses ``billiard.get_context('fork')`` (see
+    :func:`_run_cohort_isolated` for why), the child inherits the
+    parent's already-initialized ``sys.modules`` via copy-on-write.
+    The heavy per-cohort working set — rows frame, Boruta shadow
+    matrix, fitted XGBoost boosters, feature dicts — is allocated
+    fresh inside the child and returned to the OS on ``exit(0)``; the
+    parent's already-loaded module pages are CoW-shared, never
+    duplicated.
 
     Args are passed as a plain ``dict`` to dodge ``kwargs`` pickling
     edge cases with non-positional ``NamedTuple`` defaults. Errors are
-    re-raised on the parent side by :func:`_run_cohort_isolated`.
+    re-raised on the parent side by :func:`_run_cohort_isolated`. The
+    ``queue`` annotation is a string forward-ref to
+    ``multiprocessing.queues.Queue`` because billiard mirrors the stdlib
+    submodule path verbatim — runtime resolution still works after the
+    ``import billiard as multiprocessing`` aliasing.
     """
     try:
         from include.nascar.ml.training_targets import (
@@ -1080,19 +1099,49 @@ def _isolated_cohort_entry(
 
 
 def _run_cohort_isolated(args: dict[str, Any]) -> dict[str, Any] | None:
-    """Parent-side spawner: run one cohort in a child process and unpack the result.
+    """Parent-side runner: fork one cohort in a child process and unpack the result.
 
     Returns the cohort result dict, ``None`` when the child reported an
     empty frame (so the caller can record ``empty_cohort_frame`` the same
     way the in-process branch does), or raises ``RuntimeError`` wrapping
     the child's traceback on failure.
 
-    Uses ``multiprocessing.get_context("spawn")`` (not ``fork``) so the
-    child does not inherit the parent's heap state — that's the whole
-    point of process isolation here. ``spawn`` also makes the path
-    behave the same on macOS dev hosts and Linux workers.
+    Why ``billiard.get_context("fork")`` and not stdlib multiprocessing
+    or billiard's spawn context:
+
+    - Stdlib ``multiprocessing.Process.start()`` asserts ``daemonic
+      processes are not allowed to have children``. The Airflow Celery
+      worker runs each task inside a daemonic process, so stdlib is a
+      non-starter. Billiard (Celery's multiprocessing fork) drops that
+      assertion for both fork and spawn — that's the primary reason
+      Celery forks the module.
+
+    - ``spawn`` starts a fresh interpreter in the child, which forces a
+      cold re-import of ``train_task``. That import chain pulls
+      ``airflow.__init__`` -> ``settings.initialize()`` ->
+      ``configure_orm()`` -> ``create_engine(SQL_ALCHEMY_CONN)``. The
+      Celery worker container in Airflow 3 talks to the API server via
+      HTTP, not the metadata DB, so ``SQL_ALCHEMY_CONN`` is not set in
+      the worker env. The spawn child crashes with
+      ``sqlalchemy.exc.ArgumentError: Could not parse SQLAlchemy URL``.
+
+    - ``fork`` inherits the parent's ``sys.modules`` via copy-on-write.
+      ``train_task`` / ``airflow`` / ``NascarMySqlHook`` are already
+      loaded, so no re-init happens. The per-cohort working set still
+      lives entirely in the child's own memory (Boruta shadow matrix,
+      X / y arrays, fitted boosters, feature dicts) and is returned to
+      the OS on ``exit(0)``. The parent's already-loaded module pages
+      are CoW-shared and never duplicated. Cross-cohort isolation is
+      preserved because each cohort gets a fresh fork from the same
+      parent; the parent's heap is unchanged by child allocations.
+
+    - Phase A's ``AIRFLOW__CELERY__WORKER_MAX_TASKS_PER_CHILD=1``
+      recycle is still doing real work: fork carries forward whatever
+      the parent task process already has on the heap, so we need a
+      fresh parent per task to keep upstream tasks (e.g.
+      ``build_ml_training_snapshots``) from polluting the fork base.
     """
-    ctx = multiprocessing.get_context("spawn")
+    ctx = multiprocessing.get_context("fork")
     queue: "multiprocessing.queues.Queue[dict[str, Any]]" = ctx.Queue()
     proc = ctx.Process(target=_isolated_cohort_entry, args=(args, queue))
     proc.start()

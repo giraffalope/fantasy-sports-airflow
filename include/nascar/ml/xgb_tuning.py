@@ -134,6 +134,55 @@ def xgb_n_jobs() -> int:
     return value
 
 
+# Accepted device strings. XGBoost ≥ 2.0 parses these directly, so we
+# whitelist only the ones we've validated against the production wheel
+# and fall back to ``cpu`` for anything else (mis-typed env vars are a
+# common foot-gun and silently dropping to CPU beats crashing
+# ``train_models_if_needed`` on every cohort).
+_VALID_DEVICE_PREFIXES = ("cpu", "cuda")
+
+
+def xgb_device() -> str:
+    """Resolve ``FS_ML_XGB_DEVICE`` for every XGBoost estimator we build.
+
+    Returns one of:
+
+    - ``"cpu"`` (default when unset / blank / invalid) — keeps the
+      legacy ``tree_method='hist'`` CPU path. Safe everywhere; required
+      on hosts without ``nvidia-container-toolkit``.
+    - ``"cuda"`` — runs XGBoost on the first available GPU.
+    - ``"cuda:N"`` (e.g. ``"cuda:0"``) — pins to a specific GPU index
+      when multiple are visible. Passed through verbatim because
+      XGBoost ≥ 2.0 understands the suffix natively.
+
+    Why an env var and not a code-level knob: cohort training is the
+    only workload that fits estimators (``predict`` doesn't need GPU,
+    Monte Carlo is NumPy), so a single dial in compose flips the whole
+    pipeline. The runtime cost of resolving this is one ``os.environ``
+    read per estimator constructor — cheap.
+
+    Defensive parsing: unrecognized values warn-and-fall-back to
+    ``cpu`` rather than raising, because an OOM-driven incident
+    response is the worst time to discover a typo'd env var.
+    """
+    raw = os.environ.get("FS_ML_XGB_DEVICE")
+    if raw is None:
+        return "cpu"
+    value = raw.strip().lower()
+    if value == "":
+        return "cpu"
+    # ``cuda`` or ``cuda:N`` both pass the prefix check.
+    if value == "cpu" or value == "cuda" or value.startswith("cuda:"):
+        return value
+    _LOG.warning(
+        "Ignoring unrecognized FS_ML_XGB_DEVICE=%r; falling back to 'cpu'. "
+        "Valid values: %s, 'cuda:N' (N integer GPU index).",
+        raw,
+        ", ".join(repr(p) for p in _VALID_DEVICE_PREFIXES),
+    )
+    return "cpu"
+
+
 DEFAULT_EARLY_STOPPING_ROUNDS = 20
 
 
@@ -243,7 +292,7 @@ def tune_xgb(
             )
         params = dict(defaults)
         params["random_state"] = random_state
-        kwargs = dict(params, verbosity=0, n_jobs=xgb_n_jobs())
+        kwargs = dict(params, verbosity=0, n_jobs=xgb_n_jobs(), device=xgb_device())
         if has_dev and early_stopping_rounds and early_stopping_rounds > 0:
             kwargs["early_stopping_rounds"] = int(early_stopping_rounds)
         estimator = estimator_cls(**kwargs)
@@ -273,7 +322,9 @@ def tune_xgb(
         )
         params = dict(defaults)
         params["random_state"] = random_state
-        kwargs: dict[str, Any] = dict(params, verbosity=0, n_jobs=xgb_n_jobs())
+        kwargs: dict[str, Any] = dict(
+            params, verbosity=0, n_jobs=xgb_n_jobs(), device=xgb_device()
+        )
         if has_dev:
             kwargs["early_stopping_rounds"] = int(early_stopping_rounds)
         estimator = estimator_cls(**kwargs)
@@ -307,6 +358,7 @@ def tune_xgb(
     base_kwargs: dict[str, Any] = dict(
         objective=defaults["objective"],
         tree_method="hist",
+        device=xgb_device(),
         n_jobs=xgb_n_jobs(),
         random_state=random_state,
         verbosity=0,
@@ -337,6 +389,12 @@ def tune_xgb(
     best_params: dict[str, Any] = dict(search.best_params_)
     best_params["random_state"] = random_state
     best_params["tree_method"] = "hist"
+    # Surface the resolved device on ``best_params`` so the final
+    # early-stopping fit picks it up and ``ml_models.hyperparams_json``
+    # records which physical resource produced the model. The resolution
+    # happens once here (not per fit) so a single audit row reflects the
+    # actual training run.
+    best_params["device"] = xgb_device()
     # B1: surface the chosen objective on ``best_params`` so the early-stopping
     # final fit + ``ml_models.hyperparams_json`` audits both reflect it.
     best_params["objective"] = defaults["objective"]
@@ -356,10 +414,15 @@ def tune_xgb(
 
     if has_dev:
         # A4: final fit with XGBoost early stopping watched on the dev slice.
+        # ``device`` is already on ``best_params`` (we re-asserted it above),
+        # but we re-resolve it here for parity with ``n_jobs`` — both are
+        # runtime resource knobs that should reflect the current env, not
+        # whatever the search base estimator had baked in.
         final_kwargs: dict[str, Any] = dict(
             best_params,
             verbosity=0,
             n_jobs=xgb_n_jobs(),
+            device=xgb_device(),
             early_stopping_rounds=int(early_stopping_rounds),
         )
         final = estimator_cls(**final_kwargs)

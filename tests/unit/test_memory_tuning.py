@@ -1,4 +1,5 @@
-"""Tests for the Phase 1-4 memory-tuning knobs (12 GB / 4-core worker profile).
+"""Tests for the Phase 1-4 memory-tuning knobs (12 GB / 4-core worker profile)
+plus the optional GPU acceleration toggle.
 
 The OOM mitigation work introduced one code-level change (``float32`` feature
 matrix) and three env-driven knobs (``FS_ML_XGB_N_JOBS``,
@@ -8,7 +9,13 @@ them — e.g. an upstream ``XGBRegressor`` constructor change inadvertently
 restoring ``n_jobs=-1`` would re-quadruple per-thread histogram buffers on a
 4-core worker.
 
-See the "Memory tuning" section of
+The GPU toggle (``FS_ML_XGB_DEVICE``) is tested in the same module because
+it shares the same pressure-release surface (every XGBoost constructor in
+the cohort training path) and a regression in either knob is debugged in
+the same place. All tests are CPU-only — they verify the env-var
+resolution and constructor-kwarg plumbing, not actual GPU execution.
+
+See the "Memory tuning" and "GPU acceleration" sections of
 [docs/nascar/cup.machine_learning.models.md](../../docs/nascar/cup.machine_learning.models.md)
 for the full pressure-release ordering these knobs back.
 """
@@ -40,7 +47,7 @@ from include.nascar.ml.train_task import (  # noqa: E402
     _BORUTA_SMALL_COHORT_MAX_ITER_DEFAULT,
     _resolve_boruta_max_iter,
 )
-from include.nascar.ml.xgb_tuning import xgb_n_jobs  # noqa: E402
+from include.nascar.ml.xgb_tuning import xgb_device, xgb_n_jobs  # noqa: E402
 
 
 class TestFeatureMatrixDtype:
@@ -339,3 +346,285 @@ class TestTrainCohortThreadsBorutaMaxIter:
 
         assert captured.get("boruta_max_iter") == 11
 
+
+class TestXgbDeviceEnv:
+    """``xgb_device()`` resolves ``FS_ML_XGB_DEVICE`` with defensive fallbacks.
+
+    The env var is the single dial that flips every cohort-training
+    XGBoost constructor between CPU and GPU. A regression in the
+    parser (e.g. tightening to ``cpu`` / ``cuda`` only and rejecting
+    ``cuda:0``) would silently route the worker back to CPU when an
+    operator pinned a specific GPU index — exactly the kind of
+    drift we want a unit test to catch before it hits production.
+    """
+
+    def test_unset_returns_cpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("FS_ML_XGB_DEVICE", raising=False)
+        assert xgb_device() == "cpu"
+
+    def test_blank_returns_cpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Blank / whitespace is what Compose substitutes when an unset
+        ``${FS_ML_XGB_DEVICE:-}`` is interpolated; it must not raise."""
+        monkeypatch.setenv("FS_ML_XGB_DEVICE", "  ")
+        assert xgb_device() == "cpu"
+
+    @pytest.mark.parametrize("value", ["cpu", "CPU", "Cpu"])
+    def test_cpu_case_insensitive(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("FS_ML_XGB_DEVICE", value)
+        assert xgb_device() == "cpu"
+
+    @pytest.mark.parametrize("value", ["cuda", "CUDA", "Cuda"])
+    def test_cuda_case_insensitive(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("FS_ML_XGB_DEVICE", value)
+        assert xgb_device() == "cuda"
+
+    @pytest.mark.parametrize("value", ["cuda:0", "cuda:1", "CUDA:2"])
+    def test_cuda_with_index_preserved(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """``cuda:N`` is passed through verbatim because XGBoost ≥ 2.0
+        parses the suffix natively. Case-folded so operators can be
+        loose about capitalization in ``.env``."""
+        monkeypatch.setenv("FS_ML_XGB_DEVICE", value)
+        assert xgb_device() == value.lower()
+
+    @pytest.mark.parametrize(
+        "value",
+        ["gpu", "rocm", "metal", "cuda;0", "0", "1", "nvidia"],
+    )
+    def test_invalid_value_falls_back_to_cpu(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """A typo or invalid device string must not crash training.
+        Falling back to CPU with a warning is the documented contract
+        (see ``FS_ML_XGB_DEVICE`` entry in .env.example)."""
+        monkeypatch.setenv("FS_ML_XGB_DEVICE", value)
+        assert xgb_device() == "cpu"
+
+
+class TestSelectFeaturesHonorsXgbDevice:
+    """``xgb_boruta.select_features`` constructs its inner XGBRegressor with ``xgb_device()``.
+
+    Boruta is the highest-fit-count GPU consumer in the pipeline (one
+    ``estimator.fit`` per Boruta iteration, up to 50 per target per
+    cohort). A regression that dropped the ``device`` kwarg would
+    pin Boruta to CPU even when the rest of the pipeline is on GPU
+    — splitting the audit story across two devices and producing
+    inconsistent ``ml_models.hyperparams_json`` rows. Mirrors
+    ``TestSelectFeaturesHonorsXgbNJobs``.
+    """
+
+    @staticmethod
+    def _capture_xgb_kwargs(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> dict[str, Any]:
+        captured: dict[str, Any] = {}
+
+        def fake_xgb_regressor(**kwargs: Any) -> MagicMock:
+            captured.update(kwargs)
+            return MagicMock(name="FakeXGBRegressor")
+
+        class FakeBorutaPy:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.support_ = np.array([True])
+                self.support_weak_ = None
+                self.ranking_ = np.array([1])
+                self.n_iter_ = 1
+
+            def fit(self, *args: Any, **kwargs: Any) -> None:
+                return None
+
+        import boruta
+        import xgboost
+
+        monkeypatch.setattr(xgboost, "XGBRegressor", fake_xgb_regressor)
+        monkeypatch.setattr(boruta, "BorutaPy", FakeBorutaPy)
+        return captured
+
+    def test_select_features_uses_cpu_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FS_ML_XGB_DEVICE", raising=False)
+        captured = self._capture_xgb_kwargs(monkeypatch)
+
+        from include.nascar.ml.xgb_boruta import select_features
+
+        X = np.zeros((3, 1), dtype=np.float32)
+        y = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        select_features(X, y, ["x"], max_iter=1)
+
+        assert captured["device"] == "cpu"
+
+    def test_select_features_respects_cuda_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FS_ML_XGB_DEVICE", "cuda")
+        captured = self._capture_xgb_kwargs(monkeypatch)
+
+        from include.nascar.ml.xgb_boruta import select_features
+
+        X = np.zeros((3, 1), dtype=np.float32)
+        y = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        select_features(X, y, ["x"], max_iter=1)
+
+        assert captured["device"] == "cuda"
+
+    def test_select_features_respects_cuda_index(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Index-pinned form must reach the constructor verbatim so an
+        operator can route training to a specific GPU when more than
+        one is visible."""
+        monkeypatch.setenv("FS_ML_XGB_DEVICE", "cuda:1")
+        captured = self._capture_xgb_kwargs(monkeypatch)
+
+        from include.nascar.ml.xgb_boruta import select_features
+
+        X = np.zeros((3, 1), dtype=np.float32)
+        y = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        select_features(X, y, ["x"], max_iter=1)
+
+        assert captured["device"] == "cuda:1"
+
+
+class TestTuneXgbHonorsXgbDevice:
+    """``xgb_tuning.tune_xgb`` threads ``xgb_device()`` through the disabled-tuning fit.
+
+    The TUNE_DISABLE short-circuit is the cheapest entry point that
+    still hits the XGBoost constructor — sufficient to pin the
+    contract that ``device`` flows from the env var to the
+    estimator kwargs. The full ``RandomizedSearchCV`` path is
+    exercised by the integration tests under ``tests/integration``;
+    here we only need the constructor plumbing.
+    """
+
+    def test_disabled_tuning_path_uses_xgb_device(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FS_ML_XGB_DEVICE", "cuda")
+        monkeypatch.setenv("FS_ML_TUNE_DISABLE", "1")
+
+        captured: dict[str, Any] = {}
+
+        def fake_xgb_regressor(**kwargs: Any) -> MagicMock:
+            captured.update(kwargs)
+            estimator = MagicMock(name="FakeXGBRegressor")
+            estimator.best_iteration = 5
+            return estimator
+
+        import xgboost
+
+        monkeypatch.setattr(xgboost, "XGBRegressor", fake_xgb_regressor)
+
+        from include.nascar.ml.xgb_tuning import tune_xgb
+
+        X = np.zeros((6, 2), dtype=np.float32)
+        y = np.array([1, 2, 3, 4, 5, 6], dtype=np.float32)
+        tune_xgb(X, y)
+
+        assert captured["device"] == "cuda"
+
+    def test_disabled_tuning_path_defaults_to_cpu(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The disabled-tuning path must not silently route to GPU when
+        the env var is unset — explicit opt-in only."""
+        monkeypatch.delenv("FS_ML_XGB_DEVICE", raising=False)
+        monkeypatch.setenv("FS_ML_TUNE_DISABLE", "1")
+
+        captured: dict[str, Any] = {}
+
+        def fake_xgb_regressor(**kwargs: Any) -> MagicMock:
+            captured.update(kwargs)
+            estimator = MagicMock(name="FakeXGBRegressor")
+            estimator.best_iteration = 5
+            return estimator
+
+        import xgboost
+
+        monkeypatch.setattr(xgboost, "XGBRegressor", fake_xgb_regressor)
+
+        from include.nascar.ml.xgb_tuning import tune_xgb
+
+        X = np.zeros((6, 2), dtype=np.float32)
+        y = np.array([1, 2, 3, 4, 5, 6], dtype=np.float32)
+        tune_xgb(X, y)
+
+        assert captured["device"] == "cpu"
+
+
+class TestBilliardAlias:
+    """Pins the ``import billiard as multiprocessing`` + ``fork`` context contract.
+
+    Two failure modes this guards against, both observed in
+    production:
+
+    - Someone "fixes" the unusual ``import billiard as
+      multiprocessing`` alias by reverting to stdlib. The next
+      training run dies with ``AssertionError: daemonic processes
+      are not allowed to have children`` because the Celery prefork
+      worker is daemonic and stdlib's Process.start() refuses to
+      let daemons spawn children.
+    - Someone "fixes" the unusual ``get_context('fork')`` by
+      reverting to ``spawn``. The spawn child re-imports
+      ``train_task`` from scratch, which transitively runs
+      ``airflow.__init__`` → ``configure_orm()``, which crashes on
+      ``sqlalchemy.exc.ArgumentError`` because the Celery worker
+      container intentionally has no ``SQL_ALCHEMY_CONN``.
+
+    The cost of either regression is a 100% failure rate on
+    ``train_models_if_needed``. CPU-only — no actual subprocess is
+    spawned; we only verify the context object's surface.
+    """
+
+    def test_billiard_fork_context_resolves(self) -> None:
+        """``train_task.multiprocessing`` must be billiard, and its
+        fork context must expose the ``Process`` / ``Queue`` surface
+        that :func:`_run_cohort_isolated` relies on."""
+        from include.nascar.ml import train_task
+
+        # Sanity: the module is billiard, not stdlib. ``__name__`` is
+        # how billiard identifies itself even when imported under
+        # the ``multiprocessing`` alias.
+        assert train_task.multiprocessing.__name__ == "billiard"
+
+        ctx = train_task.multiprocessing.get_context("fork")
+        # Required surface for ``_run_cohort_isolated``: ``Queue`` and
+        # ``Process`` factories on the context.
+        assert hasattr(ctx, "Queue")
+        assert hasattr(ctx, "Process")
+        # Sanity-check the context flavor so an accidental swap to spawn
+        # gets caught: ForkContext is the billiard class we want.
+        assert type(ctx).__name__ == "ForkContext"
+
+        # ``multiprocessing.queues.Queue`` is referenced as a *string*
+        # forward-ref in the ``_isolated_cohort_entry`` annotation, so it
+        # never needs to be resolved at runtime. The submodule still has
+        # to exist for static checkers and for anyone who replaces the
+        # forward-ref with a real import — pin that it does (billiard
+        # lazily attaches it on import, hence the explicit import here
+        # rather than ``hasattr(train_task.multiprocessing, "queues")``
+        # which would fail before the submodule is touched).
+        import importlib
+
+        queues_mod = importlib.import_module(
+            f"{train_task.multiprocessing.__name__}.queues"
+        )
+        assert hasattr(queues_mod, "Queue")
+
+    def test_billiard_spawn_context_still_available(self) -> None:
+        """Document that the swap to fork was deliberate, not because billiard
+        broke spawn. ``billiard.get_context('spawn')`` still resolves; we
+        just don't use it for cohort isolation because the spawn child
+        crashes on airflow's ORM init (see
+        :func:`include.nascar.ml.train_task._run_cohort_isolated`).
+        """
+        from include.nascar.ml import train_task
+
+        spawn_ctx = train_task.multiprocessing.get_context("spawn")
+        assert hasattr(spawn_ctx, "Process")
+        assert type(spawn_ctx).__name__ == "SpawnContext"
