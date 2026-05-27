@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from include.nascar.dfs.lineup_optimizer import LineupPlayer, generate_top_k_lineups
+from include.nascar.dfs.lineup_optimizer import (
+    LineupPlayer,
+    generate_candidate_pool,
+    generate_top_k_lineups,
+)
 
 
 def _pool() -> list[LineupPlayer]:
@@ -41,3 +45,36 @@ def test_min_diff_two_forces_more_diversity_than_one() -> None:
     overlap_one = len(set(one[0]) & set(one[1]))
     overlap_two = len(set(two[0]) & set(two[1]))
     assert overlap_one >= overlap_two
+
+
+def test_generate_candidate_pool_respects_pool_size() -> None:
+    """The new helper returns up to ``pool_size`` lineups under ``min_diff=1``."""
+    players = _pool()
+    pool = generate_candidate_pool(
+        players,
+        pool_size=3,
+        lineup_size=3,
+        salary_cap=50000,
+        min_diff=1,
+    )
+    assert 0 < len(pool) <= 3
+    for lineup in pool:
+        assert len(lineup) == 3
+        assert sum(players[i].salary for i in lineup) <= 50000
+
+
+def test_generate_candidate_pool_zero_size_returns_empty() -> None:
+    assert generate_candidate_pool(_pool(), pool_size=0, lineup_size=3, salary_cap=50000) == []
+
+
+def test_generate_top_k_lineups_is_back_compat_wrapper() -> None:
+    """The legacy entrypoint must keep producing the same CP-SAT results
+    via the new candidate-pool helper so existing callers stay working."""
+    players = _pool()
+    lineups = generate_top_k_lineups(
+        players, lineup_size=3, salary_cap=50000, top_k=2, min_diff=1
+    )
+    pool = generate_candidate_pool(
+        players, pool_size=2, lineup_size=3, salary_cap=50000, min_diff=1
+    )
+    assert lineups == pool

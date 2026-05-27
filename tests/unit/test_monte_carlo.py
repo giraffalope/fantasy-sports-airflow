@@ -94,14 +94,19 @@ def test_simulate_rejects_below_minimum() -> None:
 
 def test_simulate_returns_one_summary_per_driver() -> None:
     drivers = [_driver(i + 1, finish=float(i + 1)) for i in range(10)]
-    summaries = simulate_driver_distributions(
+    result = simulate_driver_distributions(
         drivers,
         scoring_rules=_DK_RULES_JSON,
         n_simulations=MIN_SIMULATIONS,
         seed=42,
     )
+    summaries = result.summaries
     assert [s.car_driver_id for s in summaries] == [d.car_driver_id for d in drivers]
     assert all(s.n_simulations == MIN_SIMULATIONS for s in summaries)
+    # Joint-samples matrix is now part of the return contract: shape lines up
+    # with the summaries list and the driver index is aligned by position.
+    assert result.joint_dfs_points.shape == (len(drivers), MIN_SIMULATIONS)
+    assert result.driver_index.tolist() == [d.car_driver_id for d in drivers]
 
 
 def test_simulate_percentiles_are_ordered_for_each_driver() -> None:
@@ -111,7 +116,7 @@ def test_simulate_percentiles_are_ordered_for_each_driver() -> None:
         scoring_rules=_DK_RULES_JSON,
         n_simulations=MIN_SIMULATIONS,
         seed=7,
-    )
+    ).summaries
     for s in summaries:
         assert s.min_dfs_points <= s.p05_dfs_points <= s.p50_dfs_points <= s.p95_dfs_points
         assert s.p95_dfs_points <= s.max_dfs_points
@@ -122,10 +127,10 @@ def test_simulate_is_deterministic_given_seed() -> None:
     drivers = [_driver(i + 1, finish=float(i + 1)) for i in range(8)]
     a = simulate_driver_distributions(
         drivers, scoring_rules=_DK_RULES_JSON, n_simulations=MIN_SIMULATIONS, seed=123
-    )
+    ).summaries
     b = simulate_driver_distributions(
         drivers, scoring_rules=_DK_RULES_JSON, n_simulations=MIN_SIMULATIONS, seed=123
-    )
+    ).summaries
     for left, right in zip(a, b, strict=True):
         assert left == right
 
@@ -134,10 +139,10 @@ def test_simulate_changes_with_different_seed() -> None:
     drivers = [_driver(i + 1, finish=float(i + 1)) for i in range(8)]
     a = simulate_driver_distributions(
         drivers, scoring_rules=_DK_RULES_JSON, n_simulations=MIN_SIMULATIONS, seed=1
-    )
+    ).summaries
     b = simulate_driver_distributions(
         drivers, scoring_rules=_DK_RULES_JSON, n_simulations=MIN_SIMULATIONS, seed=2
-    )
+    ).summaries
     assert any(left.mean_dfs_points != right.mean_dfs_points for left, right in zip(a, b))
 
 
@@ -161,7 +166,7 @@ def test_simulate_holds_target_constant_when_sigma_is_zero() -> None:
     ]
     summaries = simulate_driver_distributions(
         drivers, scoring_rules=_DK_RULES_JSON, n_simulations=MIN_SIMULATIONS, seed=0
-    )
+    ).summaries
     assert summaries[0].std_dfs_points == pytest.approx(0.0)
     assert summaries[0].min_dfs_points == summaries[0].max_dfs_points
 
@@ -208,16 +213,16 @@ def test_simulate_finish_position_stays_inside_field() -> None:
     assert all(float(finish).is_integer() for finish in captured)
 
 
-def test_simulate_empty_drivers_returns_empty_list() -> None:
-    assert (
-        simulate_driver_distributions(
-            [],
-            scoring_rules=_DK_RULES_JSON,
-            n_simulations=MIN_SIMULATIONS,
-            seed=0,
-        )
-        == []
+def test_simulate_empty_drivers_returns_empty_result() -> None:
+    result = simulate_driver_distributions(
+        [],
+        scoring_rules=_DK_RULES_JSON,
+        n_simulations=MIN_SIMULATIONS,
+        seed=0,
     )
+    assert result.summaries == []
+    assert result.joint_dfs_points.shape == (0, 0)
+    assert result.driver_index.shape == (0,)
 
 
 def test_simulate_rejects_zero_field_size() -> None:
@@ -249,8 +254,29 @@ def test_summary_mean_is_finite_and_in_range() -> None:
         scoring_rules=_DK_RULES_JSON,
         n_simulations=MIN_SIMULATIONS,
         seed=99,
-    )
+    ).summaries
     for s in summaries:
         assert np.isfinite(s.mean_dfs_points)
         assert s.min_dfs_points <= s.mean_dfs_points <= s.max_dfs_points
         assert s.p05_dfs_points <= s.p50_dfs_points <= s.p95_dfs_points
+
+
+def test_simulate_joint_samples_match_summaries() -> None:
+    """Joint matrix per-driver stats must agree with the summarized row.
+
+    Catches regressions where the matrix and the summaries drift out
+    of alignment (e.g. someone reorders the matrix without updating
+    ``_summarize``).
+    """
+    drivers = [_driver(i + 1, finish=float(i + 1)) for i in range(6)]
+    result = simulate_driver_distributions(
+        drivers,
+        scoring_rules=_DK_RULES_JSON,
+        n_simulations=MIN_SIMULATIONS,
+        seed=11,
+    )
+    for row_idx, summary in enumerate(result.summaries):
+        row = result.joint_dfs_points[row_idx]
+        assert summary.mean_dfs_points == pytest.approx(float(np.mean(row)))
+        assert summary.std_dfs_points == pytest.approx(float(np.std(row)))
+        assert summary.car_driver_id == int(result.driver_index[row_idx])

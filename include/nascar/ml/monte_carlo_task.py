@@ -21,7 +21,10 @@ import json
 import logging
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from airflow_utils.db_cursor import DbCursor
 from airflow_utils.nascar_mysql_hook import NascarMySqlHook
@@ -33,6 +36,7 @@ from include.nascar.ml.model_scope import (
 )
 from include.nascar.ml.monte_carlo import (
     MIN_SIMULATIONS,
+    MonteCarloBatchResult,
     MonteCarloDriverInput,
     MonteCarloDriverSummary,
     simulate_driver_distributions,
@@ -97,6 +101,102 @@ def random_seed(snapshot_id: int) -> int:
 
 def pipeline_version() -> str | None:
     return os.environ.get("FS_PIPELINE_VERSION") or os.environ.get("GIT_COMMIT")
+
+
+_DEFAULT_MC_ARTIFACT_ROOT = "/opt/airflow/artifacts/mc"
+
+
+def mc_artifact_root() -> Path:
+    """Resolve ``FS_MC_ARTIFACT_ROOT`` for joint-samples sidecar files.
+
+    Defaults to ``/opt/airflow/artifacts/mc`` so the path is identical
+    between worker containers and the host (compose mounts a host
+    ``artifacts/`` directory onto the worker). Returned as :class:`Path`
+    so callers can ``.mkdir(parents=True, exist_ok=True)`` defensively.
+    """
+    raw = os.environ.get("FS_MC_ARTIFACT_ROOT")
+    return Path(raw) if raw and raw.strip() else Path(_DEFAULT_MC_ARTIFACT_ROOT)
+
+
+def _write_joint_samples_artifact(
+    batch_result: MonteCarloBatchResult,
+    *,
+    batch_id: int,
+    n_simulations_value: int,
+    random_seed_value: int,
+    snapshot_id: int,
+) -> str | None:
+    """Persist the joint draws as a ``.npz`` sidecar; return absolute path or None on failure.
+
+    Uses numpy's compressed archive instead of parquet to avoid adding a
+    pyarrow dependency to the worker image. The on-disk layout is:
+
+    - ``joint_dfs_points``: float matrix ``(n_drivers, n_simulations)``
+    - ``car_driver_ids``: int64 vector ``(n_drivers,)`` aligned with the matrix rows
+    - ``meta``: ``np.void`` carrying ``batch_id`` / ``snapshot_id`` /
+      ``n_simulations`` / ``random_seed`` for offline lineage cross-checks
+
+    Failure to write is logged but never raised — the per-driver summary
+    persistence is the source of truth for the lineup task's fallback
+    branch, so a degraded artifact write leaves the pipeline running.
+    """
+    root = mc_artifact_root()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        # ``np.savez_compressed`` is lossless and built into numpy, so no
+        # extra dependency is required. File size for 40 drivers x 1000
+        # draws x 8 bytes = 320 KB before compression; compressed is
+        # typically 30-50% of that.
+        artifact_path = root / f"{batch_id}.npz"
+        meta = np.array(
+            (
+                int(batch_id),
+                int(snapshot_id),
+                int(n_simulations_value),
+                int(random_seed_value),
+            ),
+            dtype=[
+                ("batch_id", "i8"),
+                ("snapshot_id", "i8"),
+                ("n_simulations", "i8"),
+                ("random_seed", "i8"),
+            ],
+        )
+        np.savez_compressed(
+            artifact_path,
+            joint_dfs_points=batch_result.joint_dfs_points,
+            car_driver_ids=batch_result.driver_index,
+            meta=meta,
+        )
+    except Exception:
+        _LOG.exception(
+            "run_monte_carlo_simulation: joint_samples artifact write failed "
+            "batch_id=%s snapshot_id=%s",
+            batch_id,
+            snapshot_id,
+        )
+        return None
+    return str(artifact_path.resolve())
+
+
+def _update_batch_artifact_uri(
+    hook: NascarMySqlHook, *, batch_id: int, artifact_uri: str
+) -> None:
+    """Stamp the joint-samples artifact URI onto an already-inserted batch row.
+
+    Done in a separate write so the transactional ``_persist_batch`` insert
+    can finish before the (potentially slow) parquet/npz file flush; if the
+    file write fails the UPDATE is simply skipped and the column stays NULL.
+    """
+    hook.run(
+        """
+        UPDATE nascar.ml_race_simulation_batches
+        SET joint_samples_artifact_uri = %s
+        WHERE id = %s
+          AND deleted_at IS NULL
+        """,
+        parameters=(artifact_uri, batch_id),
+    )
 
 
 def _load_predictions(
@@ -412,13 +512,14 @@ def run_monte_carlo_simulation_task(**_context: object) -> dict[str, Any]:
     seed = random_seed(snapshot["id"])
     field_size = len(drivers)
 
-    summaries = simulate_driver_distributions(
+    batch_result = simulate_driver_distributions(
         drivers,
         scoring_rules=scoring_rules,
         n_simulations=n_sims,
         field_size=field_size,
         seed=seed,
     )
+    summaries = batch_result.summaries
 
     batch_id = _persist_batch(
         hook,
@@ -429,12 +530,29 @@ def run_monte_carlo_simulation_task(**_context: object) -> dict[str, Any]:
         summaries=summaries,
     )
 
+    # Joint-samples sidecar: written AFTER the batch insert so the
+    # ``ml_race_simulation_driver_summaries`` source-of-truth lands first
+    # and an artifact-write failure cannot corrupt the per-driver
+    # persistence. The lineup task gracefully falls back to summary-derived
+    # independent samples when this URI is NULL.
+    artifact_uri = _write_joint_samples_artifact(
+        batch_result,
+        batch_id=batch_id,
+        n_simulations_value=n_sims,
+        random_seed_value=seed,
+        snapshot_id=int(snapshot["id"]),
+    )
+    if artifact_uri is not None:
+        _update_batch_artifact_uri(hook, batch_id=batch_id, artifact_uri=artifact_uri)
+
     _LOG.info(
-        "run_monte_carlo_simulation: snapshot_id=%s batch_id=%s drivers=%s n_simulations=%s",
+        "run_monte_carlo_simulation: snapshot_id=%s batch_id=%s drivers=%s "
+        "n_simulations=%s joint_samples_artifact_uri=%s",
         snapshot["id"],
         batch_id,
         len(summaries),
         n_sims,
+        artifact_uri,
     )
     return {
         "skipped": False,
@@ -446,6 +564,7 @@ def run_monte_carlo_simulation_task(**_context: object) -> dict[str, Any]:
         "drivers": len(summaries),
         "interval_method": method,
         "target_sigmas": {target: round(sigma, 6) for target, sigma in target_sigmas.items()},
+        "joint_samples_artifact_uri": artifact_uri,
     }
 
 

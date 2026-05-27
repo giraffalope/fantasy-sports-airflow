@@ -98,6 +98,29 @@ x-airflow-common:
     FS_MC_N_SIMULATIONS: ${FS_MC_N_SIMULATIONS:-1000}
     FS_MC_RANDOM_SEED: ${FS_MC_RANDOM_SEED:-}
     FS_DK_MC_OBJECTIVE: ${FS_DK_MC_OBJECTIVE:-p50}
+    # Portfolio-aware lineup selection knobs (one set per DraftKings strategy).
+    # ``DOUBLE_UP`` (cash) uses a high-floor objective and a loose exposure
+    # cap; ``HIGH_RISK_REWARD`` (GPP) uses a high-ceiling objective and a
+    # tight cap so a single bust doesn't sink the portfolio.
+    # ``FS_DK_CANDIDATE_POOL_MULTIPLIER`` controls how many CP-SAT solves
+    # feed the portfolio selector per strategy (default 5 -> top_k * 5
+    # candidates evaluated, then the greedy diversifier picks top_k).
+    # See docs/nascar/cup.dfs.lineup_generator.md for the per-strategy
+    # objective table and exposure semantics.
+    FS_DK_DOUBLE_UP_OBJECTIVE: ${FS_DK_DOUBLE_UP_OBJECTIVE:-joint_p10}
+    FS_DK_DOUBLE_UP_EXPOSURE_CAP: ${FS_DK_DOUBLE_UP_EXPOSURE_CAP:-0.70}
+    FS_DK_HIGH_RISK_REWARD_OBJECTIVE: ${FS_DK_HIGH_RISK_REWARD_OBJECTIVE:-joint_p90}
+    FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP: ${FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP:-0.40}
+    FS_DK_CANDIDATE_POOL_MULTIPLIER: ${FS_DK_CANDIDATE_POOL_MULTIPLIER:-5}
+    # Joint Monte Carlo draws (n_drivers x n_simulations) are persisted as
+    # ``.npz`` sidecars under this root so the lineup task can score
+    # candidates against the true coupled distribution rather than the
+    # per-driver summary scalars. Path is shared between the worker and
+    # the host via the ``artifacts/`` volume mount below; keep both
+    # synchronized or the lineup task will fall back to the
+    # summary-derived independent-Gaussian path (logged as
+    # ``mc_score_method='summary_fallback'``).
+    FS_MC_ARTIFACT_ROOT: ${FS_MC_ARTIFACT_ROOT:-/opt/airflow/artifacts/mc}
     FS_ML_MIN_COHORT_WEEKS: ${FS_ML_MIN_COHORT_WEEKS:-2}
     FS_ML_BLEND_WEIGHTS: ${FS_ML_BLEND_WEIGHTS:-inverse_mae}
     FS_ML_DEV_WEEKS: ${FS_ML_DEV_WEEKS:-1}
@@ -147,6 +170,11 @@ x-airflow-common:
     # Mount parent dir so host sees scraper-data/nascar/… (see DEFAULT_NASCAR_SCRAPER_ROOT in racing_reference.py)
     - ${AIRFLOW_SCRAPER_DATA_DIR:-${AIRFLOW_PROJ_DIR:-.}/scraper-data}:/home/airflow/scraper
     - ${AIRFLOW_DFS_DATA_DIR:-${AIRFLOW_PROJ_DIR:-.}/dfs-data}:/home/airflow/dfs
+    # Persist Monte Carlo joint-samples artifacts (.npz sidecars). Mounted
+    # so the lineup task on the worker can read the same files the
+    # monte_carlo task on the worker wrote, and so the host can keep them
+    # around across container recycles for offline audit.
+    - ${AIRFLOW_PROJ_DIR:-.}/artifacts:/opt/airflow/artifacts
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on

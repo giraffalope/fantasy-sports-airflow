@@ -64,16 +64,28 @@ Pure-Python core lives in
 5. Build `MonteCarloDriverInput` records and call
    `simulate_driver_distributions`. Per simulation draw each target is
    perturbed with `Normal(0, σ)`, projected into its valid range
-   (`r_finish_position ∈ [1, field_size]`, laps / fastest laps clipped at
-   `0`; all three rounded to int), and re-scored via
-   `compute_dfs_points_from_targets`. Drivers are treated as independent
-   conditional on features (v1 limitation; rank-coupling is out of scope).
+   (`r_finish_position` reconciled across the field into an integer
+   permutation of `1..field_size` via cross-driver argsort — Phase E2
+   rank coupling; laps / fastest laps clipped at `0` independently),
+   and re-scored via `compute_dfs_points_from_targets`. Iterations are
+   coupled across drivers; this is what makes the joint-samples artifact
+   meaningful downstream.
 6. Aggregate each driver's simulated DFS-point vector into mean, std, min,
    p05, p50, p95, and max.
 7. Persist inside a single transaction: soft-delete any prior active
    `ml_race_simulation_batches` row for the same snapshot (and its
    summaries), insert the new batch header, then `executemany` the
    per-driver summary rows. Re-runs are idempotent.
+8. **Joint-samples sidecar.** Write the full `(n_drivers, n_simulations)`
+   DFS-point matrix plus the aligned `car_driver_ids` index to a numpy
+   compressed archive at
+   `${FS_MC_ARTIFACT_ROOT}/<batch_id>.npz`
+   (default `/opt/airflow/artifacts/mc/`) and `UPDATE` the batch row's
+   `joint_samples_artifact_uri` with the absolute path. The write happens
+   AFTER the summary insert so an artifact failure cannot corrupt the
+   per-driver source of truth; on failure the URI stays `NULL` and the
+   lineup task transparently falls back to summary-derived independent
+   Gaussian samples (logged as `mc_score_method='summary_fallback'`).
 
 ### `validate_simulation_batch`
 
@@ -110,31 +122,60 @@ conditions; they are programming or pipeline errors).
 | --- | --- | --- |
 | `FS_MC_N_SIMULATIONS` | `1000` | Draws per driver (validation enforces ≥ 1000) |
 | `FS_MC_RANDOM_SEED` | derived from snapshot id | Override the numpy seed for reproducibility |
+| `FS_MC_ARTIFACT_ROOT` | `/opt/airflow/artifacts/mc` | Directory for `<batch_id>.npz` joint-samples sidecars. Compose mounts `${AIRFLOW_PROJ_DIR}/artifacts` here so worker and host see the same files. |
 | `FS_PIPELINE_VERSION` / `GIT_COMMIT` | unset | Stamped onto the batch row for lineage |
 
 ## Database tables
 
 - `ml_race_simulation_batches` — one row per snapshot, holds
-  `n_simulations`, `random_seed`, `pipeline_version`, `status`. Indexed on
-  `(ml_training_snapshot_id, deleted_at)`.
+  `n_simulations`, `random_seed`, `pipeline_version`, `status`, and
+  (after migration `20260613T120000_lineup_mc_fingerprint.sql`)
+  `joint_samples_artifact_uri` pointing at the per-batch `.npz` sidecar.
+  Indexed on `(ml_training_snapshot_id, deleted_at)`.
 - `ml_race_simulation_driver_summaries` — one row per
   `(batch_id, car_driver_id)` with mean / std / min / p05 / p50 / p95 /
   max DFS-point statistics. Unique on `(batch_id, car_driver_id)`.
 
 DDL: `fantasy-sports-db/nascar/ddl/tables/1082-*.sql`, `1083-*.sql`;
-migration `fantasy-sports-db/nascar/migrations/20260526T120000_ml_race_simulation_tables.sql`.
+migrations
+`fantasy-sports-db/nascar/migrations/20260526T120000_ml_race_simulation_tables.sql`,
+`fantasy-sports-db/nascar/migrations/20260613T120000_lineup_mc_fingerprint.sql`.
 
-## Limitations (v1)
+## Joint-samples artifact
 
-- Drivers are independent conditional on features; correlations across
-  drivers (shared "race chaos") are not modeled.
-- Raw per-draw rows are intentionally not stored (40k+ rows per Cup week
-  would dwarf the summaries with little downstream value).
+Each completed batch writes
+`${FS_MC_ARTIFACT_ROOT}/<batch_id>.npz` (numpy
+`savez_compressed`). The archive holds three arrays:
+
+| Array | Shape | dtype | Meaning |
+| --- | --- | --- | --- |
+| `joint_dfs_points` | `(n_drivers, n_simulations)` | `float64` | DFS-point sample for driver `i` in iteration `s`. Rows aligned with `car_driver_ids`. |
+| `car_driver_ids` | `(n_drivers,)` | `int64` | Maps each matrix row to a `nascar.car_drivers.id`. |
+| `meta` | scalar void | structured | `batch_id`, `snapshot_id`, `n_simulations`, `random_seed` for offline lineage cross-checks. |
+
+Same iteration index across rows is a **coupled** draw (Phase E2 rank
+coupling: finish positions are a permutation of `1..field_size`), so
+summing rows column-wise gives the lineup's true joint distribution.
+Files compress well (40 drivers × 1000 sims × 8 bytes ≈ 320 KB before
+compression; typical on-disk size ~120-180 KB). No retention policy is
+enforced today; clean up via `find ${FS_MC_ARTIFACT_ROOT} -mtime +30
+-delete` if disk pressure becomes a concern.
+
+## Limitations
+
+- Cross-driver coupling is currently limited to finish-position
+  permutations (Phase E2). Laps led and fastest laps are still drawn
+  independently per driver because counts can co-vary freely; modeling
+  that explicitly would require a multivariate noise model and is
+  deferred.
 - Per-target σ is read from any matching active model, not specifically
   the one that produced the prediction (per-target model ids are not
   stored in `ml_predictions`). Both are typically the most recent active
   model and agree in practice; making this exact would require widening
   `ml_predictions` and is deferred.
+- Joint-samples artifacts are not retention-managed automatically. A
+  scheduled cleanup (e.g. `find ${FS_MC_ARTIFACT_ROOT} -mtime +30
+  -delete`) is recommended once disk usage becomes material.
 
 ## Related
 

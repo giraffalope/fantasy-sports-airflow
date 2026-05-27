@@ -84,6 +84,29 @@ class MonteCarloDriverSummary:
     max_dfs_points: float
 
 
+@dataclass(frozen=True)
+class MonteCarloBatchResult:
+    """Aggregated per-driver summaries plus the joint per-draw matrix.
+
+    The joint matrix is what makes downstream **lineup-level** scoring honest
+    about driver-driver correlation. Phase E2 rank-coupling means a given
+    iteration's finish-position vector is a permutation across the field, so
+    two drivers' DFS-point samples are negatively correlated. Aggregating
+    each driver to a scalar (mean / std / pXX) before summing into a lineup
+    discards that correlation; carrying the joint matrix to the lineup task
+    preserves it.
+
+    ``joint_dfs_points`` shape: ``(n_drivers, n_simulations)``. Row ``i``
+    corresponds to ``driver_index[i]`` (a ``car_driver_id``); column ``s`` is
+    the s-th simulation draw of the cohort. Same iteration across rows is a
+    coupled draw — that's the whole point.
+    """
+
+    summaries: list[MonteCarloDriverSummary]
+    joint_dfs_points: np.ndarray
+    driver_index: np.ndarray  # int64, shape (n_drivers,), aligned with summaries
+
+
 def _apply_count_constraint(value: float) -> float:
     """Round a non-negative count target to int with a 0 floor."""
     rounded = int(round(value))
@@ -156,8 +179,8 @@ def simulate_driver_distributions(
     n_simulations: int,
     field_size: int | None = None,
     seed: int,
-) -> list[MonteCarloDriverSummary]:
-    """Run ``n_simulations`` draws per driver and aggregate DFS-point statistics.
+) -> MonteCarloBatchResult:
+    """Run ``n_simulations`` draws per driver, returning summaries + joint matrix.
 
     ``field_size`` defaults to ``len(drivers)`` (the active predict pool size,
     same field the lineup generator sees). ``seed`` constructs the
@@ -169,6 +192,14 @@ def simulate_driver_distributions(
     targets (``r_total_laps_led``, ``r_total_fastest_laps``) are still drawn
     independently per driver because counts can co-vary freely.
 
+    Returns a :class:`MonteCarloBatchResult` carrying both the per-driver
+    summaries (for the existing ``ml_race_simulation_driver_summaries``
+    persistence) and the joint ``(n_drivers, n_simulations)`` DFS-point
+    matrix (so the lineup task can score candidate lineups against the
+    true coupled distribution rather than a sum-of-independent-scalars
+    approximation). Earlier callers received only the summaries list;
+    those callers should unpack ``.summaries`` explicitly.
+
     Raises ``ValueError`` for ``n_simulations < MIN_SIMULATIONS``; the validate
     task also asserts this so the constraint surfaces twice.
     """
@@ -177,7 +208,11 @@ def simulate_driver_distributions(
             f"n_simulations must be >= {MIN_SIMULATIONS} (got {n_simulations})"
         )
     if not drivers:
-        return []
+        return MonteCarloBatchResult(
+            summaries=[],
+            joint_dfs_points=np.zeros((0, 0), dtype=float),
+            driver_index=np.zeros(0, dtype=np.int64),
+        )
     resolved_field_size = field_size if field_size is not None else len(drivers)
     if resolved_field_size < 1:
         raise ValueError(f"field_size must be >= 1 (got {resolved_field_size})")
@@ -257,6 +292,12 @@ def simulate_driver_distributions(
             samples_per_driver[i, s] = float(total)
 
     summaries: list[MonteCarloDriverSummary] = []
+    driver_index = np.zeros(n_drivers, dtype=np.int64)
     for i, driver in enumerate(drivers):
         summaries.append(_summarize(driver.car_driver_id, samples_per_driver[i]))
-    return summaries
+        driver_index[i] = int(driver.car_driver_id)
+    return MonteCarloBatchResult(
+        summaries=summaries,
+        joint_dfs_points=samples_per_driver,
+        driver_index=driver_index,
+    )
