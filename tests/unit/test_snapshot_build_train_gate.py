@@ -39,9 +39,15 @@ def _make_hook(
     *,
     finished_week_ids: set[int],
     already_built_week_ids: set[int],
+    before_current_week_ids: set[int] | None = None,
 ) -> MagicMock:
     """Build a mock hook that answers both gate queries."""
     hook = MagicMock()
+    before_current_week_ids = (
+        set(before_current_week_ids)
+        if before_current_week_ids is not None
+        else set(finished_week_ids)
+    )
 
     def get_records(sql: str, parameters: Any = ()) -> list[tuple]:
         text = sql.lower()
@@ -56,6 +62,8 @@ def _make_hook(
             and "join nascar.seasons" in text
         ):
             return [(1, week_id) for week_id in sorted(finished_week_ids)]
+        if "from nascar.v_series_before_current_week" in text:
+            return [(week_id,) for week_id in sorted(before_current_week_ids)]
         return []
 
     hook.get_records.side_effect = get_records
@@ -170,6 +178,38 @@ def test_force_rebuild_overrides_version_match(
     mock_build.assert_called_once()
     rebuilt_week = mock_build.call_args.args[1]
     assert rebuilt_week == 1
+
+
+@patch("include.nascar.ml.snapshot_build.build_car_driver_training_snapshot")
+@patch("include.nascar.ml.snapshot_build.NascarMySqlHook")
+def test_current_week_never_built_even_if_finished_or_forced(
+    mock_hook_cls: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: Any,
+) -> None:
+    """Policy lock: train snapshot build is strictly historical.
+
+    Even when a current week appears in finished agg rows and is explicitly
+    requested via ``FS_ML_REBUILD_WEEK_IDS``, the builder excludes it if it's
+    not present in ``v_series_before_current_week``.
+    """
+    # 104 is "current" in this fixture: present in finished_weeks but omitted
+    # from before_current_week_ids.
+    monkeypatch.setenv("FS_ML_REBUILD_WEEK_IDS", "104")
+    mock_hook_cls.return_value = _make_hook(
+        finished_week_ids={101, 102, 103, 104},
+        already_built_week_ids={101, 102},
+        before_current_week_ids={101, 102, 103},
+    )
+    mock_build.return_value = 903
+
+    result = snapshot_build.build_all_week_training_snapshots(pipeline_version="abc")
+
+    # Only 103 is eligible to build: 104 is excluded by policy, even forced.
+    assert result == [903]
+    mock_build.assert_called_once()
+    rebuilt_week = mock_build.call_args.args[1]
+    assert rebuilt_week == 103
 
 
 @patch("include.nascar.ml.snapshot_build.build_car_driver_training_snapshot")

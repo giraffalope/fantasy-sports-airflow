@@ -19,8 +19,10 @@ Each run materializes the latest training and prediction snapshots and,
 when warranted, refits the per-target models that score the next race for
 the DraftKings slate. Concretely:
 
-- **Train snapshots (`kind='train'`):** materialized for every Cup week with
-  finished race rows in `agg_week_results`. Include features + labels.
+- **Train snapshots (`kind='train'`):** materialized for every Cup week in
+  `v_series_before_current_week` with finished race rows in
+  `agg_week_results` (strictly historical; current week is excluded even
+  post-race). Include features + labels.
 - **Predict snapshots (`kind='predict'`):** materialized for the Cup
   current week when the grid is known (`r_start_position IS NOT NULL` in
   `agg_week_results`) and the eligibility gate
@@ -151,8 +153,9 @@ flowchart LR
   `build_all_week_prediction_snapshots` (lazy-imported through
   [include/nascar/ml/__init__.py](../../include/nascar/ml/__init__.py)) with
   `pipeline_version` derived from `FS_PIPELINE_VERSION` or `GIT_COMMIT`. The
-  train branch enumerates every Cup week with completed `agg_week_results`
-  rows (`r_start_position IS NOT NULL AND r_finish_position IS NOT NULL` —
+  train branch enumerates every Cup week in
+  `v_series_before_current_week` with completed `agg_week_results` rows
+  (`r_start_position IS NOT NULL AND r_finish_position IS NOT NULL` —
   both endpoints are required so the B4 `r_place_diff` invariant in
   `compute_dfs_points_from_targets` holds for every labeled anchor) and
   writes one snapshot per week +
@@ -178,8 +181,10 @@ flowchart LR
     op picks up the new SHA and every finished-week snapshot rebuilds on
     the next scheduled run.
   - set `FS_ML_REBUILD_WEEK_IDS=<comma-list>` for a per-week override —
-    those weeks are always rebuilt even when their `source_pipeline_version`
-    matches.
+    those weeks are rebuilt even when their `source_pipeline_version`
+    matches, but the strict historical policy still applies (current-week
+    IDs are ignored until rollover moves them into
+    `v_series_before_current_week`).
   The predict branch builds at most one
   `kind='predict'` snapshot for the Cup **current week** from
   `v_series_current_week` when that week has a known grid and is still

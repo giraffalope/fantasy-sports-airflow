@@ -132,17 +132,10 @@ WHERE s.kind = %s
   AND s.dfs_scoring_rules_id = %s
   AND s.deleted_at IS NULL
   AND s.series_id = %s
-  AND (
-      s.week_id IN (
-          SELECT b.week_id
-          FROM nascar.v_series_before_current_week b
-          WHERE b.series_id = s.series_id
-      )
-      OR s.week_id = (
-          SELECT c.week_id
-          FROM nascar.v_series_current_week c
-          WHERE c.series_id = s.series_id
-      )
+  AND s.week_id IN (
+      SELECT b.week_id
+      FROM nascar.v_series_before_current_week b
+      WHERE b.series_id = s.series_id
   )
 """
 

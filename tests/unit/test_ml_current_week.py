@@ -55,9 +55,9 @@ def test_current_week_track_context_sql_uses_view() -> None:
     assert "v_series_current_week" in _CURRENT_WEEK_TRACK_CONTEXT_SQL
 
 
-def test_latest_train_week_for_retrain_sql_uses_both_views() -> None:
+def test_latest_train_week_for_retrain_sql_uses_only_before_current_view() -> None:
     assert "v_series_before_current_week" in _LATEST_TRAIN_WEEK_FOR_RETRAIN_SQL
-    assert "v_series_current_week" in _LATEST_TRAIN_WEEK_FOR_RETRAIN_SQL
+    assert "v_series_current_week" not in _LATEST_TRAIN_WEEK_FOR_RETRAIN_SQL
 
 
 def test_latest_train_week_for_retrain_returns_int() -> None:

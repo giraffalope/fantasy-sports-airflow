@@ -61,6 +61,12 @@ _VALID_KINDS = frozenset({SNAPSHOT_KIND_TRAIN, SNAPSHOT_KIND_PREDICT})
 
 _LOG = logging.getLogger(__name__)
 
+_SERIES_BEFORE_CURRENT_WEEK_IDS_SQL = """
+SELECT b.week_id
+FROM nascar.v_series_before_current_week b
+WHERE b.series_id = %s
+"""
+
 
 def _current_week_predict_week_id(
     hook: NascarMySqlHook,
@@ -858,9 +864,21 @@ def build_all_week_training_snapshots(
     rules_id, _ = rules
 
     series_id = NascarSeries.CUP.series_id
-    finished_weeks = {int(week_id) for _series_id, week_id in hook.get_records(
-        FINISHED_AGG_WEEKS_SQL, parameters=(series_id,)
-    )}
+    finished_weeks = {
+        int(week_id)
+        for _series_id, week_id in hook.get_records(
+            FINISHED_AGG_WEEKS_SQL, parameters=(series_id,)
+        )
+    }
+    before_current_weeks = {
+        int(week_id)
+        for (week_id,) in hook.get_records(
+            _SERIES_BEFORE_CURRENT_WEEK_IDS_SQL, parameters=(series_id,)
+        )
+    }
+    # Training policy is strictly historical: even if the current-week race has
+    # finished, this function must not build train snapshots for it.
+    eligible_finished_weeks = finished_weeks & before_current_weeks
     forced_weeks = _extra_rebuild_week_ids_from_env()
     already_built = _train_weeks_with_current_version(
         hook,
@@ -869,13 +887,17 @@ def build_all_week_training_snapshots(
         pipeline_version=pipeline_version,
     )
 
-    to_build = (finished_weeks - already_built) | forced_weeks
-    skipped_count = len(finished_weeks - to_build)
+    forced_eligible_weeks = forced_weeks & before_current_weeks
+    to_build = (eligible_finished_weeks - already_built) | forced_eligible_weeks
+    skipped_count = len(eligible_finished_weeks - to_build)
     _LOG.info(
-        "build_all_week_training_snapshots: finished=%d already_built=%d forced=%d to_build=%d skipped=%d pipeline_version=%s",
+        "build_all_week_training_snapshots: finished=%d before_current=%d eligible=%d already_built=%d forced=%d forced_eligible=%d to_build=%d skipped=%d pipeline_version=%s",
         len(finished_weeks),
+        len(before_current_weeks),
+        len(eligible_finished_weeks),
         len(already_built),
         len(forced_weeks),
+        len(forced_eligible_weeks),
         len(to_build),
         skipped_count,
         pipeline_version,
