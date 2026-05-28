@@ -107,10 +107,11 @@ x-airflow-common:
     FS_MC_RANDOM_SEED: ${FS_MC_RANDOM_SEED:-}
     FS_DK_MC_OBJECTIVE: ${FS_DK_MC_OBJECTIVE:-p50}
     # Portfolio-aware lineup selection knobs (one set per DraftKings strategy).
-    # Both strategies persist a 0.35-capped pool with depth ``FS_DK_TOP_K``
-    # (default 40 per strategy). Read-time diversification is applied by
+    # Write-time exposure defaults are strategy-specific again:
+    # DOUBLE_UP=0.70, HIGH_RISK_REWARD=0.40, with depth ``FS_DK_TOP_K``
+    # (default 40 per strategy). Read-time diversification is still applied by
     # the ``nascar.dfs_lineups`` stored procedure, which takes a
-    # caller-supplied ``p_max_exposure_cap`` and re-runs the greedy
+    # caller-supplied ``p_min_driver_diff`` and re-runs the greedy
     # selection against the persisted pool.
     # ``FS_DK_CANDIDATE_POOL_MULTIPLIER`` controls how many CP-SAT solves
     # feed the portfolio selector per strategy (default 5 -> top_k * 5
@@ -118,9 +119,9 @@ x-airflow-common:
     # See docs/nascar/cup.dfs.lineup_generator.md for the per-strategy
     # objective table and read-time diversification semantics.
     FS_DK_DOUBLE_UP_OBJECTIVE: ${FS_DK_DOUBLE_UP_OBJECTIVE:-joint_p10}
-    FS_DK_DOUBLE_UP_EXPOSURE_CAP: ${FS_DK_DOUBLE_UP_EXPOSURE_CAP:-0.35}
+    FS_DK_DOUBLE_UP_EXPOSURE_CAP: ${FS_DK_DOUBLE_UP_EXPOSURE_CAP:-0.70}
     FS_DK_HIGH_RISK_REWARD_OBJECTIVE: ${FS_DK_HIGH_RISK_REWARD_OBJECTIVE:-joint_p90}
-    FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP: ${FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP:-0.35}
+    FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP: ${FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP:-0.40}
     FS_DK_TOP_K: ${FS_DK_TOP_K:-40}
     FS_DK_CANDIDATE_POOL_MULTIPLIER: ${FS_DK_CANDIDATE_POOL_MULTIPLIER:-5}
     # Joint Monte Carlo draws (n_drivers x n_simulations) are persisted as

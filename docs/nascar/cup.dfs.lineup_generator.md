@@ -130,15 +130,16 @@ Valid objective tokens (env vars below): `joint_p10`, `joint_p50`,
 | `FS_DK_MIN_DIFF_HIGH_RISK_REWARD` | `1` | CP-SAT overlap blocker for HIGH_RISK_REWARD candidate solves |
 | `FS_DK_MC_OBJECTIVE` | `p50` | Per-driver summary column used only to **order** the candidate pool (`mean`, `p05`, `p50`, `p95`, `min`, `max`) |
 | `FS_DK_DOUBLE_UP_OBJECTIVE` | `joint_p10` | Portfolio objective for DOUBLE_UP |
-| `FS_DK_DOUBLE_UP_EXPOSURE_CAP` | `0.35` | Write-time max fraction of DOUBLE_UP lineups any driver may appear in (read-time cap is supplied by the caller of `nascar.dfs_lineups`) |
+| `FS_DK_DOUBLE_UP_EXPOSURE_CAP` | `0.70` | Write-time max fraction of DOUBLE_UP lineups any driver may appear in (read-time cap is supplied by the caller of `nascar.dfs_lineups`) |
 | `FS_DK_HIGH_RISK_REWARD_OBJECTIVE` | `joint_p90` | Portfolio objective for HIGH_RISK_REWARD |
-| `FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP` | `0.35` | Write-time max fraction of HIGH_RISK_REWARD lineups any driver may appear in (read-time cap is supplied by the caller of `nascar.dfs_lineups`) |
+| `FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP` | `0.40` | Write-time max fraction of HIGH_RISK_REWARD lineups any driver may appear in (read-time cap is supplied by the caller of `nascar.dfs_lineups`) |
 
 ### Read-time diversification
 
-The lineup generator persists `FS_DK_TOP_K` lineups per strategy under a
-loose 0.35 write-time cap (with the existing `+0.05` relaxation safety
-net to guarantee a full slate even on starved candidate pools).
+The lineup generator persists `FS_DK_TOP_K` lineups per strategy under
+strategy-specific write-time caps (DOUBLE_UP `0.70`,
+HIGH_RISK_REWARD `0.40`, each with the existing `+0.05` relaxation
+safety net to guarantee a full slate even on starved candidate pools).
 Read-time diversification is applied by the
 [`nascar.dfs_lineups`](../../../fantasy-sports-db/nascar/ddl/stored_procedures/6063-create_dfs_lineups_stored_procedure.sql)
 stored procedure, which mirrors the Python
@@ -151,7 +152,7 @@ Signature:
 CALL nascar.dfs_lineups(
     p_race_id          BIGINT UNSIGNED,
     p_dfs_strategy_id  BIGINT UNSIGNED,
-    p_max_exposure_cap DECIMAL(5,4),
+    p_min_driver_diff  INT UNSIGNED,
     p_num_lineups      INT UNSIGNED
 );
 ```
@@ -165,9 +166,9 @@ selected lineup so callers can join back to the MC fingerprint columns
 (`mc_p10_dfs_points`, `objective_value`, `mc_score_method`, etc.) when
 they need the full audit row.
 Output is ordered by `lineup_rank ASC, driver_rank ASC`. The procedure
-has *no* relaxation safety net — if the persisted pool is too
-concentrated to satisfy `p_max_exposure_cap`, the result is short by
-design; rerun with a higher cap or wait for the next generator run.
+starts from the requested `p_min_driver_diff` and relaxes downward to 1
+when needed to fill `p_num_lineups`; if the persisted pool is still too
+concentrated at `min_diff=1`, the result is short by design.
 
 The actuals column (`driver_actual_points`) joins through the latest
 `kind='train'` snapshot in `ml_training_snapshots` and pulls

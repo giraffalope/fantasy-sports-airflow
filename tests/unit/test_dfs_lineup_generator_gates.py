@@ -395,13 +395,11 @@ def test_strategy_configs_pick_up_env_overrides() -> None:
     assert configs["HIGH_RISK_REWARD"].exposure_cap == 0.30
 
 
-def test_strategy_configs_default_exposure_caps_uniform_at_035() -> None:
+def test_strategy_configs_default_exposure_caps_follow_python_fallbacks() -> None:
     """Pin the new uniform 0.35 default for both strategies.
 
-    Read-time diversification now lives in the ``nascar.dfs_lineups``
-    stored procedure, so the generator persists a deep 0.35-capped pool
-    rather than the older asymmetric 0.70/0.40 split. Lock the defaults
-    explicitly so a regression here is loud rather than silent.
+    Guard the code-level fallbacks in ``_strategy_configs``. These are
+    intentionally distinct from docker-compose/.env defaults.
     """
     import os
 

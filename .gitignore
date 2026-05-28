@@ -22,3 +22,4 @@ dfs-data/
 coverage.xml
 htmlcov/
 db/backups/
+artifacts/

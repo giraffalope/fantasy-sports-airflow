@@ -162,9 +162,9 @@ class StrategyConfig:
     The write-time exposure cap is uniform at ``0.35`` for both strategies
     — the persisted pool just needs depth and variety. Read-time
     diversification is applied server-side by the ``nascar.dfs_lineups``
-    stored procedure, which re-runs the greedy exposure-capped selection
-    against the persisted pool with a caller-supplied
-    ``p_max_exposure_cap``. The existing :func:`greedy_diversify`
+    stored procedure, which re-runs greedy selection against the
+    persisted pool with a caller-supplied ``p_min_driver_diff``.
+    The existing :func:`greedy_diversify`
     relaxation safety net (``+0.05`` increments up to ``1.0``) is left in
     place so the generator still returns ``top_k`` lineups even on
     starved candidate pools; the stored procedure cleans this up at
