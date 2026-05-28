@@ -34,7 +34,7 @@ def dk_salary_cap() -> int:
 
 
 def dk_top_k() -> int:
-    return _env_int("FS_DK_TOP_K", 20)
+    return _env_int("FS_DK_TOP_K", 40)
 
 
 def dk_min_diff_double_up() -> int:
@@ -48,12 +48,16 @@ def dk_min_diff_high_risk_reward() -> int:
 def dk_candidate_pool_multiplier() -> int:
     """How many CP-SAT solves per strategy as multiplier of ``top_k``.
 
-    Default ``5`` so the default ``FS_DK_TOP_K=20`` yields a 100-lineup
+    Default ``5`` so the default ``FS_DK_TOP_K=40`` yields a 200-lineup
     candidate pool — large enough that the downstream
     :func:`include.nascar.dfs.lineup_portfolio.greedy_diversify` selector
     has real choice when applying per-driver exposure caps, but small
     enough that CP-SAT's wall time stays sub-second on the production
-    cohort sizes (~30-40 drivers in the active predict pool).
+    cohort sizes (~30-40 drivers in the active predict pool). If
+    generation latency becomes a concern, lower this multiplier (the
+    server-side ``nascar.dfs_lineups`` stored procedure handles the
+    final read-time diversification, so the persisted pool only needs
+    enough variety to support that selection).
     """
     return _env_int("FS_DK_CANDIDATE_POOL_MULTIPLIER", 5)
 

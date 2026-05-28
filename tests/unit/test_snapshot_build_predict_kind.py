@@ -159,6 +159,15 @@ def test_predict_kind_inserts_rows_but_skips_labels(mock_hook_cls: MagicMock) ->
 
 @patch("include.nascar.ml.snapshot_build.NascarMySqlHook")
 def test_predict_kind_uses_predict_anchor_filter(mock_hook_cls: MagicMock) -> None:
+    """Predict anchor requires a known grid AND is finish-agnostic.
+
+    Eligibility (pre-race vs post-race self-heal) lives entirely in
+    :func:`include.nascar.cup.current_week.week_eligible_for_predict_snapshot`.
+    Re-gating on ``r_finish_position`` inside the builder would make the
+    post-race recovery branch impossible (gate opens when finish IS NOT
+    NULL, anchor would require IS NULL — mutually exclusive). This
+    regression test pins the finish-agnostic contract at the SQL level.
+    """
     hook = _make_hook([_anchor_tuple(finish_position=None)])
     mock_hook_cls.return_value = hook
 
@@ -172,11 +181,47 @@ def test_predict_kind_uses_predict_anchor_filter(mock_hook_cls: MagicMock) -> No
         str(call.args[0])
         for call in hook.get_records.mock_calls
         if "FROM nascar.agg_week_results" in str(call.args[0])
+        and "JOIN nascar.weeks" not in str(call.args[0])
     ]
     assert anchor_sqls, "expected at least one anchor query"
     anchor_sql = anchor_sqls[0]
     assert "r_start_position IS NOT NULL" in anchor_sql
-    assert "r_finish_position IS NULL" in anchor_sql
+    assert "r_finish_position IS NULL" not in anchor_sql
+    assert "r_finish_position IS NOT NULL" not in anchor_sql
+
+
+@patch("include.nascar.ml.snapshot_build.NascarMySqlHook")
+def test_predict_kind_builds_snapshot_for_post_race_recovery(
+    mock_hook_cls: MagicMock,
+) -> None:
+    """Post-race self-healing branch must actually materialize a snapshot.
+
+    The eligibility gate :func:`week_eligible_for_predict_snapshot` opens
+    when the race is finished AND no live ``ml_predictions`` row exists
+    for the week yet. Before this fix, the builder anchor required
+    ``r_finish_position IS NULL`` and would silently return ``None`` for
+    every row in that recovery scenario — leaving the chain permanently
+    stuck at ``no_predict_snapshot``. Now the builder is finish-agnostic
+    and produces a fresh snapshot from the same anchor rows the train
+    branch already covers.
+    """
+    hook = _make_hook([_anchor_tuple(finish_position=12)])
+    mock_hook_cls.return_value = hook
+
+    snapshot_id = snapshot_build.build_car_driver_training_snapshot(
+        1,
+        100,
+        kind=SNAPSHOT_KIND_PREDICT,
+    )
+
+    assert snapshot_id == 42
+    hook.run_insert_returning_id.assert_called_once()
+    insert_sql = str(hook.run_insert_returning_id.call_args.args[0])
+    assert "INSERT INTO nascar.ml_training_snapshots" in insert_sql
+
+    run_sqls = [str(call.args[0]) for call in hook.run.mock_calls]
+    assert any("INSERT INTO nascar.ml_training_rows" in s for s in run_sqls)
+    assert not any("INSERT INTO nascar.ml_labels" in s for s in run_sqls)
 
 
 @patch("include.nascar.ml.snapshot_build.NascarMySqlHook")

@@ -1,0 +1,5 @@
+#!/bin/sh -e
+# Refresh .git-commit.env after `git merge` and the merge phase of `git pull`.
+
+dir="$(dirname "$0")"
+exec "${dir}/_write-git-commit.sh"

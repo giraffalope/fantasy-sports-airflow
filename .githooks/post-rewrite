@@ -1,0 +1,7 @@
+#!/bin/sh -e
+# Refresh .git-commit.env after `git rebase` or `git commit --amend`.
+# Git passes the rewrite kind on $1 and old/new SHAs on stdin; we don't need
+# either since `_write-git-commit.sh` resolves HEAD directly.
+
+dir="$(dirname "$0")"
+exec "${dir}/_write-git-commit.sh"

@@ -72,4 +72,16 @@ fi
 
 "$uv_bin" sync --python "$py_cmd" $sync_args
 
+# Wire git hooks that keep .git-commit.env in sync with HEAD. This file is
+# forwarded into every Airflow service by docker-compose so the ML
+# build_ml_training_snapshots task can use GIT_COMMIT as its pipeline_version
+# cache-key. core.hooksPath is repo-local, so this never bleeds out.
+if [ -d .githooks ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git config core.hooksPath .githooks
+    # Bootstrap once so .git-commit.env exists before any git op fires a hook.
+    if [ -x .githooks/_write-git-commit.sh ]; then
+        ./.githooks/_write-git-commit.sh
+    fi
+fi
+
 # docker compose up airflow-init

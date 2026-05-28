@@ -430,7 +430,17 @@ def build_car_driver_training_snapshot(
             "AND awr.r_finish_position IS NOT NULL"
         )
     else:
-        anchor_filter = "AND awr.r_start_position IS NOT NULL AND awr.r_finish_position IS NULL"
+        # Predict snapshots are finish-agnostic: features come from prior
+        # weeks' aggregates, never from this week's outcome, and no labels
+        # are written. The "should we build a predict snapshot at all?"
+        # question is owned by :func:`week_eligible_for_predict_snapshot`
+        # in ``include/nascar/cup/current_week.py`` — that gate distinguishes
+        # pre-race (race open) from the post-race self-healing branch
+        # (race finished, no predictions yet). Re-gating on
+        # ``r_finish_position IS NULL`` here would make post-race recovery
+        # impossible because the gate and the anchor would be mutually
+        # exclusive once the aggregate populates finish positions.
+        anchor_filter = "AND awr.r_start_position IS NOT NULL"
 
     prelock_columns = _agg_week_prelock_columns(hook)
     prelock_select = ""
@@ -786,31 +796,93 @@ def _extra_rebuild_week_ids_from_env() -> set[int]:
     return {int(part.strip()) for part in raw.split(",") if part.strip()}
 
 
+def _train_weeks_with_current_version(
+    hook: NascarMySqlHook,
+    *,
+    series_id: int,
+    rules_id: int,
+    pipeline_version: str | None,
+) -> set[int]:
+    """Return week_ids whose active train snapshot matches the current pipeline_version.
+
+    Uses MariaDB's NULL-safe equality (``<=>``) so dev environments without
+    ``FS_PIPELINE_VERSION``/``GIT_COMMIT`` (both sides NULL) still match
+    snapshots that were also stamped with no version.
+    """
+    rows = hook.get_records(
+        """
+        SELECT week_id
+        FROM nascar.ml_training_snapshots
+        WHERE series_id = %s
+          AND grain = %s
+          AND kind = %s
+          AND dfs_scoring_rules_id = %s
+          AND deleted_at IS NULL
+          AND source_pipeline_version <=> %s
+        """,
+        parameters=(
+            series_id,
+            GRAIN_CAR_DRIVER,
+            SNAPSHOT_KIND_TRAIN,
+            rules_id,
+            pipeline_version,
+        ),
+    )
+    return {int(week_id) for (week_id,) in rows}
+
+
 def build_all_week_training_snapshots(
     *,
     mysql_conn_id: str = "nascar_conn",
     pipeline_version: str | None = None,
 ) -> list[int]:
-    """Build train snapshots for every Cup week with finished agg_week_results."""
+    """Build train snapshots for every Cup week with finished ``agg_week_results``.
+
+    Skips weeks whose existing train snapshot's ``source_pipeline_version``
+    already matches ``pipeline_version`` (NULL-safe). Operators force a
+    catalog-wide refresh by bumping ``FS_PIPELINE_VERSION`` or ``GIT_COMMIT``
+    (the latter is auto-populated by the ``.githooks/`` scripts wired in
+    ``script/setup``), or a per-week refresh via ``FS_ML_REBUILD_WEEK_IDS``.
+    """
     from include.nascar.cup.aggregate_load import FINISHED_AGG_WEEKS_SQL
     from include.nascar.enums import NascarSeries
 
     hook = NascarMySqlHook(mysql_conn_id=mysql_conn_id)
-    if _active_rules(hook, DRAFTKINGS_DFS_ID) is None:
+    rules = _active_rules(hook, DRAFTKINGS_DFS_ID)
+    if rules is None:
         _LOG.warning(
             "build_all_week_training_snapshots: no active dfs_scoring_rules for dfs_id=%s",
             DRAFTKINGS_DFS_ID,
         )
         return []
+    rules_id, _ = rules
 
     series_id = NascarSeries.CUP.series_id
-    week_ids = {int(week_id) for _series_id, week_id in hook.get_records(
+    finished_weeks = {int(week_id) for _series_id, week_id in hook.get_records(
         FINISHED_AGG_WEEKS_SQL, parameters=(series_id,)
     )}
-    week_ids |= _extra_rebuild_week_ids_from_env()
+    forced_weeks = _extra_rebuild_week_ids_from_env()
+    already_built = _train_weeks_with_current_version(
+        hook,
+        series_id=series_id,
+        rules_id=rules_id,
+        pipeline_version=pipeline_version,
+    )
+
+    to_build = (finished_weeks - already_built) | forced_weeks
+    skipped_count = len(finished_weeks - to_build)
+    _LOG.info(
+        "build_all_week_training_snapshots: finished=%d already_built=%d forced=%d to_build=%d skipped=%d pipeline_version=%s",
+        len(finished_weeks),
+        len(already_built),
+        len(forced_weeks),
+        len(to_build),
+        skipped_count,
+        pipeline_version,
+    )
 
     snapshot_ids: list[int] = []
-    for week_id in sorted(week_ids):
+    for week_id in sorted(to_build):
         snapshot_id = build_car_driver_training_snapshot(
             series_id,
             int(week_id),

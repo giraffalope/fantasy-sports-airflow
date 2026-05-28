@@ -150,17 +150,25 @@ class StrategyConfig:
     """Per-strategy portfolio knobs resolved from env at task invocation time.
 
     The two strategies represent fundamentally different DFS contest
-    structures:
+    structures, expressed via the *objective metric* and the CP-SAT
+    ``min_diff``:
 
     * ``DOUBLE_UP`` (cash / 50-50 contests): you cash if you finish in the
       top half of entrants. Floor matters far more than ceiling, so the
-      objective is ``joint_p10`` (the 10th percentile lineup outcome) and
-      the exposure cap is loose (``0.70``) — duplicating winning floor
-      drivers across multiple cash lineups is fine.
+      objective is ``joint_p10`` (the 10th percentile lineup outcome).
     * ``HIGH_RISK_REWARD`` (GPP / tournaments): payout is heavily
-      top-skewed, so the objective is ``joint_p90`` (high ceiling) and
-      the exposure cap is tight (``0.40``) so no single bust derails the
-      whole portfolio.
+      top-skewed, so the objective is ``joint_p90`` (high ceiling).
+
+    The write-time exposure cap is uniform at ``0.35`` for both strategies
+    — the persisted pool just needs depth and variety. Read-time
+    diversification is applied server-side by the ``nascar.dfs_lineups``
+    stored procedure, which re-runs the greedy exposure-capped selection
+    against the persisted pool with a caller-supplied
+    ``p_max_exposure_cap``. The existing :func:`greedy_diversify`
+    relaxation safety net (``+0.05`` increments up to ``1.0``) is left in
+    place so the generator still returns ``top_k`` lineups even on
+    starved candidate pools; the stored procedure cleans this up at
+    read time.
     """
 
     name: str
@@ -177,7 +185,7 @@ def _strategy_configs() -> dict[str, StrategyConfig]:
             objective_metric=_resolve_metric(
                 "FS_DK_DOUBLE_UP_OBJECTIVE", "joint_p10"
             ),
-            exposure_cap=_env_float("FS_DK_DOUBLE_UP_EXPOSURE_CAP", 0.70),
+            exposure_cap=_env_float("FS_DK_DOUBLE_UP_EXPOSURE_CAP", 0.35),
             min_diff=dk_min_diff_double_up(),
         ),
         "HIGH_RISK_REWARD": StrategyConfig(
@@ -186,7 +194,7 @@ def _strategy_configs() -> dict[str, StrategyConfig]:
                 "FS_DK_HIGH_RISK_REWARD_OBJECTIVE", "joint_p90"
             ),
             exposure_cap=_env_float(
-                "FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP", 0.40
+                "FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP", 0.35
             ),
             min_diff=dk_min_diff_high_risk_reward(),
         ),
@@ -619,6 +627,49 @@ def _persist_strategy_lineups(
     return len(selected)
 
 
+_POST_RACE_LINEUPS_PRESENT_SQL = """
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM nascar.agg_week_results awr
+        WHERE awr.week_id = %s
+          AND awr.deleted_at IS NULL
+          AND awr.r_finish_position IS NOT NULL
+    ) AS race_finished,
+    EXISTS (
+        SELECT 1
+        FROM nascar.dfs_race_lineups drl
+        JOIN nascar.races r ON r.id = drl.race_id AND r.deleted_at IS NULL
+        WHERE r.week_id = %s
+          AND drl.dfs_id = %s
+          AND drl.deleted_at IS NULL
+    ) AS lineups_present
+"""
+
+
+def _post_race_lineups_already_present(
+    hook: NascarMySqlHook,
+    *,
+    week_id: int,
+    dfs_id: int,
+) -> bool:
+    """Return True when the race has finished AND DK lineups already exist.
+
+    Symmetric to the predict / MC post-race guards: once race_results land
+    the upstream inputs are frozen, so re-running the optimizer hourly would
+    soft-delete the prior batch and rebuild identical lineups. Pre-race we
+    still re-run hourly so lineups reflect refreshed MC summaries.
+    """
+    rows = hook.get_records(
+        _POST_RACE_LINEUPS_PRESENT_SQL,
+        parameters=(int(week_id), int(week_id), int(dfs_id)),
+    )
+    if not rows:
+        return False
+    race_finished, lineups_present = rows[0]
+    return bool(race_finished) and bool(lineups_present)
+
+
 def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
     """Build portfolio-aware top-K lineups per strategy with joint MC scoring."""
     hook = NascarMySqlHook(mysql_conn_id="nascar_conn")
@@ -634,6 +685,24 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
     if snapshot is None:
         _LOG.warning("generate_draftkings_lineups: skipped reason=no_predict_snapshot")
         return {"skipped": True, "reason": "no_predict_snapshot"}
+
+    if _post_race_lineups_already_present(
+        hook,
+        week_id=int(snapshot["week_id"]),
+        dfs_id=DRAFTKINGS_DFS_ID,
+    ):
+        _LOG.info(
+            "generate_draftkings_lineups: snapshot_id=%s week_id=%s race finished and "
+            "DraftKings lineups already present; skipping post-race re-optimization",
+            snapshot["id"],
+            snapshot["week_id"],
+        )
+        return {
+            "skipped": True,
+            "reason": "lineups_already_present_post_race",
+            "snapshot_id": snapshot["id"],
+            "week_id": snapshot["week_id"],
+        }
 
     mc_batch = _latest_mc_batch(hook, snapshot["id"])
     if mc_batch is None:

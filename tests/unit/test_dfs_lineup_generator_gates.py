@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from include.nascar.dfs import lineup_generator_task as mod
 from include.nascar.dfs.lineup_generator_task import (
@@ -39,6 +40,62 @@ def test_skips_without_predict_snapshot() -> None:
     assert result == {"skipped": True, "reason": "no_predict_snapshot"}
 
 
+def test_post_race_lineups_already_present_helper() -> None:
+    hook = MagicMock()
+
+    hook.get_records.return_value = [(1, 1)]
+    assert mod._post_race_lineups_already_present(
+        hook, week_id=42, dfs_id=1
+    ) is True
+
+    hook.get_records.return_value = [(0, 1)]
+    assert mod._post_race_lineups_already_present(
+        hook, week_id=42, dfs_id=1
+    ) is False
+
+    hook.get_records.return_value = [(1, 0)]
+    assert mod._post_race_lineups_already_present(
+        hook, week_id=42, dfs_id=1
+    ) is False
+
+    hook.get_records.return_value = []
+    assert mod._post_race_lineups_already_present(
+        hook, week_id=42, dfs_id=1
+    ) is False
+
+
+def test_skips_post_race_when_lineups_already_present() -> None:
+    hook = MagicMock()
+    with (
+        patch(
+            "include.nascar.dfs.lineup_generator_task.NascarMySqlHook",
+            return_value=hook,
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._active_rules",
+            return_value=(1, {}),
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._latest_predict_snapshot",
+            return_value={"id": 99, "week_id": 5},
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._post_race_lineups_already_present",
+            return_value=True,
+        ) as mock_post_race,
+        patch(
+            "include.nascar.dfs.lineup_generator_task._latest_mc_batch",
+        ) as mock_latest_mc,
+    ):
+        result = generate_draftkings_lineups_task()
+    assert result["skipped"] is True
+    assert result["reason"] == "lineups_already_present_post_race"
+    assert result["snapshot_id"] == 99
+    assert result["week_id"] == 5
+    mock_post_race.assert_called_once()
+    mock_latest_mc.assert_not_called()
+
+
 def test_skips_without_mc_summaries() -> None:
     hook = MagicMock()
     with (
@@ -53,6 +110,10 @@ def test_skips_without_mc_summaries() -> None:
         patch(
             "include.nascar.dfs.lineup_generator_task._latest_predict_snapshot",
             return_value={"id": 99, "week_id": 5},
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._post_race_lineups_already_present",
+            return_value=False,
         ),
         patch(
             "include.nascar.dfs.lineup_generator_task._latest_mc_batch",
@@ -278,6 +339,46 @@ def test_persist_strategy_lineups_uses_run_in_transaction() -> None:
     hook.run_in_transaction.assert_called_once()
 
 
+def test_strategy_id_by_name_returns_id_when_row_present() -> None:
+    """Happy path: the lookup returns the dfs_strategies.id for a present row.
+
+    Pins both required strategy names so a future rename of either constant
+    (or an accidental drop of one from the seed/migration) fails CI before
+    it can crash the lineup DAG with ``dfs_strategies row not found``.
+    """
+    for name, expected_id in (("DOUBLE_UP", 1), ("HIGH_RISK_REWARD", 2)):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (expected_id,)
+
+        result = mod._strategy_id_by_name(cursor, name)
+
+        assert result == expected_id
+        cursor.execute.assert_called_once()
+        sql_arg = cursor.execute.call_args.args[0]
+        params_arg = cursor.execute.call_args.args[1]
+        assert "FROM nascar.dfs_strategies" in sql_arg
+        assert "deleted_at IS NULL" in sql_arg
+        assert params_arg == (name,)
+
+
+def test_strategy_id_by_name_raises_actionable_error_when_missing() -> None:
+    """Missing-row failure: error message names the strategy that is absent.
+
+    This is the regression that crashed lineup generation when the DB came
+    up from a snapshot pre-dating migration
+    ``20260525180000_dfs_strategies_and_race_lineups_pivot.sql``. The fix
+    (canonical seed ``9003-insert_dfs_strategies_seed.sql`` plus backfill
+    migration ``20260613T140000_dfs_strategies_required_rows.sql``) is in
+    the DB repo; this test pins the error message so the failure mode
+    stays actionable if the row ever goes missing again.
+    """
+    cursor = MagicMock()
+    cursor.fetchone.return_value = None
+
+    with pytest.raises(RuntimeError, match=r"dfs_strategies row not found for name='DOUBLE_UP'"):
+        mod._strategy_id_by_name(cursor, "DOUBLE_UP")
+
+
 def test_strategy_configs_pick_up_env_overrides() -> None:
     """Per-strategy objective + exposure cap must flow through env vars."""
     overrides = {
@@ -292,6 +393,33 @@ def test_strategy_configs_pick_up_env_overrides() -> None:
     assert configs["DOUBLE_UP"].exposure_cap == 0.55
     assert configs["HIGH_RISK_REWARD"].objective_metric == "joint_mean"
     assert configs["HIGH_RISK_REWARD"].exposure_cap == 0.30
+
+
+def test_strategy_configs_default_exposure_caps_uniform_at_035() -> None:
+    """Pin the new uniform 0.35 default for both strategies.
+
+    Read-time diversification now lives in the ``nascar.dfs_lineups``
+    stored procedure, so the generator persists a deep 0.35-capped pool
+    rather than the older asymmetric 0.70/0.40 split. Lock the defaults
+    explicitly so a regression here is loud rather than silent.
+    """
+    import os
+
+    env_without_overrides = {
+        k: v
+        for k, v in os.environ.items()
+        if k
+        not in {
+            "FS_DK_DOUBLE_UP_OBJECTIVE",
+            "FS_DK_DOUBLE_UP_EXPOSURE_CAP",
+            "FS_DK_HIGH_RISK_REWARD_OBJECTIVE",
+            "FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP",
+        }
+    }
+    with patch.dict("os.environ", env_without_overrides, clear=True):
+        configs = mod._strategy_configs()
+    assert configs["DOUBLE_UP"].exposure_cap == 0.35
+    assert configs["HIGH_RISK_REWARD"].exposure_cap == 0.35
 
 
 def test_strategy_configs_reject_unknown_objective() -> None:

@@ -257,6 +257,10 @@ def test_e2_every_simulation_iteration_is_a_permutation(
 # ---------------------------------------------------------------------------
 
 
+@patch(
+    "include.nascar.ml.predict_task._post_race_predictions_already_present",
+    return_value=False,
+)
 @patch("xgboost.XGBClassifier")
 @patch("xgboost.XGBRegressor")
 @patch("include.nascar.ml.predict_task._predict_values_for_target")
@@ -274,6 +278,7 @@ def test_e3_blend_metadata_round_trips_via_predict(
     mock_predict_values: MagicMock,
     _mock_xgb: MagicMock,
     _mock_xgbc: MagicMock,
+    _mock_post_race: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FS_ML_BLEND_WEIGHTS", "equal")

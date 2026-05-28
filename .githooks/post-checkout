@@ -1,0 +1,12 @@
+#!/bin/sh -e
+# Refresh .git-commit.env after a branch-level checkout. Receives:
+#   $1 prev_head $2 new_head $3 branch_flag
+# branch_flag is 1 for branch checkouts, 0 for file-level checkouts
+# (`git checkout <path>` — HEAD did not move, so leave the file alone).
+
+if [ "${3:-1}" = "0" ]; then
+    exit 0
+fi
+
+dir="$(dirname "$0")"
+exec "${dir}/_write-git-commit.sh"

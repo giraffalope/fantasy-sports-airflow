@@ -89,6 +89,52 @@ def _backtest_max_weeks_env() -> int:
         return 12
 
 
+_BACKTEST_LOAD_WEEKS_DEFAULT = 64
+
+
+def _backtest_load_weeks_env() -> int:
+    """Read ``FS_ML_BACKTEST_LOAD_WEEKS`` (default 64).
+
+    Caps the **training-frame SQL load** at the most-recent N distinct
+    ``week_id`` values for the active series + scoring rules. Forwarded
+    to :func:`load_training_frame` as ``max_train_weeks`` so the row
+    count drops proportionally at the DB layer rather than after a
+    Python-side trim.
+
+    Distinct from ``FS_ML_BACKTEST_MAX_WEEKS`` (default 12), which bounds
+    the **outer eval-week iteration count** but does nothing to the
+    underlying frame size. Both knobs are needed: ``LOAD_WEEKS`` keeps
+    memory bounded; ``MAX_WEEKS`` keeps wall-clock bounded.
+
+    Existed to stop the 27 May host OOM where an unbounded load
+    materialized 616 weeks x ~24k rows of ``features_json`` into the
+    worker, peaked at 11.36 GB RSS, and triggered a global OOM that
+    took down the entire 16 GiB host. Non-int / non-positive values
+    fall back to the default so a typo in ``.env`` can't re-introduce
+    the regression.
+    """
+    raw = os.environ.get("FS_ML_BACKTEST_LOAD_WEEKS")
+    if raw is None or raw.strip() == "":
+        return _BACKTEST_LOAD_WEEKS_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        _LOG.warning(
+            "Ignoring non-int FS_ML_BACKTEST_LOAD_WEEKS=%r; using default=%d",
+            raw,
+            _BACKTEST_LOAD_WEEKS_DEFAULT,
+        )
+        return _BACKTEST_LOAD_WEEKS_DEFAULT
+    if value < 1:
+        _LOG.warning(
+            "Ignoring non-positive FS_ML_BACKTEST_LOAD_WEEKS=%r; using default=%d",
+            raw,
+            _BACKTEST_LOAD_WEEKS_DEFAULT,
+        )
+        return _BACKTEST_LOAD_WEEKS_DEFAULT
+    return value
+
+
 def _sibling_track_ids_for_type(
     hook: NascarMySqlHook,
     *,
@@ -162,10 +208,17 @@ def run_walk_forward_backtest(
         return {"skipped": "no_active_rules"}
 
     rules_id, scoring_rules = rules
+    # Cap the SQL load at the most-recent N distinct weeks. Unbounded
+    # loads here previously OOM-killed the worker (and the whole 16 GiB
+    # host) once Cup history grew past ~5 GB of features_json on the
+    # wire. See :func:`_backtest_load_weeks_env` for the contract and
+    # the 27 May incident note.
+    load_weeks = _backtest_load_weeks_env()
     frame = load_training_frame(
         dfs_scoring_rules_id=rules_id,
         series_id=series_id,
         mysql_conn_id=mysql_conn_id,
+        max_train_weeks=load_weeks,
     )
     if not frame:
         return {"skipped": "no_training_frame"}

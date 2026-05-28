@@ -1,0 +1,134 @@
+#!/bin/sh
+# Bulk-load a .sql or .sql.gz dump into the Compose mariadb service.
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+BASEDIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=script/lib/db.sh
+. "$BASEDIR/script/lib/db.sh"
+
+usage() {
+    cat <<'EOF'
+Bulk-load a SQL dump into the Airflow stack MariaDB (docker compose service "mariadb").
+
+Usage:
+  ./script/db-import path/to/dump.sql
+  ./script/db-import path/to/dump.sql.gz
+  ./script/db-import --force path/to/dump.sql.gz
+  ./script/db-import path/to/dump.sql.gz --force
+
+Accepts plain .sql or gzip-compressed .sql.gz; .sql.gz is decompressed on the fly.
+Does NOT touch nascar.schema_migrations - use ./script/db-migrate for ledger-tracked
+migrations. Use ./script/db-query for ad-hoc SQL.
+
+Use ./script/db-restore for the full-instance --all-databases dumps produced by
+./script/db-backup; that path also prints a post-restore summary.
+
+Options:
+  -f, --force         Pass --force to mariadb so it continues past SQL errors
+  -h, --help          Show this help
+
+Environment (from .env or shell):
+  MARIADB_SERVICE              default: mariadb
+  DATABASE_NAME                default: nascar
+  DATABASE_IMPORT_USER         default: root
+  DATABASE_IMPORT_PASSWORD     default: DATABASE_ROOT_PASSWORD (then "password")
+EOF
+}
+
+force_flag=""
+import_path=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -f | --force)
+            force_flag="--force"
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            if [ -n "${1:-}" ]; then
+                if [ -n "$import_path" ]; then
+                    echo "Only one file path is allowed." >&2
+                    exit 1
+                fi
+                import_path="$1"
+                shift
+            fi
+            break
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+        *)
+            if [ -n "$import_path" ]; then
+                echo "Only one file path is allowed." >&2
+                exit 1
+            fi
+            import_path="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$import_path" ]; then
+    echo "Missing file path." >&2
+    usage >&2
+    exit 1
+fi
+
+if [ ! -f "$import_path" ]; then
+    echo "File not found: $import_path" >&2
+    exit 1
+fi
+
+if [ ! -r "$import_path" ]; then
+    echo "File not readable: $import_path" >&2
+    exit 1
+fi
+
+case "$import_path" in
+    *.sql)
+        mode=plain
+        ;;
+    *.sql.gz)
+        mode=gz
+        ;;
+    *)
+        echo "Unsupported extension (expected .sql or .sql.gz): $import_path" >&2
+        exit 1
+        ;;
+esac
+
+DB_REPO_ROOT="$BASEDIR"
+db_load_env
+db_require_container
+
+IMPORT_USER="${DATABASE_IMPORT_USER:-root}"
+IMPORT_PASSWORD="${DATABASE_IMPORT_PASSWORD:-${DATABASE_ROOT_PASSWORD:-password}}"
+
+import_stdin() {
+    if [ -n "$force_flag" ]; then
+        docker compose exec -i -T -e MYSQL_PWD="$IMPORT_PASSWORD" "$MARIADB_SERVICE" \
+            mariadb --binary-mode "$force_flag" -u"$IMPORT_USER" -D"$DB_NAME"
+    else
+        docker compose exec -i -T -e MYSQL_PWD="$IMPORT_PASSWORD" "$MARIADB_SERVICE" \
+            mariadb --binary-mode -u"$IMPORT_USER" -D"$DB_NAME"
+    fi
+}
+
+echo "Importing $import_path into $DB_NAME (service=$MARIADB_SERVICE user=$IMPORT_USER${force_flag:+ --force})..."
+
+if [ "$mode" = "plain" ]; then
+    import_stdin <"$import_path"
+else
+    gzip -dc -- "$import_path" | import_stdin
+fi
+
+echo "Import complete: $import_path"

@@ -47,6 +47,12 @@ Skip paths log at WARNING with `reason=…`. The generate task returns
 
 - No active `dfs_scoring_rules` for DraftKings
 - No latest `kind='predict'` snapshot
+- **`lineups_already_present_post_race`** — race has finished AND live
+  `dfs_race_lineups` already exist for the snapshot's race + DraftKings
+  dfs id. Symmetric to the predict / MC post-race guards; see
+  [Self-healing post-race recovery](./cup.machine_learning.models.md#self-healing-post-race-recovery)
+  in the upstream ML DAG. Pre-race the optimizer still re-runs every
+  hour so lineups reflect refreshed MC summaries.
 - No active `ml_race_simulation_batches` row for that snapshot (`no_mc_summaries`)
 - No `races` row for snapshot `week_id`
 - No active `dfs_salaries` for DraftKings on that `week_id` (join via `races`)
@@ -74,7 +80,7 @@ flowchart LR
    [`generate_candidate_pool`](../../include/nascar/dfs/lineup_optimizer.py) runs
    the CP-SAT solver in a loop with `min_diff=1` so the pool spans as many
    distinct lineups as possible (`top_k × FS_DK_CANDIDATE_POOL_MULTIPLIER`,
-   default 20 × 5 = 100). The CP-SAT objective is the salary-cap-respecting
+   default 40 × 5 = 200). The CP-SAT objective is the salary-cap-respecting
    sum of `projected_points`, where `projected_points` is the per-driver
    summary column selected by `FS_DK_MC_OBJECTIVE` (default `p50`). This
    knob now only controls **which candidates make the pool**, not the final
@@ -99,10 +105,14 @@ flowchart LR
 
 ### Per-strategy objectives
 
-| Strategy | Default objective | Default cap | Why |
+| Strategy | Default objective | Write-time cap | Why |
 | --- | --- | --- | --- |
-| `DOUBLE_UP` (cash / 50-50) | `joint_p10` (high floor) | `0.70` | Cash payouts reward consistency over upside; duplicating reliable floors across many lineups is fine. |
-| `HIGH_RISK_REWARD` (GPP / tournament) | `joint_p90` (high ceiling) | `0.40` | Top-heavy payouts reward ceilings; spreading risk across more drivers protects against a single bust. |
+| `DOUBLE_UP` (cash / 50-50) | `joint_p10` (high floor) | `0.35` | Cash payouts reward consistency over upside; the strategy is expressed via the floor-focused objective, not via a loose cap. |
+| `HIGH_RISK_REWARD` (GPP / tournament) | `joint_p90` (high ceiling) | `0.35` | Top-heavy payouts reward ceilings; the strategy is expressed via the ceiling-focused objective, not via a tight cap. |
+
+The write-time cap is uniform across strategies because diversification
+is enforced at *read time* by the `nascar.dfs_lineups` stored procedure
+— see [Read-time diversification](#read-time-diversification) below.
 
 Valid objective tokens (env vars below): `joint_p10`, `joint_p50`,
 `joint_p90`, `joint_mean`, `joint_sharpe`. Anything else falls back to
@@ -114,15 +124,58 @@ Valid objective tokens (env vars below): `joint_p10`, `joint_p50`,
 | --- | --- | --- |
 | `FS_DK_LINEUP_SIZE` | `6` | Drivers per lineup |
 | `FS_DK_SALARY_CAP` | `50000` | Salary cap |
-| `FS_DK_TOP_K` | `20` | Lineups per strategy |
-| `FS_DK_CANDIDATE_POOL_MULTIPLIER` | `5` | CP-SAT pool size = `top_k × multiplier` |
+| `FS_DK_TOP_K` | `40` | Lineups per strategy (80 per race across both) |
+| `FS_DK_CANDIDATE_POOL_MULTIPLIER` | `5` | CP-SAT pool size = `top_k × multiplier` (default 200) |
 | `FS_DK_MIN_DIFF_DOUBLE_UP` | `2` | CP-SAT overlap blocker for DOUBLE_UP candidate solves |
 | `FS_DK_MIN_DIFF_HIGH_RISK_REWARD` | `1` | CP-SAT overlap blocker for HIGH_RISK_REWARD candidate solves |
 | `FS_DK_MC_OBJECTIVE` | `p50` | Per-driver summary column used only to **order** the candidate pool (`mean`, `p05`, `p50`, `p95`, `min`, `max`) |
 | `FS_DK_DOUBLE_UP_OBJECTIVE` | `joint_p10` | Portfolio objective for DOUBLE_UP |
-| `FS_DK_DOUBLE_UP_EXPOSURE_CAP` | `0.70` | Max fraction of DOUBLE_UP lineups any driver may appear in |
+| `FS_DK_DOUBLE_UP_EXPOSURE_CAP` | `0.35` | Write-time max fraction of DOUBLE_UP lineups any driver may appear in (read-time cap is supplied by the caller of `nascar.dfs_lineups`) |
 | `FS_DK_HIGH_RISK_REWARD_OBJECTIVE` | `joint_p90` | Portfolio objective for HIGH_RISK_REWARD |
-| `FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP` | `0.40` | Max fraction of HIGH_RISK_REWARD lineups any driver may appear in |
+| `FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP` | `0.35` | Write-time max fraction of HIGH_RISK_REWARD lineups any driver may appear in (read-time cap is supplied by the caller of `nascar.dfs_lineups`) |
+
+### Read-time diversification
+
+The lineup generator persists `FS_DK_TOP_K` lineups per strategy under a
+loose 0.35 write-time cap (with the existing `+0.05` relaxation safety
+net to guarantee a full slate even on starved candidate pools).
+Read-time diversification is applied by the
+[`nascar.dfs_lineups`](../../../fantasy-sports-db/nascar/ddl/stored_procedures/6063-create_dfs_lineups_stored_procedure.sql)
+stored procedure, which mirrors the Python
+[`greedy_diversify`](../../include/nascar/dfs/lineup_portfolio.py)
+algorithm server-side over the persisted pool.
+
+Signature:
+
+```sql
+CALL nascar.dfs_lineups(
+    p_race_id          BIGINT UNSIGNED,
+    p_dfs_strategy_id  BIGINT UNSIGNED,
+    p_max_exposure_cap DECIMAL(5,4),
+    p_num_lineups      INT UNSIGNED
+);
+```
+
+Returns a single result set, one row per `(lineup, driver)`:
+`lineup_rank`, `dfs_race_lineup_id`, `lineup_projected_points`,
+`lineup_salary`, `driver_rank`, `driver_name`, `driver_dfs_id`,
+`driver_salary`, `driver_projected_points`, `driver_actual_points`.
+The `dfs_race_lineup_id` is the `nascar.dfs_race_lineups.id` of the
+selected lineup so callers can join back to the MC fingerprint columns
+(`mc_p10_dfs_points`, `objective_value`, `mc_score_method`, etc.) when
+they need the full audit row.
+Output is ordered by `lineup_rank ASC, driver_rank ASC`. The procedure
+has *no* relaxation safety net — if the persisted pool is too
+concentrated to satisfy `p_max_exposure_cap`, the result is short by
+design; rerun with a higher cap or wait for the next generator run.
+
+The actuals column (`driver_actual_points`) joins through the latest
+`kind='train'` snapshot in `ml_training_snapshots` and pulls
+`ml_labels.dfs_points`. It is `NULL` pre-race (no train snapshot yet)
+and populated after the post-race snapshot build completes.
+
+A copy/paste-ready caller lives in
+[`fantasy-sports-db/nascar/queries/dfs_lineups_smoke.sql`](../../../fantasy-sports-db/nascar/queries/dfs_lineups_smoke.sql).
 
 ### Summary-fallback path
 
@@ -146,6 +199,12 @@ post-migration MC batch with a writable artifact root has shipped.
   trail: `joint_p10` / `joint_p50` / `joint_p90` / `joint_mean` /
   `joint_sharpe` / `summary_fallback`).
 - `dfs_strategies` — strategy lookup (`name`: `DOUBLE_UP`, `HIGH_RISK_REWARD`).
+  Both rows are **required reference data** — the lineup task resolves the
+  pivot foreign key via
+  [`_strategy_id_by_name`](../../include/nascar/dfs/lineup_generator_task.py)
+  and raises ``RuntimeError: dfs_strategies row not found for name=...`` if
+  either is missing. See [Required reference data](#required-reference-data)
+  below for the bootstrap and backfill paths.
 - `dfs_strategies_race_lineups` — pivot linking lineups to strategies.
 - `dfs_race_lineups_car_drivers` — picked drivers (`dfs_driver_id` from salaries).
 
@@ -153,6 +212,45 @@ Driver exposure by strategy: view `nascar.v_dfs_strategies_drivers_exposure`.
 
 DDL: `fantasy-sports-db/nascar/ddl/tables/1078-*.sql`, `1079-*.sql`, `1080-*.sql`, `1081-*.sql`.
 Migration adding the 8 MC fingerprint columns: `20260613T120000_lineup_mc_fingerprint.sql`.
+
+## Required reference data
+
+`nascar.dfs_strategies` must contain active rows for both `DOUBLE_UP` and
+`HIGH_RISK_REWARD` before the lineup DAG can run. The strategy names are
+referenced directly in [_strategy_configs](../../include/nascar/dfs/lineup_generator_task.py)
+and looked up by name inside the per-strategy persistence transaction; a
+missing row crashes the task with an actionable
+``RuntimeError: dfs_strategies row not found for name='DOUBLE_UP'``.
+
+Two bootstrap paths in **fantasy-sports-db** keep this invariant true:
+
+- **Fresh installs** — `nascar/seed/9003-insert_dfs_strategies_seed.sql`
+  runs on Docker init after DDL via `/docker-entrypoint-initdb.d/` (lexical
+  order). Idempotent overlay using `ON DUPLICATE KEY UPDATE deleted_at = NULL`
+  on `unique_dfs_strategies_name`.
+- **Existing databases** — migration
+  `nascar/migrations/20260613T140000_dfs_strategies_required_rows.sql`
+  backfills environments that came up from a snapshot pre-dating
+  migration `20260525180000_dfs_strategies_and_race_lineups_pivot.sql`
+  (which originally introduced the two rows). Apply with:
+
+  ```bash
+  ./script/db-migrate ../fantasy-sports-db/nascar/migrations/20260613T140000_dfs_strategies_required_rows.sql
+  ```
+
+### Troubleshooting `dfs_strategies row not found`
+
+1. Confirm the rows are absent:
+
+   ```bash
+   ./script/db-query "SELECT name FROM nascar.dfs_strategies WHERE deleted_at IS NULL ORDER BY name"
+   ```
+
+2. Run the backfill migration above (records itself in
+   `nascar.schema_migrations`; safe to re-run — the ledger refuses
+   duplicates and the SQL itself is idempotent).
+3. Clear or retry the failed `generate_draftkings_lineups` task. No code
+   change is needed; the lookup will succeed on the next run.
 
 ## Related
 

@@ -109,7 +109,19 @@ FROM nascar.agg_week_results awr
 WHERE awr.week_id = %s
   AND awr.deleted_at IS NULL
   AND awr.r_start_position IS NOT NULL
-  AND awr.r_finish_position IS NULL
+  AND (
+      awr.r_finish_position IS NULL
+      OR NOT EXISTS (
+          SELECT 1
+          FROM nascar.ml_predictions mp
+          JOIN nascar.ml_training_snapshots s
+              ON s.id = mp.ml_training_snapshot_id
+             AND s.deleted_at IS NULL
+          WHERE s.week_id = awr.week_id
+            AND s.kind = 'predict'
+            AND mp.deleted_at IS NULL
+      )
+  )
 LIMIT 1
 """
 
@@ -140,6 +152,23 @@ def week_eligible_for_predict_snapshot(
     *,
     week_id: int,
 ) -> bool:
+    """Return True when a ``kind='predict'`` snapshot should be built for ``week_id``.
+
+    Eligible when the grid is known (``r_start_position IS NOT NULL``) AND
+    either:
+
+    - The race hasn't finished yet (``r_finish_position IS NULL``) — the
+      original pre-race window where the predict pipeline was designed to
+      score every hour.
+    - The race **has** finished but no live ``ml_predictions`` exist for any
+      ``kind='predict'`` snapshot in this week — the self-healing branch
+      that lets a missed pre-race cycle catch up after results land.
+
+    Once predictions are written for the current week post-race, this
+    function returns False so the hourly schedule does not thrash the
+    snapshot builder. The downstream predict / Monte Carlo / lineup tasks
+    enforce symmetric "ran exactly once" guards once results are in.
+    """
     rows = hook.get_records(_WEEK_ELIGIBLE_FOR_PREDICT_SQL, parameters=(week_id,))
     return bool(rows)
 

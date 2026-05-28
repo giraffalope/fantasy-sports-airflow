@@ -21,9 +21,20 @@ the DraftKings slate. Concretely:
 
 - **Train snapshots (`kind='train'`):** materialized for every Cup week with
   finished race rows in `agg_week_results`. Include features + labels.
-- **Predict snapshots (`kind='predict'`):** materialized for upcoming Cup
-  weeks where `r_start_position IS NOT NULL` but `r_finish_position IS NULL`
-  in `agg_week_results`. Features only; no labels.
+- **Predict snapshots (`kind='predict'`):** materialized for the Cup
+  current week when the grid is known (`r_start_position IS NOT NULL` in
+  `agg_week_results`) and the eligibility gate
+  `week_eligible_for_predict_snapshot` returns True — i.e. either the
+  race has not finished (`r_finish_position IS NULL`, the normal pre-race
+  hourly rebuild) **or** the race has finished and no live
+  `ml_predictions` row yet references a `kind='predict'` snapshot for
+  that week (the post-race self-healing branch — see
+  [Self-healing post-race recovery](#self-healing-post-race-recovery)).
+  The builder itself is finish-agnostic: it only requires `r_start_position
+  IS NOT NULL`. The eligibility gate is the single source of truth for
+  "should we build?", so the recovery branch above actually materializes
+  a fresh snapshot from the same anchor rows the train branch uses.
+  Features only; no labels.
 - **Retraining:** per `(series_id, track_type_id, target)`, refit an
   XGBoost regressor using Boruta-selected features and a
   `RandomizedSearchCV` over chronological folds, but **only when** the
@@ -139,7 +150,7 @@ flowchart LR
   `include.nascar.ml.snapshot_build.build_all_week_training_snapshots` and
   `build_all_week_prediction_snapshots` (lazy-imported through
   [include/nascar/ml/__init__.py](../../include/nascar/ml/__init__.py)) with
-  `  pipeline_version` derived from `FS_PIPELINE_VERSION` or `GIT_COMMIT`. The
+  `pipeline_version` derived from `FS_PIPELINE_VERSION` or `GIT_COMMIT`. The
   train branch enumerates every Cup week with completed `agg_week_results`
   rows (`r_start_position IS NOT NULL AND r_finish_position IS NOT NULL` —
   both endpoints are required so the B4 `r_place_diff` invariant in
@@ -147,11 +158,49 @@ flowchart LR
   writes one snapshot per week +
   scoring-rules version into `ml_training_snapshots` with `kind='train'`,
   one row per car-driver into `ml_training_rows`, and one label row per
-  car-driver into `ml_labels`. The predict branch builds at most one
+  car-driver into `ml_labels`.
+  **Skip-when-up-to-date:** before looping the per-week builder, the train
+  branch queries `ml_training_snapshots` for every active row whose
+  `source_pipeline_version` matches the version it is about to stamp
+  (using MariaDB's NULL-safe `<=>` so dev environments without a
+  pipeline version still match). Those weeks are dropped from the build
+  set, so an hourly run after an "aggregate added zero rows" cycle is a
+  near-noop: one cheap SELECT, no `DELETE`s, no feature recomputation,
+  no FK cascades into `ml_training_rows` / `ml_labels` /
+  `ml_model_training_snapshots` / `ml_predictions`. Operators force a
+  refresh in one of two ways:
+  - bump `FS_PIPELINE_VERSION` (explicit semver / build id) **or** let
+    `GIT_COMMIT` change naturally — the `.githooks/` scripts wired in
+    `script/setup` rewrite `.git-commit.env` on every `git pull` / `git
+    commit` / `git checkout` / `git rebase`, and Docker Compose forwards
+    that file into every Airflow service via the `env_file:` block on the
+    `&airflow-common` anchor. A `docker compose restart` after the git
+    op picks up the new SHA and every finished-week snapshot rebuilds on
+    the next scheduled run.
+  - set `FS_ML_REBUILD_WEEK_IDS=<comma-list>` for a per-week override —
+    those weeks are always rebuilt even when their `source_pipeline_version`
+    matches.
+  The predict branch builds at most one
   `kind='predict'` snapshot for the Cup **current week** from
-  `v_series_current_week` when that week has a known grid and no finish
-  (`r_start_position IS NOT NULL AND r_finish_position IS NULL` on
-  `agg_week_results`) and writes `ml_training_rows` only (no `ml_labels`).
+  `v_series_current_week` when that week has a known grid and is still
+  eligible per `week_eligible_for_predict_snapshot`: pre-race
+  (`r_finish_position IS NULL`) **or** the post-race self-healing branch
+  when no live `ml_predictions` row exists for the week yet (see
+  [Self-healing post-race recovery](#self-healing-post-race-recovery)).
+  The builder anchor itself is finish-agnostic — it only requires
+  `r_start_position IS NOT NULL` — so the recovery branch now actually
+  materializes a fresh snapshot from scratch when no surviving pre-race
+  snapshot exists (previously this branch could only re-score a
+  surviving pre-race snapshot, and was silently a no-op when none was
+  on disk, trapping the chain at `no_predict_snapshot`). Eligibility is
+  the single source of truth for "should we build?"; the builder
+  doesn't redundantly re-gate on `r_finish_position`.
+  The predict path intentionally does **not** apply the train-branch
+  skip-gate: pre-race the feature inputs change every hour as new
+  qualifying / anchor data lands, so a rebuild is real work; post-race
+  the `week_eligible_for_predict_snapshot` self-healing gate already
+  short-circuits once predictions exist.
+  Writes `ml_training_rows` only (no `ml_labels`).
   The `(series_id, week_id, grain, kind, dfs_scoring_rules_id)` unique
   key keeps train and predict snapshots separate.
 - **Inputs:** `agg_week_results` plus the prior-track aggregate tables in
@@ -165,18 +214,27 @@ flowchart LR
   [`9002-insert_dfs_scoring_rules_seed.sql`](../../../fantasy-sports-db/nascar/seed/9002-insert_dfs_scoring_rules_seed.sql).
   On an existing database, apply those files manually before the first ML run.
 - **Outputs:** rows in `ml_training_snapshots`, `ml_training_rows`, and
-  `ml_labels`; returns `{"train": [snapshot_id,...], "predict": [...]}` for
-  observability.
+  `ml_labels`; returns `{"train": [snapshot_id,...], "predict": [...]}`
+  for observability. `train` only lists snapshots actually built on this
+  run — weeks whose existing train snapshot already matches the current
+  `pipeline_version` are skipped by the gate and excluded from the
+  returned list. The task log records
+  `finished=N already_built=K forced=F to_build=B skipped=S
+  pipeline_version=V` so steady-state runs are visibly cheap.
 - **Upstream:** `wait_aggregate_complete`. **Downstream:**
   `train_models_if_needed`.
-- **Failure notes:** before insert, `_delete_existing_snapshot` physically
-  deletes any prior row for `(series_id, week_id, grain, kind,
-  dfs_scoring_rules_id)` (CASCADE removes child rows/labels). Soft-delete
-  cannot be used here because the unique key ignores `deleted_at`. Rebuilds
-  are idempotent once this delete runs.
-  If no active `dfs_scoring_rules` row exists for DraftKings, the task logs a
-  warning and returns empty train/predict id lists (same as `train_models_if_needed`
-  `no_active_rules` skip) instead of raising.
+- **Failure notes:** when a week is in the build set,
+  `_delete_existing_snapshot` physically deletes any prior row for
+  `(series_id, week_id, grain, kind, dfs_scoring_rules_id)` before
+  re-inserting (CASCADE removes child rows/labels). Soft-delete cannot be
+  used here because the unique key ignores `deleted_at`. Rebuilds are
+  idempotent once this delete runs. Weeks excluded by the skip-gate
+  never reach `_delete_existing_snapshot`, so existing
+  `ml_training_rows` / `ml_labels` / `ml_predictions` for those weeks
+  are preserved untouched. If no active `dfs_scoring_rules` row exists
+  for DraftKings, the task logs a warning and returns empty train/predict
+  id lists (same as `train_models_if_needed` `no_active_rules` skip)
+  instead of raising.
 
 ### `train_models_if_needed`
 
@@ -332,7 +390,11 @@ flowchart LR
   `no_blend_models`. Secondary targets (`r_laps_led`, `r_fastest_laps`)
   use zero defaults when no cohort model resolves. Per-target blend
   decisions are logged so it is easy to see which models contributed
-  and which strategy was used.
+  and which strategy was used. Post-race, if `ml_predictions` already
+  exist for the resolved predict snapshot, the task short-circuits with
+  `{"skipped": True, "reason": "predictions_already_present_post_race"}`
+  before reading any cohort artifacts — the inputs are frozen, so
+  re-scoring would just churn the same numbers.
 - **Upstream:** `train_models_if_needed`. **Downstream:** none (lineup DAG and
   [cup.machine_learning.models.backtest](./cup.machine_learning.models.backtest.md) sensor this task).
 
@@ -537,6 +599,48 @@ this DAG run once after the aggregate DAG fills in historical
   the new resolver and will be soft-deleted in a follow-up migration
   after one good prod cycle.
 
+### Self-healing post-race recovery
+
+The snapshot builder + `predict_upcoming_week` recover automatically
+when the current week has `race_results` but never received an
+`ml_predictions` row (DAG paused, worker down, prior cycle crashed,
+fresh deploy). No operator action is required — the next hourly
+scheduled tick after results land notices the gap and runs the missing
+work. The gates are split between the snapshot builder and the predict
+task so the chain self-heals **and** stops re-running once the gap is
+filled:
+
+| Stage | Pre-race | Post-race, predictions missing | Post-race, predictions present |
+| --- | --- | --- | --- |
+| `build_ml_training_snapshots` (predict branch via `week_eligible_for_predict_snapshot`) | builds snapshot | builds snapshot from scratch (recovery) | no-op |
+| `predict_upcoming_week` | scores snapshot | scores snapshot (recovery) | skips with `predictions_already_present_post_race` |
+
+The "post-race, predictions missing" recovery branch materializes a
+**fresh** snapshot from the same anchor rows the train branch uses —
+the builder's anchor filter (`r_start_position IS NOT NULL`) is
+finish-agnostic, so it doesn't matter whether the race is open or
+finished. This restores the chain when no surviving pre-race snapshot
+exists on disk (the case that was previously silently stuck at
+`no_predict_snapshot` because the builder re-gated on
+`r_finish_position IS NULL` and returned zero anchor rows post-race).
+
+The post-race / has-predictions branch returns False from
+[`week_eligible_for_predict_snapshot`](../../include/nascar/cup/current_week.py)
+so the predict snapshot is never rebuilt. Even if a stale snapshot is
+already on disk, `predict_upcoming_week` re-checks symmetrically:
+`agg_week_results` shows a populated `r_finish_position` for the week
+AND `ml_predictions` already exist for the snapshot → return
+`{"skipped": True, "reason": "predictions_already_present_post_race"}`.
+The Monte Carlo and lineup DAGs apply the same guard with
+`mc_already_present_post_race` / `lineups_already_present_post_race`
+reasons (see those DAGs' docs).
+
+Manually clearing the task in the Airflow UI bypasses the guard — a
+deliberate clear means "redo this work", which matches the operator's
+intent. Pre-race behavior is unchanged in every task: hourly snapshot
+refresh + re-prediction continues to score the latest features for the
+current week.
+
 ## Feature families
 
 The snapshot builder writes features into `ml_training_rows.features_json`
@@ -634,7 +738,7 @@ generally don't need to leave compose to pull any of them:
 | --- | --- | --- | --- |
 | 1 | `AIRFLOW__CELERY__WORKER_MAX_TASKS_PER_CHILD` | `1` | Recycle the Celery prefork child between tasks. Pure cross-task fix — eliminates heap accumulation from `build_ml_training_snapshots` bleeding into `train_models_if_needed`. Cost is one fork() per task (~ms). |
 | 2 | `FS_ML_TRAIN_COHORT_ISOLATION` | `1` | Spawn each cohort's `load_training_frame + _train_cohort` in a fresh subprocess. Belt-and-suspenders with lever 1: that one resets heap between tasks, this one resets it between cohorts inside the same task. Setting to `0` is only for tests / local debugging. |
-| 3 | `FS_ML_MAX_TRAIN_WEEKS` | unset | Cap the cohort's training horizon at the N most-recent distinct weeks. Implemented as a SQL window subselect in `load_training_frame` so the row count (and every downstream array) drops proportionally. Flip on without a redeploy when a future cohort grows unexpectedly large. |
+| 3 | `FS_ML_MAX_TRAIN_WEEKS` | unset | Cap the cohort's training horizon at the N most-recent distinct weeks. Implemented as a SQL window subselect in `load_training_frame` so the row count (and every downstream array) drops proportionally. Flip on without a redeploy when a future cohort grows unexpectedly large. Sibling knob for the backtest DAG is `FS_ML_BACKTEST_LOAD_WEEKS` (default `64`); see [cup.machine_learning.models.backtest.md](cup.machine_learning.models.backtest.md#incident-note--27-may-2026) for the 27 May host-OOM postmortem and the per-container `airflow-worker` memory cap that backs it up. |
 | 4 | `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS` | `2` | Pins OpenMP / BLAS thread count. Single biggest per-task dial — halves the histogram buffer peak when dropped from 4 → 2. |
 | 5 | `FS_ML_XGB_N_JOBS` | `2` in compose, `-1` legacy | Belt-and-suspenders cap on XGBoost's own thread count. Drop to `1` as the next lever. |
 | 6 | `FS_ML_TUNE_N_ITER`, `FS_ML_TUNE_CV_SPLITS` | `15`, `3` (was `25`, `4`) | Cuts the worst-case CV fit count per target from 100 to 45. |

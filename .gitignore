@@ -5,6 +5,11 @@ logs
 .vscode
 .idea
 
+# Auto-populated by .githooks/* on git pull / commit / checkout / rebase.
+# Loaded by the &airflow-common anchor in docker-compose.yaml so the ML
+# pipeline_version cache-key (GIT_COMMIT) tracks HEAD automatically.
+.git-commit.env
+
 # Scraped HTML / generated CSV (Docker bind mount; see docker-compose.yaml)
 scraper-data/
 

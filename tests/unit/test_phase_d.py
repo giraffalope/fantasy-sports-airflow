@@ -115,6 +115,10 @@ def test_d1_reconcile_empty_input() -> None:
     assert ranks.size == 0
 
 
+@patch(
+    "include.nascar.ml.predict_task._post_race_predictions_already_present",
+    return_value=False,
+)
 @patch("xgboost.XGBClassifier")
 @patch("xgboost.XGBRegressor")
 @patch("include.nascar.ml.predict_task._predict_values_for_target")
@@ -132,6 +136,7 @@ def test_d1_predict_persists_raw_and_integer_rank(
     mock_predict_values: MagicMock,
     mock_xgb: MagicMock,
     mock_xgbc: MagicMock,
+    mock_post_race: MagicMock,
 ) -> None:
     """End-to-end D1: ``predicted_targets_json`` carries both raw float + int rank."""
     hook = MagicMock()

@@ -63,6 +63,14 @@ x-airflow-common:
   build:
     context: .
     dockerfile: Dockerfile
+  # Forwards GIT_COMMIT=<HEAD sha> into every Airflow service. The file is
+  # auto-rewritten on every git pull/commit/checkout/rebase by the hooks in
+  # .githooks/ (installed via core.hooksPath by script/setup). The Python
+  # `environment:` block below still wins, so explicit `FS_PIPELINE_VERSION`
+  # overrides still take precedence over the auto-populated GIT_COMMIT.
+  env_file:
+    - path: .git-commit.env
+      required: false
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -95,22 +103,25 @@ x-airflow-common:
     AIRFLOW_CONN_MARIADB_CONN: "mariadb://username:password@mariadb:3306/nascar?charset=utf8mb4&collation=utf8mb4_uca1400_ai_ci"
     AIRFLOW_CONN_NASCAR_CONN: "mariadb://username:password@mariadb:3306/nascar?charset=utf8mb4&collation=utf8mb4_uca1400_ai_ci"
     FS_ENABLE_BACKFILL_DAGS: ${FS_ENABLE_BACKFILL_DAGS:-0}
-    FS_MC_N_SIMULATIONS: ${FS_MC_N_SIMULATIONS:-1000}
+    FS_MC_N_SIMULATIONS: ${FS_MC_N_SIMULATIONS:-10000}
     FS_MC_RANDOM_SEED: ${FS_MC_RANDOM_SEED:-}
     FS_DK_MC_OBJECTIVE: ${FS_DK_MC_OBJECTIVE:-p50}
     # Portfolio-aware lineup selection knobs (one set per DraftKings strategy).
-    # ``DOUBLE_UP`` (cash) uses a high-floor objective and a loose exposure
-    # cap; ``HIGH_RISK_REWARD`` (GPP) uses a high-ceiling objective and a
-    # tight cap so a single bust doesn't sink the portfolio.
+    # Both strategies persist a 0.35-capped pool with depth ``FS_DK_TOP_K``
+    # (default 40 per strategy). Read-time diversification is applied by
+    # the ``nascar.dfs_lineups`` stored procedure, which takes a
+    # caller-supplied ``p_max_exposure_cap`` and re-runs the greedy
+    # selection against the persisted pool.
     # ``FS_DK_CANDIDATE_POOL_MULTIPLIER`` controls how many CP-SAT solves
     # feed the portfolio selector per strategy (default 5 -> top_k * 5
     # candidates evaluated, then the greedy diversifier picks top_k).
     # See docs/nascar/cup.dfs.lineup_generator.md for the per-strategy
-    # objective table and exposure semantics.
+    # objective table and read-time diversification semantics.
     FS_DK_DOUBLE_UP_OBJECTIVE: ${FS_DK_DOUBLE_UP_OBJECTIVE:-joint_p10}
-    FS_DK_DOUBLE_UP_EXPOSURE_CAP: ${FS_DK_DOUBLE_UP_EXPOSURE_CAP:-0.70}
+    FS_DK_DOUBLE_UP_EXPOSURE_CAP: ${FS_DK_DOUBLE_UP_EXPOSURE_CAP:-0.35}
     FS_DK_HIGH_RISK_REWARD_OBJECTIVE: ${FS_DK_HIGH_RISK_REWARD_OBJECTIVE:-joint_p90}
-    FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP: ${FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP:-0.40}
+    FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP: ${FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP:-0.35}
+    FS_DK_TOP_K: ${FS_DK_TOP_K:-40}
     FS_DK_CANDIDATE_POOL_MULTIPLIER: ${FS_DK_CANDIDATE_POOL_MULTIPLIER:-5}
     # Joint Monte Carlo draws (n_drivers x n_simulations) are persisted as
     # ``.npz`` sidecars under this root so the lineup task can score
@@ -302,8 +313,21 @@ services:
     # once the ``nvidia`` runtime is registered. Worker is the only
     # Airflow service that actually fits estimators, so the scheduler /
     # api-server / dag-processor / triggerer don't need GPU access.
+    #
+    # ``limits.memory`` is a per-container cgroup cap that bounds the
+    # worker's heap before the host OOM killer ever fires. Sized at 8 GiB
+    # on a 16 GiB host: comfortable headroom for the heaviest single
+    # cohort fit, half the host (so MariaDB + the rest of the Airflow
+    # stack + the user's desktop session always have room), and small
+    # enough that any future regression that blows the budget gets a
+    # **cgroup OOM** (only the worker dies, Airflow retries cleanly)
+    # rather than the **global OOM** that reaped the entire host on
+    # 27 May 2026. See docs/nascar/cup.machine_learning.models.backtest.md
+    # ("Incident note — 27 May 2026") for the backstory.
     deploy:
       resources:
+        limits:
+          memory: 8G
         reservations:
           devices:
             - driver: nvidia

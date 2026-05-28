@@ -35,6 +35,7 @@ from include.nascar.ml.model_scope import (
     interval_method,
 )
 from include.nascar.ml.monte_carlo import (
+    DEFAULT_SIMULATIONS,
     MIN_SIMULATIONS,
     MonteCarloBatchResult,
     MonteCarloDriverInput,
@@ -69,19 +70,25 @@ def _parse_json(raw: Any) -> Any:
 
 
 def n_simulations() -> int:
-    """Resolve ``FS_MC_N_SIMULATIONS`` (default ``1000``); validation enforces ≥ 1000."""
+    """Resolve ``FS_MC_N_SIMULATIONS``.
+
+    Returns :data:`DEFAULT_SIMULATIONS` (``10000``) when the env var is
+    unset or unparseable; downstream validation in
+    :func:`simulate_driver_distributions` still enforces the
+    :data:`MIN_SIMULATIONS` (``1000``) floor for any explicit override.
+    """
     raw = os.environ.get("FS_MC_N_SIMULATIONS")
     if raw is None or raw.strip() == "":
-        return MIN_SIMULATIONS
+        return DEFAULT_SIMULATIONS
     try:
         value = int(raw)
     except ValueError:
         _LOG.warning(
             "Invalid FS_MC_N_SIMULATIONS=%r; falling back to default %s",
             raw,
-            MIN_SIMULATIONS,
+            DEFAULT_SIMULATIONS,
         )
-        return MIN_SIMULATIONS
+        return DEFAULT_SIMULATIONS
     return value
 
 
@@ -133,8 +140,22 @@ def _write_joint_samples_artifact(
 
     - ``joint_dfs_points``: float matrix ``(n_drivers, n_simulations)``
     - ``car_driver_ids``: int64 vector ``(n_drivers,)`` aligned with the matrix rows
+    - ``joint_finish_position``: float matrix ``(n_drivers, n_simulations)`` —
+      per-iteration assigned finish position (post tail-permutation for DNFed)
+    - ``joint_total_fastest_laps``: float matrix ``(n_drivers, n_simulations)`` —
+      post-constraint fastest-laps count (already completion-fraction scaled
+      for DNFed iterations)
+    - ``joint_total_laps_led``: float matrix ``(n_drivers, n_simulations)`` —
+      post-constraint laps-led count (completion-fraction scaled for DNFed)
+    - ``joint_is_dnf``: int8 matrix ``(n_drivers, n_simulations)`` —
+      per-iteration Bernoulli outcome from the DNF draw (0 / 1)
     - ``meta``: ``np.void`` carrying ``batch_id`` / ``snapshot_id`` /
       ``n_simulations`` / ``random_seed`` for offline lineage cross-checks
+
+    The per-target / DNF arrays are written best-effort; legacy MC pipeline
+    versions wrote only ``joint_dfs_points`` + ``car_driver_ids`` + ``meta``
+    so downstream readers (lineup task) must keep treating the per-target
+    arrays as optional.
 
     Failure to write is logged but never raised — the per-driver summary
     persistence is the source of truth for the lineup task's fallback
@@ -144,9 +165,10 @@ def _write_joint_samples_artifact(
     try:
         root.mkdir(parents=True, exist_ok=True)
         # ``np.savez_compressed`` is lossless and built into numpy, so no
-        # extra dependency is required. File size for 40 drivers x 1000
-        # draws x 8 bytes = 320 KB before compression; compressed is
-        # typically 30-50% of that.
+        # extra dependency is required. File size for 40 drivers x 10000
+        # draws x 8 bytes x 4 float matrices ≈ 13 MB before compression;
+        # compressed is typically 30-50% of that, plus a sub-MB int8
+        # ``joint_is_dnf`` archive entry.
         artifact_path = root / f"{batch_id}.npz"
         meta = np.array(
             (
@@ -162,11 +184,21 @@ def _write_joint_samples_artifact(
                 ("random_seed", "i8"),
             ],
         )
+        extras: dict[str, np.ndarray] = {}
+        if batch_result.joint_finish_position is not None:
+            extras["joint_finish_position"] = batch_result.joint_finish_position
+        if batch_result.joint_total_fastest_laps is not None:
+            extras["joint_total_fastest_laps"] = batch_result.joint_total_fastest_laps
+        if batch_result.joint_total_laps_led is not None:
+            extras["joint_total_laps_led"] = batch_result.joint_total_laps_led
+        if batch_result.joint_is_dnf is not None:
+            extras["joint_is_dnf"] = batch_result.joint_is_dnf
         np.savez_compressed(
             artifact_path,
             joint_dfs_points=batch_result.joint_dfs_points,
             car_driver_ids=batch_result.driver_index,
             meta=meta,
+            **extras,
         )
     except Exception:
         _LOG.exception(
@@ -306,7 +338,15 @@ def _load_target_sigma(
     return value * _MAE_TO_SIGMA
 
 
-_NON_NUMERIC_TARGET_SUFFIXES: frozenset[str] = frozenset({"r_finish_position_raw"})
+# Keys that ride along in ``predicted_targets_json`` but are NOT scoring sources.
+# ``r_finish_position_raw`` is the D1 audit float behind the reconciled rank;
+# ``r_is_dnf`` is the D3 blended P_dnf the two-stage classifier exports for the
+# MC Bernoulli draw. Both are stripped from the simulator-facing target dict
+# (one is replayed into :attr:`MonteCarloDriverInput.p_dnf`, the other is
+# pure lineage).
+_MC_METADATA_KEYS: frozenset[str] = frozenset({"r_finish_position_raw", "r_is_dnf"})
+# Kept as a back-compat alias for older callers.
+_NON_NUMERIC_TARGET_SUFFIXES: frozenset[str] = _MC_METADATA_KEYS
 
 
 def _resolve_per_driver_sigmas(
@@ -351,15 +391,22 @@ def _build_driver_inputs(
     drivers: list[MonteCarloDriverInput] = []
     for row in predictions:
         targets_raw = row["predicted_targets"] or {}
-        # D1 carries ``r_finish_position_raw`` alongside the integer rank
-        # so audits can compare the float to the reconciled int. Strip it
-        # from the target set the simulator sees — it's lineage data, not
-        # a scoring source.
+        # ``predicted_targets_json`` carries two non-scoring metadata keys:
+        # ``r_finish_position_raw`` (D1 audit float behind the integer rank)
+        # and ``r_is_dnf`` (D3 blended P_dnf from the two-stage classifier).
+        # Strip both before handing the dict to the simulator and surface
+        # ``r_is_dnf`` separately on :attr:`MonteCarloDriverInput.p_dnf`
+        # so the per-iteration Bernoulli DNF draw can fire.
+        p_dnf_raw = targets_raw.get("r_is_dnf")
+        p_dnf = (
+            float(p_dnf_raw)
+            if isinstance(p_dnf_raw, (int, float))
+            else None
+        )
         targets: dict[str, float] = {
             key: float(value)
             for key, value in targets_raw.items()
-            if isinstance(value, (int, float))
-            and key not in _NON_NUMERIC_TARGET_SUFFIXES
+            if isinstance(value, (int, float)) and key not in _MC_METADATA_KEYS
         }
         sigmas = _resolve_per_driver_sigmas(
             row,
@@ -373,6 +420,7 @@ def _build_driver_inputs(
                 r_start_position=row["r_start_position"],
                 predicted_targets=targets,
                 target_sigmas=sigmas,
+                p_dnf=p_dnf,
             )
         )
     return drivers
@@ -434,8 +482,37 @@ def _persist_batch(
                     p05_dfs_points,
                     p50_dfs_points,
                     p95_dfs_points,
-                    max_dfs_points
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    max_dfs_points,
+                    mean_r_finish_position,
+                    std_r_finish_position,
+                    min_r_finish_position,
+                    p05_r_finish_position,
+                    p50_r_finish_position,
+                    p95_r_finish_position,
+                    max_r_finish_position,
+                    mean_r_total_fastest_laps,
+                    std_r_total_fastest_laps,
+                    min_r_total_fastest_laps,
+                    p05_r_total_fastest_laps,
+                    p50_r_total_fastest_laps,
+                    p95_r_total_fastest_laps,
+                    max_r_total_fastest_laps,
+                    mean_r_total_laps_led,
+                    std_r_total_laps_led,
+                    min_r_total_laps_led,
+                    p05_r_total_laps_led,
+                    p50_r_total_laps_led,
+                    p95_r_total_laps_led,
+                    max_r_total_laps_led,
+                    dnf_pct
+                ) VALUES (
+                    %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s
+                )
                 """,
                 [
                     (
@@ -449,6 +526,28 @@ def _persist_batch(
                         round(summary.p50_dfs_points, 3),
                         round(summary.p95_dfs_points, 3),
                         round(summary.max_dfs_points, 3),
+                        round(summary.mean_r_finish_position, 3),
+                        round(summary.std_r_finish_position, 3),
+                        round(summary.min_r_finish_position, 3),
+                        round(summary.p05_r_finish_position, 3),
+                        round(summary.p50_r_finish_position, 3),
+                        round(summary.p95_r_finish_position, 3),
+                        round(summary.max_r_finish_position, 3),
+                        round(summary.mean_r_total_fastest_laps, 3),
+                        round(summary.std_r_total_fastest_laps, 3),
+                        round(summary.min_r_total_fastest_laps, 3),
+                        round(summary.p05_r_total_fastest_laps, 3),
+                        round(summary.p50_r_total_fastest_laps, 3),
+                        round(summary.p95_r_total_fastest_laps, 3),
+                        round(summary.max_r_total_fastest_laps, 3),
+                        round(summary.mean_r_total_laps_led, 3),
+                        round(summary.std_r_total_laps_led, 3),
+                        round(summary.min_r_total_laps_led, 3),
+                        round(summary.p05_r_total_laps_led, 3),
+                        round(summary.p50_r_total_laps_led, 3),
+                        round(summary.p95_r_total_laps_led, 3),
+                        round(summary.max_r_total_laps_led, 3),
+                        round(summary.dnf_pct, 4),
                     )
                     for summary in summaries
                 ],
@@ -456,6 +555,48 @@ def _persist_batch(
 
     hook.run_in_transaction(_write)
     return inserted_id_holder["id"]
+
+
+_POST_RACE_MC_PRESENT_SQL = """
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM nascar.agg_week_results awr
+        WHERE awr.week_id = %s
+          AND awr.deleted_at IS NULL
+          AND awr.r_finish_position IS NOT NULL
+    ) AS race_finished,
+    EXISTS (
+        SELECT 1
+        FROM nascar.ml_race_simulation_batches b
+        WHERE b.ml_training_snapshot_id = %s
+          AND b.deleted_at IS NULL
+    ) AS mc_present
+"""
+
+
+def _post_race_mc_already_present(
+    hook: NascarMySqlHook,
+    *,
+    week_id: int,
+    snapshot_id: int,
+) -> bool:
+    """Return True when the race has finished AND an MC batch already exists.
+
+    Symmetric to predict / lineup post-race guards: once the snapshot's inputs
+    are frozen (race results landed) and we've already produced a Monte Carlo
+    batch for it, re-simulating every hour would just append redundant batches
+    keyed on the same snapshot. Pre-race we still re-simulate hourly so the
+    sims track refreshed predictions.
+    """
+    rows = hook.get_records(
+        _POST_RACE_MC_PRESENT_SQL,
+        parameters=(int(week_id), int(snapshot_id)),
+    )
+    if not rows:
+        return False
+    race_finished, mc_present = rows[0]
+    return bool(race_finished) and bool(mc_present)
 
 
 def run_monte_carlo_simulation_task(**_context: object) -> dict[str, Any]:
@@ -472,6 +613,24 @@ def run_monte_carlo_simulation_task(**_context: object) -> dict[str, Any]:
     if snapshot is None:
         _LOG.warning("run_monte_carlo_simulation: skipped reason=no_predict_snapshot")
         return {"skipped": True, "reason": "no_predict_snapshot"}
+
+    if _post_race_mc_already_present(
+        hook,
+        week_id=int(snapshot["week_id"]),
+        snapshot_id=int(snapshot["id"]),
+    ):
+        _LOG.info(
+            "run_monte_carlo_simulation: snapshot_id=%s week_id=%s race finished and "
+            "MC batch already present; skipping post-race re-simulation",
+            snapshot["id"],
+            snapshot["week_id"],
+        )
+        return {
+            "skipped": True,
+            "reason": "mc_already_present_post_race",
+            "snapshot_id": snapshot["id"],
+            "week_id": snapshot["week_id"],
+        }
 
     predictions = _load_predictions(hook, snapshot["id"])
     if not predictions:

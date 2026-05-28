@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from unittest.mock import patch
+
 from include.nascar.dfs.lineup_optimizer import (
     LineupPlayer,
+    dk_top_k,
     generate_candidate_pool,
     generate_top_k_lineups,
 )
@@ -78,3 +82,16 @@ def test_generate_top_k_lineups_is_back_compat_wrapper() -> None:
         players, pool_size=2, lineup_size=3, salary_cap=50000, min_diff=1
     )
     assert lineups == pool
+
+
+def test_dk_top_k_default_is_forty() -> None:
+    """Pin ``FS_DK_TOP_K`` default at 40.
+
+    The persisted pool depth was bumped from 20 to 40 so the
+    ``nascar.dfs_lineups`` stored procedure has enough candidates to
+    enforce a meaningful read-time exposure cap. Pin the default so a
+    regression here is loud.
+    """
+    env_without_key = {k: v for k, v in os.environ.items() if k != "FS_DK_TOP_K"}
+    with patch.dict("os.environ", env_without_key, clear=True):
+        assert dk_top_k() == 40

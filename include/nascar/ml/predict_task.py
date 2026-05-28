@@ -60,6 +60,16 @@ so downstream consumers (DFS scoring, Monte Carlo, lineup generator) see
 physically valid permutations while we keep the float for drift tracking.
 """
 
+DNF_PROBABILITY_KEY = "r_is_dnf"
+"""D3: per-row key carrying the blended ``P_dnf`` from the two-stage classifier.
+
+The Monte Carlo simulator reads this from ``predicted_targets_json``, splits it
+off into ``MonteCarloDriverInput.p_dnf`` (it is **not** a scoring-rule source),
+and uses it as the Bernoulli rate of the per-iteration DNF draw. Absent when
+``dnf_blended`` is ``None`` for the snapshot (no classifier available), in which
+case MC treats ``p_dnf = 0`` and behaves as before.
+"""
+
 
 def reconcile_primary_to_integer_ranks(
     blended_primary: np.ndarray,
@@ -741,6 +751,51 @@ def _predict_values_for_target(
     return blended, meta, min(c[0] for c in contributors)
 
 
+_POST_RACE_PREDICTIONS_PRESENT_SQL = """
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM nascar.agg_week_results awr
+        WHERE awr.week_id = %s
+          AND awr.deleted_at IS NULL
+          AND awr.r_finish_position IS NOT NULL
+    ) AS race_finished,
+    EXISTS (
+        SELECT 1
+        FROM nascar.ml_predictions mp
+        WHERE mp.ml_training_snapshot_id = %s
+          AND mp.deleted_at IS NULL
+    ) AS predictions_present
+"""
+
+
+def _post_race_predictions_already_present(
+    hook: NascarMySqlHook,
+    *,
+    week_id: int,
+    snapshot_id: int,
+) -> bool:
+    """Return True when the race has finished AND predictions are already written.
+
+    The hourly predict DAG is idempotent on the snapshot (soft-delete + insert),
+    so re-running before the race is harmless and intentional (predictions
+    refresh as features evolve). Once results land, however, the predict
+    snapshot is frozen — the inputs no longer change — and re-predicting every
+    hour would just churn the same numbers. The symmetric inverse of
+    :func:`include.nascar.cup.current_week.week_eligible_for_predict_snapshot`:
+    that gate stops a *new* snapshot from being built post-race when
+    predictions exist; this one stops an *old* snapshot from being re-scored.
+    """
+    rows = hook.get_records(
+        _POST_RACE_PREDICTIONS_PRESENT_SQL,
+        parameters=(int(week_id), int(snapshot_id)),
+    )
+    if not rows:
+        return False
+    race_finished, predictions_present = rows[0]
+    return bool(race_finished) and bool(predictions_present)
+
+
 def predict_upcoming_week_task(**_context: object) -> dict[str, Any]:
     """Airflow entrypoint for the ML DAG's ``predict_upcoming_week`` task."""
     from xgboost import XGBClassifier, XGBRegressor
@@ -758,6 +813,24 @@ def predict_upcoming_week_task(**_context: object) -> dict[str, Any]:
     if snapshot is None:
         _LOG.info("predict_upcoming_week_task: no predict snapshot for rules_id=%s", rules_id)
         return {"skipped": "no_predict_snapshot"}
+
+    if _post_race_predictions_already_present(
+        hook,
+        week_id=int(snapshot["week_id"]),
+        snapshot_id=int(snapshot["id"]),
+    ):
+        _LOG.info(
+            "predict_upcoming_week_task: snapshot_id=%s week_id=%s race finished and "
+            "predictions already present; skipping post-race re-prediction",
+            snapshot["id"],
+            snapshot["week_id"],
+        )
+        return {
+            "skipped": True,
+            "reason": "predictions_already_present_post_race",
+            "snapshot_id": snapshot["id"],
+            "week_id": snapshot["week_id"],
+        }
 
     rows = _predict_rows(hook, snapshot["id"])
     if not rows:
@@ -993,6 +1066,8 @@ def predict_upcoming_week_task(**_context: object) -> dict[str, Any]:
             target: float(predictions[i]) for target, predictions in target_predictions.items()
         }
         predicted_targets[PRIMARY_TARGET_RAW_KEY] = float(primary_raw_floats[i])
+        if dnf_blended is not None:
+            predicted_targets[DNF_PROBABILITY_KEY] = float(dnf_blended[i])
         total, breakdown = compute_dfs_points_from_targets(
             row.get("r_start_position"),
             predicted_targets,
