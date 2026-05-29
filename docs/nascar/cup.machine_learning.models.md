@@ -40,8 +40,10 @@ the DraftKings slate. Concretely:
 - **Retraining:** per `(series_id, track_type_id, target)`, refit an
   XGBoost regressor using Boruta-selected features and a
   `RandomizedSearchCV` over chronological folds, but **only when** the
-  cohort's covered training week is older than the latest finished week
-  for the series. Models are partitioned by NASCAR series first (Cup /
+  cohort's covered training week (`MAX(week_id)` on snapshots linked to the
+  active model) is older than that cohort's latest available train week
+  (`cohort_latest_train_week` — `MAX(week_id)` across sibling tracks for
+  the same `track_type_id`, not the series-wide max). Models are partitioned by NASCAR series first (Cup /
   Xfinity / Truck) so Cup snapshots never train weights used to predict
   Xfinity races. Within a series there is exactly **one model scope**:
   - `track_type` — one model per `(series_id, track_type_id)`, trained on
@@ -263,6 +265,12 @@ flowchart LR
        (`cohort_distinct_weeks(hook, series_id, rules_id, track_type_id)`).
        Skips this cohort with `insufficient_cohort_weeks` when the count
        is below `FS_ML_MIN_COHORT_WEEKS` (default `2`).
+     - **Freshness gate:** reads `_cohort_covered_week` (max week on the
+       active primary model's linked train snapshots) and
+       `cohort_latest_train_week` (max week in the cohort's live train
+       snapshots). When `covered >= cohort_latest`, records
+       `skipped='cohort_already_fresh'` with `covered_week` and
+       `cohort_latest_week` and does not load or train that cohort.
      - Loads the **union of train snapshots at every sibling track** via
        `load_training_frame(dfs_scoring_rules_id=..., series_id=...,
        track_type_id=type_id)`.
@@ -280,9 +288,12 @@ flowchart LR
        inserts the new model row with `track_id IS NULL`,
        `track_type_id=type_id`, and `cohort_n_weeks=distinct_weeks`.
   6. **Predict-ready check:** every `track_type_id` for the current track
-     either has an active cohort model covering `latest_train_week`
-     **or** is below `FS_ML_MIN_COHORT_WEEKS` (skipped). When all cohorts
-     are fresh, the task returns `skipped='predict_ready'` without retraining.
+     either has an active cohort model whose `covered_week` is at least
+     that cohort's `cohort_latest_week` **or** is below
+     `FS_ML_MIN_COHORT_WEEKS` (skipped). When all cohorts are fresh, the
+     task returns `skipped='predict_ready'` without retraining. The
+     series-wide `latest_train_week` in the return payload is observability
+     only — it does not drive the per-cohort skip gate.
   7. **Evaluation rows** — for each trained model two
      `ml_model_evaluations` writes:
 

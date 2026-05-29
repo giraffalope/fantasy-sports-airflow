@@ -41,6 +41,7 @@ from include.nascar.ml.model_scope import (
     SCOPE_TRACK_TYPE,
     blend_weight_strategy,
     cohort_distinct_weeks,
+    cohort_latest_train_week,
     features_for_scope,
     min_cohort_weeks,
     sibling_track_ids_for_type,
@@ -1294,12 +1295,23 @@ def train_models_if_needed_task(**_context: object) -> dict[str, Any]:
                 series_id=series_id,
                 track_type_id=track_type_id,
             )
-            if covered is not None and covered >= series_latest:
+            cohort_latest = cohort_latest_train_week(
+                hook,
+                series_id=series_id,
+                rules_id=rules_id,
+                track_type_id=track_type_id,
+            )
+            if (
+                covered is not None
+                and cohort_latest is not None
+                and covered >= cohort_latest
+            ):
                 per_series_pairs.append(
                     {
                         "track_type_id": int(track_type_id),
                         "cohort_n_weeks": int(n_weeks),
                         "covered_week": int(covered),
+                        "cohort_latest_week": int(cohort_latest),
                         "skipped": "cohort_already_fresh",
                     }
                 )

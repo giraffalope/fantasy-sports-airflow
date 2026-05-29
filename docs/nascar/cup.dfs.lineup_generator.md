@@ -134,28 +134,56 @@ Valid objective tokens (env vars below): `joint_p10`, `joint_p50`,
 | `FS_DK_HIGH_RISK_REWARD_OBJECTIVE` | `joint_p90` | Portfolio objective for HIGH_RISK_REWARD |
 | `FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP` | `0.40` | Write-time max fraction of HIGH_RISK_REWARD lineups any driver may appear in (read-time cap is supplied by the caller of `nascar.dfs_lineups`) |
 
-### Read-time diversification
+### Submission portfolio (recommended for entries)
+
+When submitting **n = 5–15** lineups to a contest, use the Python
+[`select_portfolio_for_submission`](../../include/nascar/dfs/submission_portfolio.py)
+selector over the persisted candidate pool (or CP-SAT pool). It uses the
+joint MC matrix without changing the simulator.
+
+| Strategy | Contest | Objective | Typical knobs |
+| --- | --- | --- | --- |
+| `DOUBLE_UP` | Cash / double-up (~top 45%) | Maximize expected **count** of cashing lineups vs synthetic field | `exposure_cap=0.25`, `min_driver_diff=3`, field percentile `0.55` |
+| `HIGH_RISK_REWARD` | GPP min-cash (~top 18%) | Same cash-count objective at a **higher** field bar + `joint_p90` ceiling bonus | `exposure_cap=0.35`, `min_driver_diff=2`, field percentile `0.82` |
+
+Both strategies enforce per-driver exposure scaled to **n**, minimum driver
+difference between lineups, max pairwise correlation on MC lineup totals,
+optional DNF-weighted caps (`driver_pdnf`), and a quality floor
+(`joint_p10` for Double Up, `joint_p50` for GPP).
+
+Field cutoffs come from
+[`estimate_field_cutoffs`](../../include/nascar/dfs/field_cutoff.py) (random
+salary-feasible opponent lineups scored on the same joint matrix).
+
+Backtest helper:
+[`compare_portfolio_selectors`](../../include/nascar/dfs/submission_portfolio.py).
+Diagnostics:
+[`dfs_submission_portfolio_diagnostics.sql`](../../../fantasy-sports-db/nascar/queries/dfs_submission_portfolio_diagnostics.sql).
+
+### Read-time diversification (SQL fallback)
 
 The lineup generator persists `FS_DK_TOP_K` lineups per strategy under
-strategy-specific write-time caps (DOUBLE_UP `0.70`,
-HIGH_RISK_REWARD `0.40`, each with the existing `+0.05` relaxation
-safety net to guarantee a full slate even on starved candidate pools).
-Read-time diversification is applied by the
+write-time caps (`greedy_diversify`). For apps that cannot run Python,
 [`nascar.dfs_lineups`](../../../fantasy-sports-db/nascar/ddl/stored_procedures/6063-create_dfs_lineups_stored_procedure.sql)
-stored procedure, which mirrors the Python
-[`greedy_diversify`](../../include/nascar/dfs/lineup_portfolio.py)
-algorithm server-side over the persisted pool.
+applies min-driver-diff selection and an optional exposure cap over the
+persisted pool (no correlation check).
 
 Signature:
 
 ```sql
 CALL nascar.dfs_lineups(
-    p_race_id          BIGINT UNSIGNED,
-    p_dfs_strategy_id  BIGINT UNSIGNED,
-    p_min_driver_diff  INT UNSIGNED,
-    p_num_lineups      INT UNSIGNED
+    p_race_id                  BIGINT UNSIGNED,
+    p_dfs_strategy_id          BIGINT UNSIGNED,
+    p_min_driver_diff          INT UNSIGNED,
+    p_num_lineups              INT UNSIGNED,
+    p_max_driver_exposure_cap  DECIMAL(5, 4)   -- NULL disables; e.g. 0.25 for Double Up
 );
 ```
+
+Suggested SQL fallback parameters:
+
+- **DOUBLE_UP:** `p_min_driver_diff = 3`, `p_max_driver_exposure_cap = 0.25`
+- **HIGH_RISK_REWARD:** `p_min_driver_diff = 2`, `p_max_driver_exposure_cap = 0.35`
 
 Returns a single result set, one row per `(lineup, driver)`:
 `lineup_rank`, `dfs_race_lineup_id`, `lineup_projected_points`,

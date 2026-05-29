@@ -35,6 +35,10 @@ Public surface
 * :func:`score_candidates_against_joint_samples` — joint-MC scoring.
 * :func:`objective_value` — maps a metric string to a scalar from a score.
 * :func:`greedy_diversify` — exposure-capped greedy selection.
+
+Submission-time selection (Double Up / High Risk Reward) lives in
+:mod:`include.nascar.dfs.submission_portfolio` and
+:mod:`include.nascar.dfs.field_cutoff`.
 """
 
 from __future__ import annotations

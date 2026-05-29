@@ -196,5 +196,34 @@ def test_cohort_distinct_weeks_zero_when_empty() -> None:
     )
 
 
+def test_cohort_latest_train_week_sql_shape() -> None:
+    hook = MagicMock()
+    hook.get_records.return_value = [(1047,)]
+    result = ms.cohort_latest_train_week(
+        hook, series_id=1, rules_id=7, track_type_id=3
+    )
+    assert result == 1047
+    sql = hook.get_records.call_args[0][0]
+    assert "MAX(s.week_id)" in sql
+    assert "tracks_track_types" in sql
+    assert "ml_training_snapshots" in sql
+    assert hook.get_records.call_args.kwargs["parameters"] == (1, 7, 3)
+
+
+def test_cohort_latest_train_week_none_when_empty() -> None:
+    hook = MagicMock()
+    hook.get_records.return_value = []
+    assert (
+        ms.cohort_latest_train_week(hook, series_id=1, rules_id=7, track_type_id=3)
+        is None
+    )
+
+    hook.get_records.return_value = [(None,)]
+    assert (
+        ms.cohort_latest_train_week(hook, series_id=1, rules_id=7, track_type_id=3)
+        is None
+    )
+
+
 def test_all_scopes_only_contains_track_type() -> None:
     assert ms.ALL_SCOPES == (ms.SCOPE_TRACK_TYPE,)

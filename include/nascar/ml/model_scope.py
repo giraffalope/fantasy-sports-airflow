@@ -283,3 +283,31 @@ def cohort_distinct_weeks(
     if not rows or rows[0][0] is None:
         return 0
     return int(rows[0][0])
+
+
+def cohort_latest_train_week(
+    hook: Any,
+    *,
+    series_id: int,
+    rules_id: int,
+    track_type_id: int,
+) -> int | None:
+    """Latest ``week_id`` present in this cohort's union of train snapshots."""
+    rows = hook.get_records(
+        """
+        SELECT MAX(s.week_id)
+        FROM nascar.tracks_track_types tt
+        JOIN nascar.ml_training_snapshots s
+            ON s.track_id = tt.track_id
+           AND s.series_id = %s
+           AND s.dfs_scoring_rules_id = %s
+           AND s.kind = 'train'
+           AND s.deleted_at IS NULL
+        WHERE tt.track_type_id = %s
+          AND tt.deleted_at IS NULL
+        """,
+        parameters=(int(series_id), int(rules_id), int(track_type_id)),
+    )
+    if not rows or rows[0][0] is None:
+        return None
+    return int(rows[0][0])

@@ -175,7 +175,8 @@ class TestTrainModelsIfNeededCohortLoads:
         # 4. track_type_ids_for_track (inside _enumerate_cohorts)
         # 5. cohort_distinct_weeks
         # 6. _cohort_covered_week
-        # 7. sibling_track_ids_for_type
+        # 7. cohort_latest_train_week
+        # 8. sibling_track_ids_for_type
         hook.get_records.side_effect = [
             [(7, '{"version": 1, "components": []}')],  # _active_rules
             [(1,)],  # _distinct_series_ids
@@ -183,6 +184,7 @@ class TestTrainModelsIfNeededCohortLoads:
             [(3,)],  # track_type_ids_for_track for current track
             [(5,)],  # cohort_distinct_weeks
             [(None,)],  # _cohort_covered_week (not yet covered)
+            [(200,)],  # cohort_latest_train_week
             [(10,), (20,)],  # sibling_track_ids_for_type
         ]
 

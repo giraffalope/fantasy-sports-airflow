@@ -109,6 +109,7 @@ class TestTrainModelsIfNeededCohort:
         monkeypatch.setattr(train_task, "latest_train_week_for_retrain", lambda h, **k: 200)
         monkeypatch.setattr(train_task, "cohort_distinct_weeks", lambda *a, **k: 8)
         monkeypatch.setattr(train_task, "_cohort_covered_week", lambda *a, **k: 200)
+        monkeypatch.setattr(train_task, "cohort_latest_train_week", lambda *a, **k: 200)
 
         train_calls: list[Any] = []
         monkeypatch.setattr(
@@ -121,6 +122,47 @@ class TestTrainModelsIfNeededCohort:
 
         assert result["skipped"] == "predict_ready"
         assert train_calls == []
+
+    def test_cohort_fresh_when_covered_matches_cohort_latest_not_series(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: series-wide latest week must not force retrain for other cohorts."""
+        from include.nascar.ml import train_task
+
+        hook = self._setup_hook()
+        monkeypatch.setattr(train_task, "NascarMySqlHook", lambda **_: hook)
+        monkeypatch.setattr(
+            train_task, "resolve_series_current_week", lambda h, *, series_id: MagicMock()
+        )
+        monkeypatch.setattr(train_task, "_latest_train_week_for_retrain_gate", lambda h, r: 200)
+        monkeypatch.setattr(
+            train_task,
+            "resolve_current_week_track_context",
+            lambda h, *, series_id: self._ctx(),
+        )
+        monkeypatch.setattr(train_task, "latest_train_week_for_retrain", lambda h, **k: 200)
+        monkeypatch.setattr(train_task, "cohort_distinct_weeks", lambda *a, **k: 8)
+        monkeypatch.setattr(train_task, "_cohort_covered_week", lambda *a, **k: 150)
+        monkeypatch.setattr(train_task, "cohort_latest_train_week", lambda *a, **k: 150)
+
+        train_calls: list[Any] = []
+        load_calls: list[Any] = []
+        monkeypatch.setattr(
+            train_task,
+            "_train_cohort",
+            lambda **kw: train_calls.append(kw) or {"trained_models": {}},
+        )
+        monkeypatch.setattr(
+            train_task,
+            "load_training_frame",
+            lambda **kw: load_calls.append(kw) or [],
+        )
+
+        result = train_models_if_needed_task()
+
+        assert result["skipped"] == "predict_ready"
+        assert train_calls == []
+        assert load_calls == []
 
     def test_stale_cohort_triggers_training(
         self, monkeypatch: pytest.MonkeyPatch
@@ -144,7 +186,9 @@ class TestTrainModelsIfNeededCohort:
         monkeypatch.setattr(train_task, "latest_train_week_for_retrain", lambda h, **k: 200)
         monkeypatch.setattr(train_task, "cohort_distinct_weeks", lambda *a, **k: 8)
         monkeypatch.setattr(train_task, "_cohort_covered_week", lambda *a, **k: 50)
+        monkeypatch.setattr(train_task, "cohort_latest_train_week", lambda *a, **k: 200)
         monkeypatch.setattr(train_task, "sibling_track_ids_for_type", lambda *a, **k: [10])
+        monkeypatch.setenv("FS_ML_TRAIN_COHORT_ISOLATION", "0")
 
         def _fake_load(**kw: Any) -> list[dict[str, Any]]:
             load_calls.append(dict(kw))
