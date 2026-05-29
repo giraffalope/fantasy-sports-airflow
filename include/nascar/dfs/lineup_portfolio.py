@@ -45,10 +45,13 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np
+
+from include.nascar.dfs.lineup_constraints import min_driver_diff_ok
 
 _LOG = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ _LOG = logging.getLogger(__name__)
 # does not blow up to +/- inf. Same epsilon used in the SQL ``mc_sharpe``
 # comment so application code and audit semantics stay aligned.
 _SHARPE_STD_FLOOR = 1e-6
+_CORR_STD_FLOOR = 1e-9
 
 # Metric tokens accepted by :func:`objective_value` and persisted in
 # ``dfs_race_lineups.mc_score_method``. Kept as a frozenset so a typo in an
@@ -82,6 +86,23 @@ class CandidateScore:
     p50: float
     p90: float
     sharpe: float
+    lineup_totals: np.ndarray | None = None
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return float(raw)
+
+
+def dk_write_quality_floor_enabled() -> bool:
+    raw = os.environ.get("FS_DK_WRITE_QUALITY_FLOOR", "1")
+    return raw.strip().lower() not in ("0", "false", "no", "")
+
+
+def dk_write_max_lineup_correlation() -> float:
+    return float(np.clip(_env_float("FS_DK_WRITE_MAX_LINEUP_CORR", 0.85), 0.0, 1.0))
 
 
 def score_candidates_against_joint_samples(
@@ -137,9 +158,24 @@ def score_candidates_against_joint_samples(
                 p50=float(p50),
                 p90=float(p90),
                 sharpe=float(sharpe),
+                lineup_totals=lineup_totals,
             )
         )
     return scores
+
+
+def merge_scored_candidates(
+    *pools: Iterable[CandidateScore],
+) -> list[CandidateScore]:
+    """Dedupe scored candidates by ``indices``, keeping the higher ``p50``."""
+    merged: dict[tuple[int, ...], CandidateScore] = {}
+    for pool in pools:
+        for score in pool:
+            key = score.indices
+            prior = merged.get(key)
+            if prior is None or score.p50 > prior.p50:
+                merged[key] = score
+    return list(merged.values())
 
 
 def objective_value(score: CandidateScore, metric: str) -> float:
@@ -178,73 +214,145 @@ def _per_driver_budget(target_count: int, exposure_cap: float) -> int:
     return min(budget, target_count)
 
 
+def _accepted_indices(accepted: list[CandidateScore]) -> list[tuple[int, ...]]:
+    return [score.indices for score in accepted]
+
+
+def _exposure_from_accepted(accepted: list[CandidateScore]) -> dict[int, int]:
+    exposure: dict[int, int] = {}
+    for chosen in accepted:
+        for driver in chosen.indices:
+            exposure[driver] = exposure.get(driver, 0) + 1
+    return exposure
+
+
+def _pearson_corr(a: np.ndarray, b: np.ndarray) -> float:
+    a_std = float(np.std(a, ddof=0))
+    b_std = float(np.std(b, ddof=0))
+    if a_std < _CORR_STD_FLOOR or b_std < _CORR_STD_FLOOR:
+        return 1.0 if np.allclose(a, b) else 0.0
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def _max_corr_with_accepted(
+    candidate: CandidateScore,
+    accepted: list[CandidateScore],
+) -> float:
+    if not accepted or candidate.lineup_totals is None:
+        return 0.0
+    corrs = [
+        _pearson_corr(candidate.lineup_totals, other.lineup_totals)
+        for other in accepted
+        if other.lineup_totals is not None
+    ]
+    return max(corrs) if corrs else 0.0
+
+
+def _apply_write_quality_floor(
+    pool: list[CandidateScore],
+    objective_metric: str,
+) -> list[CandidateScore]:
+    if not pool:
+        return pool
+    values = [objective_value(score, objective_metric) for score in pool]
+    median = float(np.median(values))
+    filtered = [
+        score
+        for score in pool
+        if objective_value(score, objective_metric) >= median
+    ]
+    return filtered or pool
+
+
 def greedy_diversify(
     candidates: list[CandidateScore],
     *,
     target_count: int,
     exposure_cap: float,
     objective_metric: str,
+    min_driver_diff: int = 1,
+    lineup_size: int = 6,
+    relax_min_driver_diff: bool = True,
+    use_quality_floor: bool | None = None,
+    max_lineup_correlation: float | None = None,
 ) -> list[CandidateScore]:
-    """Greedy exposure-capped selection from a scored candidate pool.
+    """Greedy exposure- and overlap-capped selection from a scored candidate pool.
 
     Algorithm:
 
-    1. Sort the input pool by ``objective_value(score, objective_metric)``
-       descending. (We do not assume the pool is pre-sorted because the
-       upstream CP-SAT pool is sorted by ``projected_points``, which may
-       differ from the strategy-specific objective.)
-    2. Walk the sorted pool: accept a candidate iff every driver in the
-       lineup still has remaining budget under
-       ``ceil(target_count * exposure_cap)``.
-    3. Stop when ``target_count`` lineups are selected or the pool is
+    1. Optionally drop candidates below the pool median on ``objective_metric``
+       (``FS_DK_WRITE_QUALITY_FLOOR``, default on).
+    2. Sort the input pool by ``objective_value(score, objective_metric)``
+       descending.
+    3. Walk the sorted pool: accept a candidate iff every driver still has
+       exposure budget, the lineup differs from every accepted lineup by
+       at least ``min_driver_diff`` drivers, and pairwise MC correlation on
+       lineup totals is at most ``max_lineup_correlation``.
+    4. Stop when ``target_count`` lineups are selected or the pool is
        exhausted.
 
-    If the cap is too tight to fill the slot count, the cap is relaxed
-    in ``+0.05`` increments (up to ``1.0``) and the walk is restarted
-    over the still-unaccepted candidates. Each relaxation logs a single
-    warning so operators see the cap being widened rather than silently
-    receiving a short portfolio. The final selection is returned in the
-    original objective-descending order so the highest-objective
-    candidate is index ``0`` of the returned list.
-
-    Pool may contain duplicate lineups (the candidate-pool helper uses
-    ``min_diff=1`` against prior CP-SAT solves which can still emit
-    identical solutions when the model is symmetric); duplicates are
-    skipped naturally because their drivers' budgets will already have
-    been consumed by the prior accepted copy.
+    If ``min_driver_diff`` is too tight to fill the slot count, relax it
+    down to ``1`` (when ``relax_min_driver_diff`` is True). If the exposure
+    cap is still too tight, widen it in ``+0.05`` increments up to ``1.0``.
+    Each relaxation logs a warning.
     """
     if target_count <= 0 or not candidates:
         return []
 
+    quality_floor = (
+        dk_write_quality_floor_enabled()
+        if use_quality_floor is None
+        else use_quality_floor
+    )
+    max_corr = (
+        dk_write_max_lineup_correlation()
+        if max_lineup_correlation is None
+        else float(np.clip(max_lineup_correlation, 0.0, 1.0))
+    )
+
+    working = list(candidates)
+    if quality_floor:
+        working = _apply_write_quality_floor(working, objective_metric)
+
     sorted_pool = sorted(
-        candidates,
+        working,
         key=lambda score: objective_value(score, objective_metric),
         reverse=True,
     )
 
-    seen_indices: set[tuple[int, ...]] = set()
-    accepted: list[CandidateScore] = []
-    rejected: list[CandidateScore] = []
+    effective_min_diff = max(1, min(min_driver_diff, lineup_size))
     effective_cap = min(max(exposure_cap, 0.0), 1.0)
     relaxation_step = 0.05
 
-    def _attempt_fill(pool: list[CandidateScore], cap: float) -> None:
-        """Walk a pool, accepting candidates while budget remains."""
+    accepted: list[CandidateScore] = []
+    rejected: list[CandidateScore] = []
+    seen_indices: set[tuple[int, ...]] = set()
+
+    def _can_accept(
+        score: CandidateScore,
+        exposure: dict[int, int],
+        budget: int,
+        min_diff: int,
+    ) -> bool:
+        if not min_driver_diff_ok(
+            score.indices,
+            _accepted_indices(accepted),
+            min_diff=min_diff,
+            lineup_size=lineup_size,
+        ):
+            return False
+        if max_corr < 1.0 and _max_corr_with_accepted(score, accepted) > max_corr:
+            return False
+        return not any(exposure.get(driver, 0) >= budget for driver in score.indices)
+
+    def _attempt_fill(pool: list[CandidateScore], cap: float, min_diff: int) -> None:
+        nonlocal rejected
         budget = _per_driver_budget(target_count, cap)
-        if budget <= 0:
-            # Nothing can be admitted; leave everything for the next
-            # relaxation pass (or the empty-return guard at the end).
-            for score in pool:
-                if score.indices not in seen_indices:
-                    rejected.append(score)
-                    seen_indices.add(score.indices)
-            return
-        exposure: dict[int, int] = {}
+        exposure = _exposure_from_accepted(accepted)
         for score in pool:
             if score.indices in seen_indices:
                 continue
-            # Reject when any driver in the candidate has hit the budget.
-            if any(exposure.get(driver, 0) >= budget for driver in score.indices):
+            if budget <= 0 or not _can_accept(score, exposure, budget, min_diff):
                 rejected.append(score)
                 seen_indices.add(score.indices)
                 continue
@@ -255,61 +363,56 @@ def greedy_diversify(
             if len(accepted) >= target_count:
                 return
 
-    _attempt_fill(sorted_pool, effective_cap)
+    _attempt_fill(sorted_pool, effective_cap, effective_min_diff)
 
-    # Cap-relaxation safety net. When the pool can't fill the slot count
-    # under the requested cap, widen the cap in fixed increments so the
-    # operator sees the relaxation in the log and still receives a full
-    # portfolio (subject to the pool actually containing enough distinct
-    # lineups). Each pass walks only the currently-rejected pool to avoid
-    # reconsidering already-accepted slots.
+    if relax_min_driver_diff:
+        while len(accepted) < target_count and effective_min_diff > 1:
+            relaxed_diff = effective_min_diff - 1
+            _LOG.warning(
+                "greedy_diversify: relaxing min_driver_diff %s -> %s to fill %s lineups "
+                "(currently accepted %s; %s candidates rejected)",
+                effective_min_diff,
+                relaxed_diff,
+                target_count,
+                len(accepted),
+                len(rejected),
+            )
+            effective_min_diff = relaxed_diff
+            replay_pool = rejected
+            rejected = []
+            for score in replay_pool:
+                seen_indices.discard(score.indices)
+            _attempt_fill(replay_pool, effective_cap, effective_min_diff)
+
     while len(accepted) < target_count and effective_cap < 1.0:
-        relaxed = min(1.0, round(effective_cap + relaxation_step, 4))
-        if relaxed <= effective_cap:
-            # Floating-point safety: don't loop forever if rounding kept
-            # us at the same effective cap.
+        relaxed_cap = min(1.0, round(effective_cap + relaxation_step, 4))
+        if relaxed_cap <= effective_cap:
             break
         _LOG.warning(
             "greedy_diversify: relaxing exposure cap %.2f -> %.2f to fill %s lineups "
             "(currently accepted %s; %s candidates remain rejected)",
             effective_cap,
-            relaxed,
+            relaxed_cap,
             target_count,
             len(accepted),
             len(rejected),
         )
-        effective_cap = relaxed
-        # Replay the rejected pool against the relaxed cap. ``seen_indices``
-        # already records the accepted lineups so they don't get double-counted.
+        effective_cap = relaxed_cap
         replay_pool = rejected
         rejected = []
-        # Re-derive the exposure counter from the already-accepted slate
-        # so the relaxed pass enforces the new (wider) budget against the
-        # cumulative portfolio rather than starting from zero.
-        carried_exposure: dict[int, int] = {}
-        for chosen in accepted:
-            for driver in chosen.indices:
-                carried_exposure[driver] = carried_exposure.get(driver, 0) + 1
         budget_relaxed = _per_driver_budget(target_count, effective_cap)
+        exposure = _exposure_from_accepted(accepted)
         for score in replay_pool:
-            if score.indices in seen_indices and score not in accepted:
-                # Already rejected once; only revisit if not yet accepted.
-                pass
-            # Skip duplicates already in the accepted slate.
-            if any(
-                already.indices == score.indices for already in accepted
-            ):
+            if any(already.indices == score.indices for already in accepted):
                 continue
-            if any(
-                carried_exposure.get(driver, 0) >= budget_relaxed
-                for driver in score.indices
-            ):
+            if not _can_accept(score, exposure, budget_relaxed, effective_min_diff):
                 rejected.append(score)
                 continue
             accepted.append(score)
+            seen_indices.add(score.indices)
             for driver in score.indices:
-                carried_exposure[driver] = carried_exposure.get(driver, 0) + 1
+                exposure[driver] = exposure.get(driver, 0) + 1
             if len(accepted) >= target_count:
-                return accepted[:target_count]
+                break
 
     return accepted[:target_count]

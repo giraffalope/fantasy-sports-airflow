@@ -10,5 +10,8 @@ set -e
 BASEDIR="$(dirname "$0")/.."
 cd "${BASEDIR}"
 
+echo "\nRemoving old logs and rebuilding Compose images...\n"
+rm -rf "${BASEDIR}/logs"
+
 docker compose rm -f
 docker compose build "$@"

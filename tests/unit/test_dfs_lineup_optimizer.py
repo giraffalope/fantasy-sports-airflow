@@ -5,11 +5,15 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import numpy as np
+
 from include.nascar.dfs.lineup_optimizer import (
     LineupPlayer,
     dk_top_k,
     generate_candidate_pool,
+    generate_random_candidate_pool,
     generate_top_k_lineups,
+    merge_candidate_pools,
 )
 
 
@@ -95,3 +99,25 @@ def test_dk_top_k_default_is_forty() -> None:
     env_without_key = {k: v for k, v in os.environ.items() if k != "FS_DK_TOP_K"}
     with patch.dict("os.environ", env_without_key, clear=True):
         assert dk_top_k() == 40
+
+
+def test_merge_candidate_pools_dedupes_preserving_order() -> None:
+    first = [[0, 1, 2], [3, 4, 5]]
+    second = [[3, 4, 5], [6, 7, 8]]
+    assert merge_candidate_pools(first, second) == [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+
+
+def test_generate_random_candidate_pool_respects_cap_and_size() -> None:
+    players = _pool()
+    rng = np.random.default_rng(42)
+    pool = generate_random_candidate_pool(
+        players,
+        pool_size=5,
+        lineup_size=3,
+        salary_cap=20000,
+        rng=rng,
+    )
+    assert 0 < len(pool) <= 5
+    for lineup in pool:
+        assert len(lineup) == 3
+        assert sum(players[i].salary for i in lineup) <= 20000

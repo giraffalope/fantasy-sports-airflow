@@ -300,6 +300,10 @@ def test_no_feasible_lineups_when_pool_yields_nothing() -> None:
             "include.nascar.dfs.lineup_generator_task.generate_candidate_pool",
             return_value=[],
         ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task.generate_random_candidate_pool",
+            return_value=[],
+        ),
     ):
         result = generate_draftkings_lineups_task()
 
@@ -307,9 +311,95 @@ def test_no_feasible_lineups_when_pool_yields_nothing() -> None:
     assert result["reason"] == "no_feasible_lineups"
     assert result["mc_batch_id"] == 7
     assert result["mc_n_simulations"] == 1000
-    # No artifact -> the lineup task synthesized summary-fallback joint samples,
-    # so every strategy's stamped score_method should reflect that.
-    assert set(result["score_methods"].values()) == {"summary_fallback"}
+    assert result["score_methods"] == {}
+
+
+def test_shared_candidate_pool_scored_once_per_race() -> None:
+    hook = MagicMock()
+    candidates = [[0, 1, 2, 3, 4, 5]]
+    scored = [
+        CandidateScore(
+            indices=(0, 1, 2, 3, 4, 5),
+            mean=100.0,
+            std=5.0,
+            p10=90.0,
+            p50=100.0,
+            p90=110.0,
+            sharpe=20.0,
+        )
+    ]
+
+    def get_records_side_effect(sql: str, parameters: tuple | None = None) -> list:
+        if "SELECT r.id" in sql:
+            return [(42,)]
+        if "SELECT 1" in sql and "dfs_salaries" in sql:
+            return [(1,)]
+        if "ml_race_simulation_driver_summaries" in sql:
+            return [
+                (1, 9000, 10, 50.0, 50.0, 5.0),
+                (2, 8000, 20, 45.0, 45.0, 5.0),
+                (3, 7000, 30, 40.0, 40.0, 5.0),
+                (4, 6000, 40, 35.0, 35.0, 5.0),
+                (5, 5000, 50, 30.0, 30.0, 5.0),
+                (6, 4000, 60, 25.0, 25.0, 5.0),
+            ]
+        return []
+
+    hook.get_records.side_effect = get_records_side_effect
+
+    with (
+        patch(
+            "include.nascar.dfs.lineup_generator_task.NascarMySqlHook",
+            return_value=hook,
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._active_rules",
+            return_value=(1, {}),
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._latest_predict_snapshot",
+            return_value={"id": 99, "week_id": 5},
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._post_race_lineups_already_present",
+            return_value=False,
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task._latest_mc_batch",
+            return_value=(7, 1000, None),
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task.generate_candidate_pool",
+            return_value=candidates,
+        ) as mock_cpsat,
+        patch(
+            "include.nascar.dfs.lineup_generator_task.generate_random_candidate_pool",
+            return_value=[],
+        ) as mock_random,
+        patch(
+            "include.nascar.dfs.lineup_generator_task.dk_variant_seed_count",
+            return_value=0,
+        ),
+        patch(
+            "include.nascar.dfs.lineup_generator_task.score_candidates_against_joint_samples",
+            return_value=scored,
+        ) as mock_score,
+        patch(
+            "include.nascar.dfs.lineup_generator_task.greedy_diversify",
+            return_value=scored,
+        ) as mock_greedy,
+        patch(
+            "include.nascar.dfs.lineup_generator_task._persist_strategy_lineups",
+            return_value=1,
+        ),
+    ):
+        result = generate_draftkings_lineups_task()
+
+    assert result.get("skipped") is not True
+    mock_cpsat.assert_called_once()
+    mock_random.assert_called_once()
+    mock_score.assert_called_once()
+    assert mock_greedy.call_count == 2
 
 
 def test_persist_strategy_lineups_uses_run_in_transaction() -> None:

@@ -13,13 +13,11 @@ End-to-end flow per run:
    Gaussian joint matrix from the per-driver summary columns and stamp every
    resulting lineup ``mc_score_method='summary_fallback'`` so the audit trail
    distinguishes degraded scoring.
-4. For each strategy:
-   * Solve CP-SAT for a candidate pool of size ``top_k * pool_multiplier``.
-   * Score every candidate against the joint matrix (lineup mean / std / p10 /
-     p50 / p90 / sharpe).
-   * Apply :func:`greedy_diversify` with the strategy-specific objective metric
-     and exposure cap to pick the final ``top_k`` lineups under
-     per-driver exposure budgets.
+4. Build a shared candidate union (CP-SAT + random + optional driver-swap
+   variants from top joint-scored seeds), score against the joint matrix, then
+   for each strategy apply :func:`greedy_diversify` (quality floor, max
+   lineup correlation, exposure cap, write-time min driver diff) to pick the
+   final ``top_k`` lineups.
 5. Persist the resulting lineups along with the 8-column MC fingerprint
    (mean / std / p10 / p50 / p90 / sharpe / objective_value / mc_score_method).
 
@@ -48,17 +46,27 @@ from include.nascar.dfs.lineup_optimizer import (
     dk_lineup_size,
     dk_min_diff_double_up,
     dk_min_diff_high_risk_reward,
+    dk_random_pool_multiplier,
     dk_salary_cap,
     dk_top_k,
+    dk_write_min_diff_double_up,
+    dk_write_min_diff_high_risk_reward,
     generate_candidate_pool,
+    generate_random_candidate_pool,
+    merge_candidate_pools,
 )
 from include.nascar.dfs.lineup_portfolio import (
     JOINT_METRICS,
     SUMMARY_FALLBACK_METHOD,
     CandidateScore,
     greedy_diversify,
+    merge_scored_candidates,
     objective_value,
     score_candidates_against_joint_samples,
+)
+from include.nascar.dfs.lineup_variants import (
+    dk_variant_seed_count,
+    generate_lineup_variants,
 )
 from include.nascar.ml.predict_task import _active_rules, _latest_predict_snapshot
 from include.nascar.ml.snapshot_config import DRAFTKINGS_DFS_ID
@@ -175,6 +183,7 @@ class StrategyConfig:
     objective_metric: str
     exposure_cap: float
     min_diff: int
+    write_min_driver_diff: int
 
 
 def _strategy_configs() -> dict[str, StrategyConfig]:
@@ -187,6 +196,7 @@ def _strategy_configs() -> dict[str, StrategyConfig]:
             ),
             exposure_cap=_env_float("FS_DK_DOUBLE_UP_EXPOSURE_CAP", 0.35),
             min_diff=dk_min_diff_double_up(),
+            write_min_driver_diff=dk_write_min_diff_double_up(),
         ),
         "HIGH_RISK_REWARD": StrategyConfig(
             name="HIGH_RISK_REWARD",
@@ -197,6 +207,7 @@ def _strategy_configs() -> dict[str, StrategyConfig]:
                 "FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP", 0.35
             ),
             min_diff=dk_min_diff_high_risk_reward(),
+            write_min_driver_diff=dk_write_min_diff_high_risk_reward(),
         ),
     }
 
@@ -768,29 +779,94 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
     lineup_size = dk_lineup_size()
     salary_cap = dk_salary_cap()
     top_k = dk_top_k()
-    pool_multiplier = max(1, dk_candidate_pool_multiplier())
+    cpsat_multiplier = max(1, dk_candidate_pool_multiplier())
+    random_multiplier = max(0, dk_random_pool_multiplier())
     strategy_configs = _strategy_configs()
     players = [entry.player for entry in pool]
+
+    shared_min_diff = max(cfg.min_diff for cfg in strategy_configs.values())
+    cpsat_candidates = generate_candidate_pool(
+        players,
+        pool_size=top_k * cpsat_multiplier,
+        lineup_size=lineup_size,
+        salary_cap=salary_cap,
+        min_diff=shared_min_diff,
+    )
+    random_candidates: list[list[int]] = []
+    if random_multiplier > 0:
+        random_candidates = generate_random_candidate_pool(
+            players,
+            pool_size=top_k * random_multiplier,
+            lineup_size=lineup_size,
+            salary_cap=salary_cap,
+        )
+    candidates = merge_candidate_pools(cpsat_candidates, random_candidates)
+    variant_candidates: list[list[int]] = []
+    if not candidates:
+        _LOG.warning(
+            "generate_draftkings_lineups: skipped reason=no_feasible_lineups "
+            "race_id=%s pool_size=%s salary_cap=%s",
+            race_id,
+            len(pool),
+            salary_cap,
+        )
+        return {
+            "skipped": True,
+            "reason": "no_feasible_lineups",
+            "snapshot_id": snapshot["id"],
+            "race_id": race_id,
+            "week_id": week_id,
+            "pool_size": len(pool),
+            "lineup_size": lineup_size,
+            "salary_cap": salary_cap,
+            "top_k": top_k,
+            "mc_batch_id": mc_batch_id,
+            "mc_n_simulations": mc_n_simulations,
+            "mc_objective": objective,
+            "mc_artifact_uri": mc_artifact_uri,
+            "score_methods": {},
+            "lineups_inserted": {},
+        }
+
+    scored_candidates = score_candidates_against_joint_samples(
+        candidates, joint_source.matrix
+    )
+
+    seed_count = dk_variant_seed_count()
+    if seed_count > 0 and scored_candidates:
+        seed_lineups = sorted(scored_candidates, key=lambda s: s.p50, reverse=True)[
+            :seed_count
+        ]
+        salaries_arr = np.asarray([int(entry.player.salary) for entry in pool])
+        variant_candidates = generate_lineup_variants(
+            salaries_arr,
+            [list(s.indices) for s in seed_lineups],
+            lineup_size=lineup_size,
+            salary_cap=salary_cap,
+        )
+        existing = {score.indices for score in scored_candidates}
+        new_index_lists = [
+            lineup for lineup in variant_candidates if tuple(lineup) not in existing
+        ]
+        if new_index_lists:
+            variant_scored = score_candidates_against_joint_samples(
+                new_index_lists, joint_source.matrix
+            )
+            scored_candidates = merge_scored_candidates(
+                scored_candidates, variant_scored
+            )
 
     inserted_by_strategy: dict[str, int] = {}
     method_by_strategy: dict[str, str] = {}
 
     for strategy_name, strategy_cfg in strategy_configs.items():
-        candidates = generate_candidate_pool(
-            players,
-            pool_size=top_k * pool_multiplier,
-            lineup_size=lineup_size,
-            salary_cap=salary_cap,
-            min_diff=strategy_cfg.min_diff,
-        )
-        scored = score_candidates_against_joint_samples(
-            candidates, joint_source.matrix
-        )
         selected = greedy_diversify(
-            scored,
+            scored_candidates,
             target_count=top_k,
             exposure_cap=strategy_cfg.exposure_cap,
             objective_metric=strategy_cfg.objective_metric,
+            min_driver_diff=strategy_cfg.write_min_driver_diff,
+            lineup_size=lineup_size,
         )
         score_method = _resolve_score_method(
             strategy_cfg.objective_metric, joint_source.score_method_suffix
@@ -809,16 +885,22 @@ def generate_draftkings_lineups_task(**_context: object) -> dict[str, Any]:
         method_by_strategy[strategy_name] = score_method
         _LOG.info(
             "generate_draftkings_lineups: race_id=%s strategy=%s lineups=%s "
-            "min_diff=%s exposure_cap=%.2f objective=%s score_method=%s "
-            "candidate_pool=%s",
+            "cpsat_min_diff=%s write_min_driver_diff=%s exposure_cap=%.2f "
+            "objective=%s score_method=%s candidate_pool=%s "
+            "(cpsat=%s random=%s variants=%s scored_pool=%s)",
             race_id,
             strategy_name,
             count,
-            strategy_cfg.min_diff,
+            shared_min_diff,
+            strategy_cfg.write_min_driver_diff,
             strategy_cfg.exposure_cap,
             strategy_cfg.objective_metric,
             score_method,
             len(candidates),
+            len(cpsat_candidates),
+            len(random_candidates),
+            len(variant_candidates),
+            len(scored_candidates),
         )
 
     total_inserted = sum(inserted_by_strategy.values())

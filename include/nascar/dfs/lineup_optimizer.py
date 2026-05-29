@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+import numpy as np
 from ortools.sat.python import cp_model
+
+from include.nascar.dfs.lineup_feasible import random_feasible_lineup_indices
 
 POINTS_SCALE = 100
 
@@ -46,20 +49,34 @@ def dk_min_diff_high_risk_reward() -> int:
 
 
 def dk_candidate_pool_multiplier() -> int:
-    """How many CP-SAT solves per strategy as multiplier of ``top_k``.
+    """How many CP-SAT solves as multiplier of ``top_k`` (shared across strategies).
 
     Default ``5`` so the default ``FS_DK_TOP_K=40`` yields a 200-lineup
-    candidate pool — large enough that the downstream
+    CP-SAT pool — large enough that the downstream
     :func:`include.nascar.dfs.lineup_portfolio.greedy_diversify` selector
     has real choice when applying per-driver exposure caps, but small
     enough that CP-SAT's wall time stays sub-second on the production
-    cohort sizes (~30-40 drivers in the active predict pool). If
-    generation latency becomes a concern, lower this multiplier (the
-    server-side ``nascar.dfs_lineups`` stored procedure handles the
-    final read-time diversification, so the persisted pool only needs
-    enough variety to support that selection).
+    cohort sizes (~30-40 drivers in the active predict pool).
     """
     return _env_int("FS_DK_CANDIDATE_POOL_MULTIPLIER", 5)
+
+
+def dk_random_pool_multiplier() -> int:
+    """Random feasible lineups as multiplier of ``top_k`` (unioned with CP-SAT pool).
+
+    Default ``15`` (was ``5``) so the deduped union is large enough that
+    :func:`greedy_diversify` can fill ``top_k`` under write-time overlap caps
+    without chronic constraint relaxation.
+    """
+    return _env_int("FS_DK_RANDOM_POOL_MULTIPLIER", 15)
+
+
+def dk_write_min_diff_double_up() -> int:
+    return _env_int("FS_DK_WRITE_MIN_DIFF_DOUBLE_UP", 3)
+
+
+def dk_write_min_diff_high_risk_reward() -> int:
+    return _env_int("FS_DK_WRITE_MIN_DIFF_HIGH_RISK_REWARD", 2)
 
 
 def generate_candidate_pool(
@@ -146,3 +163,63 @@ def generate_top_k_lineups(
         salary_cap=salary_cap,
         min_diff=min_diff,
     )
+
+
+def merge_candidate_pools(*pools: list[list[int]]) -> list[list[int]]:
+    """Dedupe lineup index lists while preserving first-seen order."""
+    merged: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+    for pool in pools:
+        for lineup in pool:
+            key = tuple(lineup)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(lineup)
+    return merged
+
+
+def generate_random_candidate_pool(
+    players: list[LineupPlayer],
+    *,
+    pool_size: int,
+    lineup_size: int | None = None,
+    salary_cap: int | None = None,
+    rng: np.random.Generator | None = None,
+) -> list[list[int]]:
+    """Return up to ``pool_size`` random salary-feasible lineups (deduped)."""
+    if not players or pool_size <= 0:
+        return []
+
+    n = len(players)
+    size = lineup_size if lineup_size is not None else dk_lineup_size()
+    cap = salary_cap if salary_cap is not None else dk_salary_cap()
+    if size > n:
+        return []
+
+    salaries = np.asarray([int(p.salary) for p in players], dtype=np.int64)
+    generator = rng if rng is not None else np.random.default_rng()
+
+    lineups: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+    attempts = 0
+    max_attempts = max(pool_size * 50, 500)
+
+    while len(lineups) < pool_size and attempts < max_attempts:
+        attempts += 1
+        indices = random_feasible_lineup_indices(
+            n,
+            salaries,
+            lineup_size=size,
+            salary_cap=cap,
+            rng=generator,
+        )
+        if indices is None:
+            break
+        key = tuple(sorted(indices))
+        if key in seen:
+            continue
+        seen.add(key)
+        lineups.append(list(indices))
+
+    return lineups

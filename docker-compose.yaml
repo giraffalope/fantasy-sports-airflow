@@ -113,9 +113,9 @@ x-airflow-common:
     # the ``nascar.dfs_lineups`` stored procedure, which takes a
     # caller-supplied ``p_min_driver_diff`` and re-runs the greedy
     # selection against the persisted pool.
-    # ``FS_DK_CANDIDATE_POOL_MULTIPLIER`` controls how many CP-SAT solves
-    # feed the portfolio selector per strategy (default 5 -> top_k * 5
-    # candidates evaluated, then the greedy diversifier picks top_k).
+    # ``FS_DK_CANDIDATE_POOL_MULTIPLIER`` and ``FS_DK_RANDOM_POOL_MULTIPLIER``
+    # build one shared candidate union per race (CP-SAT + random feasible).
+    # ``FS_DK_WRITE_MIN_DIFF_*`` enforce lineup overlap at write time.
     # See docs/nascar/cup.dfs.lineup_generator.md for the per-strategy
     # objective table and read-time diversification semantics.
     FS_DK_DOUBLE_UP_OBJECTIVE: ${FS_DK_DOUBLE_UP_OBJECTIVE:-joint_p10}
@@ -124,6 +124,9 @@ x-airflow-common:
     FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP: ${FS_DK_HIGH_RISK_REWARD_EXPOSURE_CAP:-0.40}
     FS_DK_TOP_K: ${FS_DK_TOP_K:-40}
     FS_DK_CANDIDATE_POOL_MULTIPLIER: ${FS_DK_CANDIDATE_POOL_MULTIPLIER:-5}
+    FS_DK_RANDOM_POOL_MULTIPLIER: ${FS_DK_RANDOM_POOL_MULTIPLIER:-15}
+    FS_DK_WRITE_MIN_DIFF_DOUBLE_UP: ${FS_DK_WRITE_MIN_DIFF_DOUBLE_UP:-3}
+    FS_DK_WRITE_MIN_DIFF_HIGH_RISK_REWARD: ${FS_DK_WRITE_MIN_DIFF_HIGH_RISK_REWARD:-2}
     # Joint Monte Carlo draws (n_drivers x n_simulations) are persisted as
     # ``.npz`` sidecars under this root so the lineup task can score
     # candidates against the true coupled distribution rather than the

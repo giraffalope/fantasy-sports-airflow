@@ -19,6 +19,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from include.nascar.dfs.field_cutoff import estimate_field_cutoffs
+from include.nascar.dfs.lineup_constraints import driver_overlap, min_driver_diff_ok
 from include.nascar.dfs.lineup_portfolio import (
     CandidateScore,
     _per_driver_budget,
@@ -226,25 +227,6 @@ def _pearson_corr(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.corrcoef(a, b)[0, 1])
 
 
-def _driver_overlap(indices_a: tuple[int, ...], indices_b: tuple[int, ...]) -> int:
-    return len(set(indices_a) & set(indices_b))
-
-
-def _min_driver_diff_ok(
-    candidate: tuple[int, ...],
-    accepted: Sequence[ScoredCandidate],
-    min_diff: int,
-    lineup_size: int,
-) -> bool:
-    if not accepted:
-        return True
-    max_shared = lineup_size - min_diff
-    return all(
-        _driver_overlap(candidate, other.score.indices) <= max_shared
-        for other in accepted
-    )
-
-
 def _max_corr_with_accepted(
     candidate: ScoredCandidate,
     accepted: Sequence[ScoredCandidate],
@@ -388,8 +370,11 @@ def select_portfolio_for_submission(
             best_idx: int | None = None
             best_gain = -1.0
             for idx, cand in enumerate(remaining):
-                if not _min_driver_diff_ok(
-                    cand.score.indices, accepted, min_diff, size
+                if not min_driver_diff_ok(
+                    cand.score.indices,
+                    [other.score.indices for other in accepted],
+                    min_diff=min_diff,
+                    lineup_size=size,
                 ):
                     continue
                 if _max_corr_with_accepted(cand, accepted) > cfg.max_lineup_correlation:
@@ -490,7 +475,7 @@ def portfolio_diagnostics(
     for i in range(n):
         for j in range(i + 1, n):
             shared.append(
-                _driver_overlap(
+                driver_overlap(
                     selected[i].score.indices,
                     selected[j].score.indices,
                 )

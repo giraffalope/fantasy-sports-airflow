@@ -65,43 +65,46 @@ rows get a valid `dfs_race_lineup_id`.
 
 ## Portfolio-aware optimizer
 
-The lineup task now runs in **three** layered stages so the final 20 lineups
-reflect both Monte Carlo variance and portfolio-level diversification:
+The lineup task builds **one shared candidate union per race**, scores it
+once against the joint matrix, then runs **per-strategy** greedy selection:
 
 ```mermaid
 flowchart LR
-  MC["MC summaries +<br/>joint draws (.npz)"] --> POOL["CP-SAT candidate pool<br/>top_k × multiplier"]
-  POOL --> Score["Score each candidate<br/>against joint draws"]
-  Score --> Sel["Greedy diversify<br/>(per-driver exposure caps,<br/>per-strategy objective)"]
-  Sel --> LU["dfs_race_lineups<br/>+ 8-column MC fingerprint"]
+  MC["MC summaries + joint draws"] --> CPSAT["CP-SAT pool once<br/>top_k x cpsat_multiplier"]
+  MC --> Rand["Random feasible pool<br/>top_k x random_multiplier"]
+  CPSAT --> Union["Dedupe union"]
+  Rand --> Union
+  Union --> Score["Joint MC score"]
+  Score --> Var["Variant swaps from top seeds"]
+  Var --> Score2["Score new variants"]
+  Score2 --> Pool["Merged scored pool"]
+  Score --> Pool
+  Pool --> SelDU["greedy_diversify DOUBLE_UP"]
+  Pool --> SelHRR["greedy_diversify HIGH_RISK_REWARD"]
+  SelDU --> LU["dfs_race_lineups"]
+  SelHRR --> LU
 ```
 
-1. **Candidate pool.**
+1. **Shared candidate pool.**
    [`generate_candidate_pool`](../../include/nascar/dfs/lineup_optimizer.py) runs
-   the CP-SAT solver in a loop with `min_diff=1` so the pool spans as many
-   distinct lineups as possible (`top_k × FS_DK_CANDIDATE_POOL_MULTIPLIER`,
-   default 40 × 5 = 200). The CP-SAT objective is the salary-cap-respecting
-   sum of `projected_points`, where `projected_points` is the per-driver
-   summary column selected by `FS_DK_MC_OBJECTIVE` (default `p50`). This
-   knob now only controls **which candidates make the pool**, not the final
-   ranking.
-2. **Joint MC scoring.**
+   CP-SAT once per race with `min_diff = max(strategy CP-SAT min_diff)` (default
+   `max(2, 1) = 2`). [`generate_random_candidate_pool`](../../include/nascar/dfs/lineup_optimizer.py)
+   adds cheap random salary-feasible lineups (`top_k × FS_DK_RANDOM_POOL_MULTIPLIER`,
+   default 15). The union is deduped before scoring. CP-SAT uses
+   `FS_DK_MC_OBJECTIVE` (default `p50`) only to order the optimization frontier.
+2. **Joint MC scoring + variant expansion.**
    [`score_candidates_against_joint_samples`](../../include/nascar/dfs/lineup_portfolio.py)
-   sums each candidate's six driver rows in the
-   `(n_drivers, n_simulations)` joint matrix loaded from the per-batch
-   `.npz` sidecar (see Monte Carlo doc), then computes lineup mean / std /
-   p10 / p50 / p90 / sharpe. Because the matrix preserves Phase E2
-   rank-coupling (every iteration is a finish-position permutation), the
-   resulting lineup std is materially lower than a naive sum-of-driver-stds
-   — that's the whole point.
-3. **Greedy diversify.**
-   [`greedy_diversify`](../../include/nascar/dfs/lineup_portfolio.py) sorts
-   the scored pool by the strategy's objective metric, walks descending,
-   and accepts each lineup iff every driver still has remaining exposure
-   budget (`ceil(top_k × exposure_cap)`). When the cap is too tight to
-   fill `top_k` lineups the cap is relaxed `+0.05` at a time with a
-   WARNING log per relaxation; the operator never silently gets a short
-   portfolio.
+   scores the union. [`generate_lineup_variants`](../../include/nascar/dfs/lineup_variants.py)
+   builds 1–2 driver swaps from the top `FS_DK_VARIANT_SEED_COUNT` joint-scored
+   seeds (default 25); new variants are scored and merged into the pool.
+3. **Greedy diversify (per strategy).**
+   [`greedy_diversify`](../../include/nascar/dfs/lineup_portfolio.py) enforces
+   per-driver exposure (`ceil(top_k × exposure_cap)`), minimum driver difference
+   between accepted lineups (`FS_DK_WRITE_MIN_DIFF_*`), optional median **quality
+   floor** (`FS_DK_WRITE_QUALITY_FLOOR`), and max pairwise MC correlation
+   (`FS_DK_WRITE_MAX_LINEUP_CORR`). `min_driver_diff` relaxes down to `1`, then
+   exposure cap relaxes `+0.05`, with WARNING logs — chronic relaxation means the
+   candidate pool is still too small or caps are too tight.
 
 ### Per-strategy objectives
 
@@ -125,9 +128,17 @@ Valid objective tokens (env vars below): `joint_p10`, `joint_p50`,
 | `FS_DK_LINEUP_SIZE` | `6` | Drivers per lineup |
 | `FS_DK_SALARY_CAP` | `50000` | Salary cap |
 | `FS_DK_TOP_K` | `40` | Lineups per strategy (80 per race across both) |
-| `FS_DK_CANDIDATE_POOL_MULTIPLIER` | `5` | CP-SAT pool size = `top_k × multiplier` (default 200) |
-| `FS_DK_MIN_DIFF_DOUBLE_UP` | `2` | CP-SAT overlap blocker for DOUBLE_UP candidate solves |
-| `FS_DK_MIN_DIFF_HIGH_RISK_REWARD` | `1` | CP-SAT overlap blocker for HIGH_RISK_REWARD candidate solves |
+| `FS_DK_CANDIDATE_POOL_MULTIPLIER` | `5` | Shared CP-SAT pool = `top_k × multiplier` |
+| `FS_DK_RANDOM_POOL_MULTIPLIER` | `15` | Random feasible pool = `top_k × multiplier` (`0` disables) |
+| `FS_DK_VARIANT_SEED_COUNT` | `25` | Top joint-scored lineups that seed driver-swap variants (`0` disables) |
+| `FS_DK_VARIANT_MAX_SWAPS` | `2` | Max drivers replaced per seed (2 supports `write_min_driver_diff=3`) |
+| `FS_DK_VARIANT_POOL_CAP` | `max(top_k×5, 120)` | Cap on variant lineups generated per race |
+| `FS_DK_WRITE_QUALITY_FLOOR` | `1` | Drop candidates below pool median on strategy objective before greedy select |
+| `FS_DK_WRITE_MAX_LINEUP_CORR` | `0.85` | Max Pearson correlation on MC lineup totals vs accepted lineups |
+| `FS_DK_MIN_DIFF_DOUBLE_UP` | `2` | CP-SAT overlap blocker (contributes to shared `max` min_diff) |
+| `FS_DK_MIN_DIFF_HIGH_RISK_REWARD` | `1` | CP-SAT overlap blocker (contributes to shared `max` min_diff) |
+| `FS_DK_WRITE_MIN_DIFF_DOUBLE_UP` | `3` | Write-time min distinct drivers vs prior accepted lineups |
+| `FS_DK_WRITE_MIN_DIFF_HIGH_RISK_REWARD` | `2` | Write-time min distinct drivers vs prior accepted lineups |
 | `FS_DK_MC_OBJECTIVE` | `p50` | Per-driver summary column used only to **order** the candidate pool (`mean`, `p05`, `p50`, `p95`, `min`, `max`) |
 | `FS_DK_DOUBLE_UP_OBJECTIVE` | `joint_p10` | Portfolio objective for DOUBLE_UP |
 | `FS_DK_DOUBLE_UP_EXPOSURE_CAP` | `0.70` | Write-time max fraction of DOUBLE_UP lineups any driver may appear in (read-time cap is supplied by the caller of `nascar.dfs_lineups`) |
@@ -205,6 +216,45 @@ and populated after the post-race snapshot build completes.
 
 A copy/paste-ready caller lives in
 [`fantasy-sports-db/nascar/queries/dfs_lineups_smoke.sql`](../../../fantasy-sports-db/nascar/queries/dfs_lineups_smoke.sql).
+
+### Full pool MC audit (`dfs_lineup_mc_projections`)
+
+When you need the **entire persisted lineup pool** with lineup-level MC
+fingerprints and per-driver Monte Carlo summary columns (not a diversified
+subset), use
+[`nascar.dfs_lineup_mc_projections`](../../../fantasy-sports-db/nascar/ddl/stored_procedures/6064-create_dfs_lineup_mc_projections_stored_procedure.sql).
+
+| Procedure | Use when |
+| --- | --- |
+| `nascar.dfs_lineups` | Picking a diversified N-lineup slate (exposure cap + min driver diff) |
+| `nascar.dfs_lineup_mc_projections` | Auditing/exploring all persisted lineups with full MC driver stats |
+
+Signature:
+
+```sql
+CALL nascar.dfs_lineup_mc_projections(
+    p_race_id           BIGINT UNSIGNED,
+    p_dfs_strategy_id   BIGINT UNSIGNED   -- NULL = all strategies
+);
+```
+
+Returns one row per `(lineup, driver)` with lineup MC fingerprint columns
+(`lineup_mc_p10_dfs_points`, etc.) plus all
+`ml_race_simulation_driver_summaries` stats prefixed as `driver_*`
+(`driver_mean_dfs_points`, `driver_p50_r_finish_position`, `driver_dnf_pct`,
+etc.). Output includes `lineup_rank` and `driver_rank`.
+
+Smoke caller:
+[`fantasy-sports-db/nascar/queries/dfs_lineup_mc_projections_smoke.sql`](../../../fantasy-sports-db/nascar/queries/dfs_lineup_mc_projections_smoke.sql).
+
+### Validation after tuning
+
+Compare one race week before/after changing pool multipliers or exposure caps:
+
+1. **Runtime:** Airflow task duration for `generate_draftkings_lineups`.
+2. **Driver exposure:** `SELECT * FROM nascar.v_dfs_strategies_drivers_exposure WHERE race_id = ?`.
+3. **Relaxation logs:** grep for `greedy_diversify: relaxing` — occasional is OK; chronic means pool too small or caps too tight.
+4. **Unit tests:** `pytest tests/unit/test_lineup_portfolio.py tests/unit/test_dfs_lineup_optimizer.py tests/unit/test_dfs_lineup_generator_gates.py`
 
 ### Summary-fallback path
 

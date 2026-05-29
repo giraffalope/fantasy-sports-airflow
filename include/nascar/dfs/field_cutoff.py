@@ -8,16 +8,19 @@ the Monte Carlo simulator.
 from __future__ import annotations
 
 import os
-from itertools import combinations
-from typing import Iterator, Sequence
+from typing import Sequence
 
 import numpy as np
+
+from include.nascar.dfs.lineup_feasible import (
+    feasible_lineup_indices,
+    random_feasible_lineup_indices,
+)
 
 _DEFAULT_FIELD_SAMPLES = 500
 _DEFAULT_CASH_PERCENTILE = 0.55
 _DEFAULT_LINEUP_SIZE = 6
 _DEFAULT_SALARY_CAP = 50_000
-_MAX_RANDOM_ATTEMPTS = 2_000
 
 
 def _env_int(name: str, default: int) -> int:
@@ -44,60 +47,6 @@ def _lineup_size() -> int:
 
 def _salary_cap() -> int:
     return _env_int("FS_DK_SALARY_CAP", _DEFAULT_SALARY_CAP)
-
-
-def _feasible_lineup_indices(
-    n_drivers: int,
-    salaries: np.ndarray,
-    *,
-    lineup_size: int,
-    salary_cap: int,
-) -> Iterator[tuple[int, ...]]:
-    """Yield every salary-feasible lineup (for small driver pools)."""
-    for combo in combinations(range(n_drivers), lineup_size):
-        if int(np.sum(salaries[list(combo)])) <= salary_cap:
-            yield tuple(int(i) for i in combo)
-
-
-def _random_feasible_lineup_indices(
-    n_drivers: int,
-    salaries: np.ndarray,
-    *,
-    lineup_size: int,
-    salary_cap: int,
-    rng: np.random.Generator,
-    feasible_cache: list[tuple[int, ...]] | None = None,
-) -> tuple[int, ...] | None:
-    """Return a random feasible lineup index tuple."""
-    if lineup_size > n_drivers:
-        return None
-
-    if feasible_cache is not None:
-        if not feasible_cache:
-            return None
-        return feasible_cache[int(rng.integers(0, len(feasible_cache)))]
-
-    # Small pools: enumerate once (C(n,6) stays tractable for n <= 18).
-    if n_drivers <= 18:
-        options = list(
-            _feasible_lineup_indices(
-                n_drivers,
-                salaries,
-                lineup_size=lineup_size,
-                salary_cap=salary_cap,
-            )
-        )
-        if not options:
-            return None
-        return options[int(rng.integers(0, len(options)))]
-
-    cheap_k = min(n_drivers, max(lineup_size + 6, 12))
-    cheap = np.argsort(salaries)[:cheap_k]
-    for _ in range(_MAX_RANDOM_ATTEMPTS):
-        chosen = rng.choice(cheap, size=lineup_size, replace=False)
-        if int(np.sum(salaries[chosen])) <= salary_cap:
-            return tuple(int(i) for i in sorted(chosen))
-    return None
 
 
 def estimate_field_cutoffs(
@@ -153,7 +102,7 @@ def estimate_field_cutoffs(
     feasible_cache: list[tuple[int, ...]] | None = None
     if n_drivers <= 18:
         feasible_cache = list(
-            _feasible_lineup_indices(
+            feasible_lineup_indices(
                 n_drivers,
                 salary_arr,
                 lineup_size=size,
@@ -167,7 +116,7 @@ def estimate_field_cutoffs(
     max_attempts = max(m * 20, m + 10)
     while len(field_lineups) < m and attempts < max_attempts:
         attempts += 1
-        indices = _random_feasible_lineup_indices(
+        indices = random_feasible_lineup_indices(
             n_drivers,
             salary_arr,
             lineup_size=size,

@@ -8,7 +8,10 @@ import pytest
 from include.nascar.dfs.lineup_portfolio import (
     JOINT_METRICS,
     CandidateScore,
+    dk_write_max_lineup_correlation,
+    dk_write_quality_floor_enabled,
     greedy_diversify,
+    merge_scored_candidates,
     objective_value,
     score_candidates_against_joint_samples,
 )
@@ -85,6 +88,13 @@ def test_score_against_joint_samples_returns_empty_on_empty_matrix() -> None:
     )
 
 
+def test_score_stores_lineup_totals_on_candidate() -> None:
+    joint = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    scores = score_candidates_against_joint_samples([[0, 1]], joint)
+    assert scores[0].lineup_totals is not None
+    np.testing.assert_allclose(scores[0].lineup_totals, [5.0, 7.0, 9.0])
+
+
 # ---------------------------------------------------------------------------
 # objective_value
 # ---------------------------------------------------------------------------
@@ -130,6 +140,13 @@ def test_objective_value_routes_metric_to_field(
     assert metric in JOINT_METRICS  # token surface stays in sync
 
 
+def test_dk_write_env_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FS_DK_WRITE_QUALITY_FLOOR", "0")
+    assert dk_write_quality_floor_enabled() is False
+    monkeypatch.setenv("FS_DK_WRITE_MAX_LINEUP_CORR", "0.5")
+    assert dk_write_max_lineup_correlation() == pytest.approx(0.5)
+
+
 def test_objective_value_falls_back_to_median_for_unknown_metric() -> None:
     """Unknown metric token doesn't crash; falls back to ``p50`` (audit log warns)."""
     score = _score()
@@ -164,6 +181,7 @@ def test_greedy_diversify_respects_exposure_cap() -> None:
         target_count=10,
         exposure_cap=0.40,
         objective_metric="joint_p10",
+        use_quality_floor=False,
     )
     assert len(selected) == 10
     appearances = sum(1 for s in selected if 0 in s.indices)
@@ -181,6 +199,7 @@ def test_greedy_diversify_orders_by_objective_metric() -> None:
         target_count=3,
         exposure_cap=1.0,  # no diversification pressure
         objective_metric="joint_p10",
+        use_quality_floor=False,
     )
     # Pool entry with the largest p10 should win the top slot.
     assert selected_floor[0].p10 == pytest.approx(4.0)
@@ -192,6 +211,7 @@ def test_greedy_diversify_orders_by_objective_metric() -> None:
         target_count=3,
         exposure_cap=1.0,
         objective_metric="joint_p90",
+        use_quality_floor=False,
     )
     # Highest p90 corresponds to i=0 (because p90 = 200 - i).
     assert selected_ceiling[0].p90 == pytest.approx(200.0)
@@ -211,6 +231,7 @@ def test_greedy_diversify_relaxes_cap_when_pool_starved(
             target_count=4,
             exposure_cap=0.20,  # ceil(4 * 0.20) = 1, but driver 0 is in every candidate
             objective_metric="joint_p10",
+            use_quality_floor=False,
         )
     assert len(selected) == 4
     relax_logs = [r for r in caplog.records if "relaxing exposure cap" in r.message]
@@ -254,9 +275,146 @@ def test_greedy_diversify_handles_duplicate_candidates() -> None:
         target_count=3,
         exposure_cap=0.40,  # ceil(3 * 0.4) = 2 — duplicate would otherwise burn both budget slots
         objective_metric="joint_p10",
+        use_quality_floor=False,
     )
     # Both unique lineups should fit under the cap; the duplicate should
     # be deduplicated by the seen-indices ledger.
     selected_index_sets = [s.indices for s in selected]
     assert duplicate.indices in selected_index_sets
     assert (3, 4, 5) in selected_index_sets
+
+
+def test_greedy_diversify_enforces_min_driver_diff() -> None:
+    """Lineups sharing too many drivers are skipped when min_driver_diff is set."""
+    similar = [
+        _score(indices=(0, 1, 2, 3, 4, 5), p10=200.0),
+        _score(indices=(0, 1, 2, 3, 4, 6), p10=199.0),
+        _score(indices=(10, 11, 12, 13, 14, 15), p10=150.0),
+        _score(indices=(20, 21, 22, 23, 24, 25), p10=140.0),
+    ]
+    selected = greedy_diversify(
+        similar,
+        target_count=2,
+        exposure_cap=1.0,
+        objective_metric="joint_p10",
+        min_driver_diff=3,
+        lineup_size=6,
+        relax_min_driver_diff=False,
+        use_quality_floor=False,
+    )
+    assert len(selected) == 2
+    assert selected[0].indices == (0, 1, 2, 3, 4, 5)
+    assert selected[1].indices == (10, 11, 12, 13, 14, 15)
+
+
+def test_merge_scored_candidates_keeps_higher_p50() -> None:
+    low = _score(indices=(0, 1), p50=90.0)
+    high = _score(indices=(0, 1), p50=110.0)
+    merged = merge_scored_candidates([low], [high])
+    assert len(merged) == 1
+    assert merged[0].p50 == pytest.approx(110.0)
+
+
+def test_greedy_diversify_quality_floor_skips_tail(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pool = [
+        _score(indices=(0, 1, 2, 3, 4, 5), p10=200.0),
+        _score(indices=(10, 11, 12, 13, 14, 15), p10=160.0),
+        _score(indices=(20, 21, 22, 23, 24, 25), p10=150.0),
+        _score(indices=(30, 31, 32, 33, 34, 35), p10=50.0),
+    ]
+    selected = greedy_diversify(
+        pool,
+        target_count=2,
+        exposure_cap=1.0,
+        objective_metric="joint_p10",
+        min_driver_diff=1,
+        lineup_size=6,
+        use_quality_floor=True,
+        max_lineup_correlation=1.0,
+        relax_min_driver_diff=False,
+    )
+    assert len(selected) == 2
+    assert all(s.p10 >= 155.0 for s in selected)
+    assert all(s.p10 >= 150.0 for s in selected)
+    assert not any(s.p10 < 100.0 for s in selected)
+
+
+def test_greedy_diversify_rejects_high_correlation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rng = np.random.default_rng(0)
+    totals_a = rng.normal(100.0, 5.0, size=500)
+    totals_b = totals_a + rng.normal(0.0, 0.01, size=500)
+    pool = [
+        CandidateScore(
+            indices=(0, 1, 2, 3, 4, 5),
+            mean=100.0,
+            std=5.0,
+            p10=90.0,
+            p50=100.0,
+            p90=110.0,
+            sharpe=20.0,
+            lineup_totals=totals_a,
+        ),
+        CandidateScore(
+            indices=(0, 1, 2, 3, 4, 6),
+            mean=99.0,
+            std=5.0,
+            p10=89.0,
+            p50=99.0,
+            p90=109.0,
+            sharpe=19.0,
+            lineup_totals=totals_b,
+        ),
+        CandidateScore(
+            indices=(10, 11, 12, 13, 14, 15),
+            mean=80.0,
+            std=8.0,
+            p10=70.0,
+            p50=80.0,
+            p90=90.0,
+            sharpe=10.0,
+            lineup_totals=rng.normal(80.0, 8.0, size=500),
+        ),
+    ]
+    selected = greedy_diversify(
+        pool,
+        target_count=2,
+        exposure_cap=1.0,
+        objective_metric="joint_p50",
+        min_driver_diff=1,
+        lineup_size=6,
+        use_quality_floor=False,
+        max_lineup_correlation=0.85,
+        relax_min_driver_diff=False,
+    )
+    assert len(selected) == 2
+    assert selected[0].indices == (0, 1, 2, 3, 4, 5)
+    assert selected[1].indices == (10, 11, 12, 13, 14, 15)
+
+
+def test_greedy_diversify_relaxes_min_driver_diff_when_starved(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    candidates = [
+        _score(indices=(0, 1, 2, 3, 4, 5), p10=200.0),
+        _score(indices=(0, 1, 2, 3, 4, 6), p10=199.0),
+        _score(indices=(0, 1, 2, 3, 4, 7), p10=198.0),
+    ]
+    with caplog.at_level("WARNING"):
+        selected = greedy_diversify(
+            candidates,
+            target_count=3,
+            exposure_cap=1.0,
+            objective_metric="joint_p10",
+            min_driver_diff=3,
+            lineup_size=6,
+            use_quality_floor=False,
+        )
+    assert len(selected) == 3
+    relax_logs = [
+        r for r in caplog.records if "relaxing min_driver_diff" in r.message
+    ]
+    assert relax_logs
